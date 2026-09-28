@@ -1,0 +1,404 @@
+{
+  "events": [
+    {
+      "Evt_No": 0,
+      "Evt_Name": "50 MTS. RUN",
+      "Height": "3`-4``",
+      "Gender": "CHILDRENS",
+      "Fees": 10
+    },
+    {
+      "Evt_No": 1,
+      "Evt_Name": "50 MTS. RUN",
+      "Height": "3`-8``",
+      "Gender": "CHILDRENS",
+      "Fees": 10
+    },
+    {
+      "Evt_No": 2,
+      "Evt_Name": "KANAMACHHI",
+      "Height": "3`-8``",
+      "Gender": "CHILDRENS",
+      "Fees": 10
+    },
+    {
+      "Evt_No": 3,
+      "Evt_Name": "100 MTS. RUN",
+      "Height": "4`-2``",
+      "Gender": "BOYS",
+      "Fees": 10
+    },
+    {
+      "Evt_No": 4,
+      "Evt_Name": "POTATO RACE",
+      "Height": "4`-2``",
+      "Gender": "BOYS",
+      "Fees": 10
+    },
+    {
+      "Evt_No": 5,
+      "Evt_Name": "200 MTS. RUN",
+      "Height": "4`-6``",
+      "Gender": "BOYS",
+      "Fees": 10
+    },
+    {
+      "Evt_No": 6,
+      "Evt_Name": "BROAD JUMP",
+      "Height": "4`-6``",
+      "Gender": "BOYS",
+      "Fees": 10
+    },
+    {
+      "Evt_No": 7,
+      "Evt_Name": "200 MTS. RUN",
+      "Height": "4`-10``",
+      "Gender": "BOYS",
+      "Fees": 10
+    },
+    {
+      "Evt_No": 8,
+      "Evt_Name": "BROAD JUMP",
+      "Height": "4`-10``",
+      "Gender": "BOYS",
+      "Fees": 10
+    },
+    {
+      "Evt_No": 9,
+      "Evt_Name": "100 MTS. RUN",
+      "Height": "4`-2``",
+      "Gender": "GIRLS",
+      "Fees": 10
+    },
+    {
+      "Evt_No": 10,
+      "Evt_Name": "POTATO RACE",
+      "Height": "4`-2``",
+      "Gender": "GIRLS",
+      "Fees": 10
+    },
+    {
+      "Evt_No": 11,
+      "Evt_Name": "200 MTS. RUN",
+      "Height": "4`-6``",
+      "Gender": "GIRLS",
+      "Fees": 10
+    },
+    {
+      "Evt_No": 12,
+      "Evt_Name": "BROAD JUMP",
+      "Height": "4`-6``",
+      "Gender": "GIRLS",
+      "Fees": 10
+    },
+    {
+      "Evt_No": 13,
+      "Evt_Name": "200 MTS. RUN",
+      "Height": "4`-10``",
+      "Gender": "GIRLS",
+      "Fees": 10
+    },
+    {
+      "Evt_No": 14,
+      "Evt_Name": "BROAD JUMP",
+      "Height": "4`-10``",
+      "Gender": "GIRLS",
+      "Fees": 10
+    },
+    {
+      "Evt_No": 15,
+      "Evt_Name": "GO AS YOU LIKE",
+      "Height": "ALL",
+      "Gender": "ALL",
+      "Fees": 20
+    }
+  ],
+  "candidates": [
+    {
+      "id": "cand_loc_1789995077154_m8cs",
+      "chestNo": 101,
+      "localRecordNo": 3,
+      "name": "POLO",
+      "club": "SASTHITALA AGRANI",
+      "gender": "BOYS",
+      "height": "4`-2``",
+      "feeStatus": "Paid",
+      "selectedEvents": [
+        3,
+        4,
+        7
+      ],
+      "totalFees": 30,
+      "createdAt": "2026-09-21T12:51:17.154Z",
+      "updatedAt": "2026-09-21T13:13:58.115Z",
+      "synced": true,
+      "isDirty": false,
+      "syncedAt": "2026-09-23T04:41:02.594Z"
+    },
+    {
+      "id": "cand_1790139823112_tpp9y",
+      "chestNo": 102,
+      "name": "THAKUR HEMBRAM",
+      "club": "Tentultala",
+      "gender": "CHILDRENS",
+      "height": "3`-4``",
+      "feeStatus": "Paid",
+      "selectedEvents": [
+        0,
+        2
+      ],
+      "totalFees": 20,
+      "synced": true,
+      "isDirty": false,
+      "updatedAt": "2026-09-23T05:04:22.418Z",
+      "createdAt": "2026-09-23T05:03:43.112Z",
+      "syncedAt": "2026-09-23T05:04:22.418Z"
+    },
+    {
+      "id": "test_c1",
+      "name": "RAHUL ROY",
+      "gender": "BOYS",
+      "height": "4-8",
+      "totalFees": 50,
+      "selectedEvents": [
+        1,
+        2
+      ],
+      "createdAt": "2026-09-23T05:00:00Z",
+      "updatedAt": "2026-09-23T05:34:37.984Z",
+      "synced": true,
+      "localRecordNo": 1,
+      "uploadedAt": "2026-09-23T05:34:30.301Z",
+      "club": "SASTHITALA AGRANI",
+      "chestNo": 103,
+      "isDirty": false,
+      "syncedAt": "2026-09-23T05:34:37.984Z"
+    },
+    {
+      "chestNo": 104,
+      "name": "KANTI MURMU",
+      "club": "SUBHASH NAGAR YUBA PARISHAD",
+      "gender": "BOYS",
+      "height": "4`-6``",
+      "feeStatus": "Paid",
+      "selectedEvents": [
+        5,
+        6,
+        7
+      ],
+      "totalFees": 30,
+      "synced": true,
+      "isDirty": false,
+      "updatedAt": "2026-09-25T07:18:04.771Z",
+      "id": "cand_1790320684771_ejg9b",
+      "createdAt": "2026-09-25T07:18:04.771Z",
+      "syncedAt": "2026-09-25T07:18:04.771Z"
+    },
+    {
+      "chestNo": 105,
+      "name": "KAJAL RAI",
+      "club": "SASTHITALA AGRANI",
+      "gender": "BOYS",
+      "height": "4`-6``",
+      "feeStatus": "Paid",
+      "selectedEvents": [
+        6,
+        7
+      ],
+      "totalFees": 20,
+      "synced": true,
+      "isDirty": false,
+      "updatedAt": "2026-09-25T07:18:54.974Z",
+      "id": "cand_1790320734974_ghm5k",
+      "createdAt": "2026-09-25T07:18:54.974Z",
+      "syncedAt": "2026-09-25T07:18:54.974Z"
+    },
+    {
+      "chestNo": 106,
+      "name": "GFHH",
+      "club": "AGRANI SASTHITALA SANGHA",
+      "gender": "BOYS",
+      "height": "4`-6``",
+      "feeStatus": "Paid [P]",
+      "selectedEvents": [
+        5,
+        6,
+        7
+      ],
+      "totalFees": 30,
+      "synced": true,
+      "isDirty": false,
+      "updatedAt": "2026-09-25T07:21:35.585Z",
+      "id": "cand_1790320878063_8zjts",
+      "createdAt": "2026-09-25T07:21:18.063Z",
+      "syncedAt": "2026-09-25T07:21:35.585Z"
+    },
+    {
+      "chestNo": 107,
+      "name": "GTTG",
+      "club": "INDEPENDENT / UNATTACHED",
+      "gender": "BOYS",
+      "height": "4`-6``",
+      "feeStatus": "Paid",
+      "selectedEvents": [
+        5,
+        6,
+        7,
+        8,
+        15
+      ],
+      "totalFees": 60,
+      "synced": true,
+      "isDirty": false,
+      "updatedAt": "2026-09-25T07:28:03.154Z",
+      "id": "cand_1790321283154_1v5yj",
+      "createdAt": "2026-09-25T07:28:03.154Z",
+      "syncedAt": "2026-09-25T07:28:03.154Z"
+    },
+    {
+      "chestNo": 108,
+      "name": "KOLK",
+      "club": "SASTHITALA AGRANI",
+      "gender": "BOYS",
+      "height": "4`-6``",
+      "feeStatus": "Due",
+      "selectedEvents": [
+        5,
+        6,
+        8
+      ],
+      "totalFees": 30,
+      "synced": true,
+      "isDirty": false,
+      "updatedAt": "2026-09-25T07:48:15.269Z",
+      "id": "cand_1790322495269_zsv68",
+      "createdAt": "2026-09-25T07:48:15.269Z",
+      "syncedAt": "2026-09-25T07:48:15.269Z"
+    }
+  ],
+  "clubs": [
+    {
+      "id": "club_1",
+      "name": "Agrani Sasthitala Sangha",
+      "shortCode": "ASS",
+      "logoUrl": "/icon.svg",
+      "contactPerson": "S. Chakraborty",
+      "phone": "+91 98301 23456",
+      "address": "Sasthitala Main Road, Ward 4"
+    },
+    {
+      "id": "club_2",
+      "name": "Milan Samity Athletic Club",
+      "shortCode": "MSAC",
+      "logoUrl": "https://images.unsplash.com/photo-1517649763962-0c623266ddc0?w=100&auto=format&fit=crop&q=60",
+      "contactPerson": "P. Banerjee",
+      "phone": "+91 98311 87654",
+      "address": "Station Road North, Block B"
+    },
+    {
+      "id": "club_3",
+      "name": "Tarun Sangha Sports Club",
+      "shortCode": "TSSC",
+      "logoUrl": "https://images.unsplash.com/photo-1461896836934-ffe607ba8211?w=100&auto=format&fit=crop&q=60",
+      "contactPerson": "R. Mukherjee",
+      "phone": "+91 94330 55432",
+      "address": "Vivekananda Sarani, Sector 2"
+    },
+    {
+      "id": "club_4",
+      "name": "Subhash Nagar Yuba Parishad",
+      "shortCode": "SNYP",
+      "logoUrl": "https://images.unsplash.com/photo-1546519638-68e109498ffc?w=100&auto=format&fit=crop&q=60",
+      "contactPerson": "A. Dasgupta",
+      "phone": "+91 98322 11987",
+      "address": "Subhash Pally, Ground Lane"
+    },
+    {
+      "id": "club_5",
+      "name": "Independent / Unattached",
+      "shortCode": "IND",
+      "logoUrl": "/icon.svg",
+      "contactPerson": "Individual Entry",
+      "phone": "-",
+      "address": "General Public Entry"
+    }
+  ],
+  "results": [
+    {
+      "eventNo": 3,
+      "finalists": [
+        {
+          "chestNo": 101,
+          "candidateName": "POLO",
+          "club": "SASTHITALA AGRANI",
+          "lane": 1
+        }
+      ],
+      "completed": false,
+      "id": "res_evt_3"
+    }
+  ],
+  "heats": [
+    {
+      "eventNo": 3,
+      "heatNumber": 1,
+      "participants": [
+        {
+          "chestNo": 101,
+          "candidateName": "POLO",
+          "club": "SASTHITALA AGRANI",
+          "lane": 1,
+          "heatNumber": 1,
+          "qualified": true,
+          "timeRecord": ""
+        }
+      ],
+      "status": "scheduled",
+      "id": "heat_1790138913498_2qa4"
+    }
+  ],
+  "settings": {
+    "ordinalTitle": "47th Annual Sports Meet 2027",
+    "organizer": "Sasthitala Agrani",
+    "venue": "Club Ground",
+    "dates": "26th January 2027",
+    "president": "Dr. B. K. Sengupta",
+    "secretary": "Shri Tapas Ghosh",
+    "currencySymbol": "₹",
+    "autoChestStart": 101,
+    "serverPin": "1234"
+  },
+  "clientUploads": [
+    {
+      "id": "upload_1790141670301_klzlj",
+      "club": "SASTHITALA AGRANI",
+      "clientName": "Mobile Client Tab 1",
+      "uploadedAt": "2026-09-23T05:34:30.301Z",
+      "status": "merged",
+      "candidates": [
+        {
+          "id": "test_c1",
+          "name": "RAHUL ROY",
+          "gender": "BOYS",
+          "height": "4-8",
+          "totalFees": 50,
+          "selectedEvents": [
+            1,
+            2
+          ],
+          "createdAt": "2026-09-23T05:00:00Z",
+          "updatedAt": "2026-09-23T05:00:00Z",
+          "synced": true,
+          "localRecordNo": 1,
+          "uploadedAt": "2026-09-23T05:34:30.301Z",
+          "club": "SASTHITALA AGRANI"
+        }
+      ],
+      "totalFees": 50,
+      "notes": "",
+      "mergedAt": "2026-09-23T05:34:37.984Z",
+      "reviewedAt": "2026-09-23T05:34:37.984Z"
+    }
+  ],
+  "lastUpdated": "2026-09-26T19:48:48.788Z"
+}

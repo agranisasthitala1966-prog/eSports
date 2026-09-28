@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" width="100%" height="100%">
+  <defs>
+    <radialGradient id="goldRing" cx="50%" cy="50%" r="50%" fx="50%" fy="50%">
+      <stop offset="86%" stop-color="#fab1a0" stop-opacity="0" />
+      <stop offset="90%" stop-color="#f39c12" stop-opacity="0.8" />
+      <stop offset="95%" stop-color="#f1c40f" stop-opacity="0.95" />
+      <stop offset="100%" stop-color="#e67e22" stop-opacity="0.2" />
+    </radialGradient>
+    <linearGradient id="blueSky" x1="20%" y1="10%" x2="80%" y2="90%">
+      <stop offset="0%" stop-color="#021b79" />
+      <stop offset="45%" stop-color="#0532c5" />
+      <stop offset="85%" stop-color="#0575e6" />
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="130%" height="130%">
+      <feDropShadow dx="3" dy="4" stdDeviation="4" flood-color="#001845" flood-opacity="0.6"/>
+    </filter>
+    <clipPath id="circleClip">
+      <circle cx="250" cy="250" r="215" />
+    </clipPath>
+  </defs>
+
+  <!-- Outer Glow / Ring -->
+  <circle cx="250" cy="250" r="235" fill="url(#goldRing)" />
+  <circle cx="250" cy="250" r="218" fill="none" stroke="#f39c12" stroke-width="6" opacity="0.85" />
+  
+  <!-- Main Clipped Disc -->
+  <g clip-path="url(#circleClip)">
+    <!-- Blue Base -->
+    <circle cx="250" cy="250" r="215" fill="url(#blueSky)" />
+    
+    <!-- Red Track Stripe -->
+    <path d="M 80 440 L 460 220 L 475 250 L 95 470 Z" fill="#e51010" />
+    
+    <!-- Green Turf Field -->
+    <path d="M 95 470 L 475 250 L 475 475 L 95 475 Z" fill="#44bd32" />
+    
+    <!-- Runner Silhouette (Stylized Dynamic Athlete) -->
+    <g filter="url(#shadow)" fill="#ffffff">
+      <!-- Head -->
+      <circle cx="300" cy="115" r="25" />
+      
+      <!-- Upper Body & Back Arm -->
+      <path d="M 292 145 C 275 152 260 165 245 185 C 235 200 230 215 228 232 C 227 240 232 243 238 238 C 248 226 256 210 268 190 C 274 180 282 173 293 170 C 310 166 330 178 355 185 C 380 191 405 185 418 165 C 420 161 415 157 410 160 C 390 171 368 174 348 168 C 330 162 312 144 292 145 Z" />
+      
+      <!-- Forward Torso, Chest, Ribs -->
+      <path d="M 288 175 C 275 195 266 215 264 235 C 263 246 270 252 280 248 C 298 239 313 216 325 185 C 322 178 305 170 288 175 Z" opacity="0.95" />
+      
+      <!-- Left Arm Arched Forward -->
+      <path d="M 270 170 C 240 175 210 195 195 230 C 188 245 190 255 193 258 C 196 260 200 255 204 245 C 215 218 235 200 262 190 Z" />
+      
+      <!-- Main Core Body, Hips & Trailing Leg (Stretching Back to Left) -->
+      <path d="M 268 250 C 285 240 300 250 315 265 C 335 285 348 315 358 350 C 364 375 365 400 361 415 C 359 420 354 416 352 410 C 345 375 330 338 308 308 C 295 292 280 280 262 276 C 235 286 200 310 165 335 C 130 360 95 385 85 390 C 80 392 82 386 86 382 C 120 345 170 305 220 275 C 240 262 255 255 268 250 Z" />
+      
+      <!-- Forward Striking Knee & Leg -->
+      <path d="M 295 265 C 310 270 335 260 355 240 C 375 218 388 190 382 182 C 378 178 375 182 372 190 C 362 215 345 235 328 245 C 315 253 305 258 295 265 Z" />
+    </g>
+  </g>
+</svg>

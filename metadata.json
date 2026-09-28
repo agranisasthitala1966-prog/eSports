@@ -1,0 +1,6 @@
+{
+  "name": "eSports - Sports Management System",
+  "description": "Comprehensive Sports Management System with offline-first candidate enrollment, incremental server sync, event heats, rankings, club-wise reports, and database explorer.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
