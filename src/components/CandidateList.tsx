@@ -11,7 +11,10 @@ import {
   Lock
 } from 'lucide-react';
 import { CandidateEditModal } from './CandidateEditModal';
-import { getCandidateQualifiedEvents } from '../utils/qualificationRules';
+import { 
+  getCandidateRestrictionStatus, 
+  getCandidateEditRestrictedMessage 
+} from '../utils/qualificationRules';
 
 interface CandidateListProps {
   candidates: Candidate[];
@@ -127,7 +130,7 @@ export const CandidateList: React.FC<CandidateListProps> = ({
         const matchName = (c.name || '').toLowerCase().includes(q);
         const matchClub = (c.club || '').toLowerCase().includes(q);
         const matchEvents = (c.selectedEvents || []).some(no => String(no).includes(q));
-        const matchChest = String(c.chestNo || c.localRecordNo || '').includes(q);
+        const matchChest = String(mode === 'server' ? (c.chestNo || '') : (c.chestNo || c.localRecordNo || '')).includes(q);
         if (!matchName && !matchClub && !matchEvents && !matchChest) return false;
       }
 
@@ -144,8 +147,8 @@ export const CandidateList: React.FC<CandidateListProps> = ({
           const diff = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
           if (diff !== 0) return diff;
         }
-        const numA = Number(a.localRecordNo || a.chestNo) || 0;
-        const numB = Number(b.localRecordNo || b.chestNo) || 0;
+        const numA = Number(a.chestNo && Number(a.chestNo) >= 101 ? a.chestNo : (a.localRecordNo || a.chestNo)) || 0;
+        const numB = Number(b.chestNo && Number(b.chestNo) >= 101 ? b.chestNo : (b.localRecordNo || b.chestNo)) || 0;
         if (numB !== numA) return numB - numA;
         return uniqueCandidates.indexOf(b) - uniqueCandidates.indexOf(a);
       });
@@ -307,8 +310,9 @@ export const CandidateList: React.FC<CandidateListProps> = ({
               const isConfirmingDelete = deleteConfirmId === cand.id;
               const isCancelled = cand.isCancelled || cand.status === 'cancelled';
               const isServerSaved = mode === 'server' && (Boolean(cand.chestNo) && Number(cand.chestNo) >= 101 || cand.synced);
-              const qualifiedEvts = mode === 'server' ? getCandidateQualifiedEvents(cand, heats, results) : [];
-              const isRestricted = qualifiedEvts.length > 0;
+              const restrictionStatus = getCandidateRestrictionStatus(cand, events, heats, results, mode);
+              const isRestricted = restrictionStatus.isRestricted;
+              const qualifiedEvts = restrictionStatus.restrictingEvents;
 
               return (
                 <div
@@ -329,7 +333,7 @@ export const CandidateList: React.FC<CandidateListProps> = ({
                         ? 'bg-rose-950/80 border border-rose-500/70 text-rose-300 line-through'
                         : 'bg-amber-400/15 border border-amber-400/50 text-amber-300'
                     }`}>
-                      #{cand.localRecordNo || cand.chestNo || '—'}
+                      #{mode === 'server' ? (cand.chestNo || '—') : (cand.chestNo && Number(cand.chestNo) >= 101 ? cand.chestNo : (cand.localRecordNo || cand.chestNo || '—'))}
                     </span>
                     {isCancelled && (
                       <span className="block text-[9px] font-black tracking-wider text-rose-400 uppercase mt-0.5">
@@ -345,8 +349,15 @@ export const CandidateList: React.FC<CandidateListProps> = ({
                         {cand.name}
                       </span>
                       {isRestricted && (
-                        <span className="shrink-0 px-1 py-0.2 rounded bg-amber-500/20 border border-amber-400/60 text-amber-300 text-[9px] font-bold" title={`Qualified to Final in Event #${qualifiedEvts.join(', #')} - Editing locked`}>
-                          Finalist
+                        <span 
+                          className="shrink-0 px-1 py-0.2 rounded bg-amber-500/20 border border-amber-400/60 text-amber-300 text-[9px] font-bold" 
+                          title={
+                            restrictionStatus.reason === 'hit_qualified'
+                              ? `Qualified from hit to final in Event #${restrictionStatus.qualifiedHitEvents.join(', #')} - Editing locked`
+                              : `Ranking preparation completed in Event #${restrictionStatus.rankingCompletedEvents.join(', #')} - Editing locked`
+                          }
+                        >
+                          {restrictionStatus.reason === 'hit_qualified' ? 'Finalist' : 'Ranked'}
                         </span>
                       )}
                     </div>
@@ -385,21 +396,27 @@ export const CandidateList: React.FC<CandidateListProps> = ({
                         <>
                           <button
                             type="button"
+                            disabled={isRestricted}
                             onClick={() => {
                               if (isRestricted) {
-                                alert(
-                                  `Editing Restricted!\n\nCandidate "${cand.name}" (Chest #${cand.chestNo}) has already qualified from hit to final in Event #${qualifiedEvts.join(', #')}.\n\nEditing candidate details is restricted once an athlete qualifies for finals in any enrolled event, even after hits of other events are not completed yet.`
-                                );
+                                alert(getCandidateEditRestrictedMessage(cand, restrictionStatus));
                                 return;
                               }
                               setEditingCandidate(cand);
                             }}
-                            className={`text-[10px] font-bold flex items-center gap-0.5 cursor-pointer hover:underline ${
-                              isRestricted ? 'text-amber-400' : 'text-amber-300'
+                            className={`text-[10px] font-bold flex items-center gap-0.5 ${
+                              isRestricted ? 'text-slate-500 opacity-50 cursor-not-allowed' : 'text-amber-300 cursor-pointer hover:underline'
                             }`}
+                            title={
+                              isRestricted
+                                ? (restrictionStatus.reason === 'ranking_completed'
+                                    ? `Edit disabled: Ranking list prepared for Event #${restrictionStatus.rankingCompletedEvents.join(', #')}`
+                                    : `Edit disabled: Candidate has been promoted to final in Event #${restrictionStatus.promotedFinalEvents.join(', #')}`)
+                                : `Edit ${cand.name}`
+                            }
                           >
-                            {isRestricted ? <Lock className="w-2.5 h-2.5 text-amber-400" /> : <Pencil className="w-2.5 h-2.5" />}
-                            <span>{isRestricted ? 'Locked' : 'Edit'}</span>
+                            {isRestricted ? <Lock className="w-2.5 h-2.5 text-slate-500" /> : <Pencil className="w-2.5 h-2.5" />}
+                            <span>{isRestricted ? 'Disabled' : 'Edit'}</span>
                           </button>
                           <span className="text-slate-600 text-[10px]">•</span>
 
@@ -485,28 +502,29 @@ export const CandidateList: React.FC<CandidateListProps> = ({
                         {/* Edit Button */}
                         <button
                           type="button"
+                          disabled={isRestricted}
                           onClick={() => {
                             if (isRestricted) {
-                              alert(
-                                `Editing Restricted!\n\nCandidate "${cand.name}" (Chest #${cand.chestNo}) has already qualified from hit to final in Event #${qualifiedEvts.join(', #')}.\n\nEditing candidate details is restricted once an athlete qualifies for finals in any enrolled event, even after hits of other events are not completed yet.`
-                              );
+                              alert(getCandidateEditRestrictedMessage(cand, restrictionStatus));
                               return;
                             }
                             setEditingCandidate(cand);
                           }}
-                          className={`p-2 rounded-xl border transition-all active:scale-95 shadow cursor-pointer ${
+                          className={`p-2 rounded-xl border transition-all shadow ${
                             isRestricted
-                              ? 'bg-amber-950/60 hover:bg-amber-900/60 border-amber-600/70 text-amber-300'
-                              : 'bg-[#18233c] hover:bg-[#23355b] border-blue-900/60 text-amber-300'
+                              ? 'opacity-40 cursor-not-allowed bg-slate-900 border-slate-700/60 text-slate-500'
+                              : 'bg-[#18233c] hover:bg-[#23355b] border-blue-900/60 text-amber-300 active:scale-95 cursor-pointer'
                           }`}
                           title={
                             isRestricted
-                              ? `Editing restricted: qualified to final in Event #${qualifiedEvts.join(', #')}`
+                              ? (restrictionStatus.reason === 'ranking_completed'
+                                  ? `Editing disabled: Ranking list prepared for Event #${restrictionStatus.rankingCompletedEvents.join(', #')}`
+                                  : `Editing disabled: Candidate has been promoted to final in Event #${restrictionStatus.promotedFinalEvents.join(', #')}`)
                               : `Edit ${cand.name}`
                           }
                         >
                           {isRestricted ? (
-                            <Lock className="w-3.5 h-3.5 text-amber-400 stroke-[2.2]" />
+                            <Lock className="w-3.5 h-3.5 text-slate-500 stroke-[2.2]" />
                           ) : (
                             <Pencil className="w-3.5 h-3.5 text-amber-300 stroke-[2.2]" />
                           )}

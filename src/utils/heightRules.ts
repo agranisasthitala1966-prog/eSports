@@ -1,6 +1,36 @@
 import { SportEvent } from '../types';
 
 /**
+ * Checks if a club name is one of the allowed variations:
+ * "Sasthitala Agrani", "Agrani", "SA", or "Sasthitala"
+ */
+export function isClubAllowedForEvent0(clubName?: string | null): boolean {
+  if (!clubName) return false;
+  const raw = clubName.trim();
+  if (!raw) return false;
+
+  const normalized = raw.toUpperCase().replace(/\./g, '').replace(/\s+/g, ' ');
+
+  // Direct allowed identifiers: Sasthitala Agrani, Agrani, SA, Sasthitala
+  if (
+    normalized === 'SA' ||
+    normalized === 'AGRANI' ||
+    normalized === 'SASTHITALA' ||
+    normalized === 'SASTHITALA AGRANI' ||
+    normalized === 'AGRANI SASTHITALA'
+  ) {
+    return true;
+  }
+
+  // Also support full club names like "Sasthitala Agrani Sangha" / "Agrani Sasthitala Sangha" / "Sasthitala Agrani Club"
+  if (normalized.includes('SASTHITALA') && normalized.includes('AGRANI')) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
  * Converts height format like 3`-4``, 4`-6``, 4`-10``, or ALL to inches for strict numeric comparison
  */
 export function parseHeightToInches(heightStr: string): number {
@@ -28,13 +58,24 @@ export function parseHeightToInches(heightStr: string): number {
 /**
  * Validates whether an event card is enabled for a candidate based on prompt rule:
  * "disable cards where events are not relevant means, only same and higher event cards will be enable under gender category"
- * If candidate height or gender is not set, all events are considered enabled.
+ * Rule: Always disable event no 0 thumbnail where club name not in Sasthitala Agrani or Agrani or SA or Sasthitala
  */
 export function isEventCardEnabled(
   event: SportEvent,
   candidateGender: string,
-  candidateHeight: string
+  candidateHeight: string,
+  candidateClub?: string | null
 ): { enabled: boolean; reason?: string } {
+  // Always disable event no 0 thumbnail where club name not in Sasthitala Agrani or Agrani or SA or Sasthitala
+  if (Number(event.Evt_No) === 0) {
+    if (!isClubAllowedForEvent0(candidateClub)) {
+      return {
+        enabled: false,
+        reason: 'Event #0 is restricted to Sasthitala Agrani, Agrani, SA, or Sasthitala club members only.',
+      };
+    }
+  }
+
   // If no gender or height has been specified yet, card is clickable (clicking will autofill combo)
   if (!candidateGender && !candidateHeight) {
     return { enabled: true };

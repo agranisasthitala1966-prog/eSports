@@ -1,7 +1,10 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Candidate, SportEvent, Club, EventHeat, EventResult } from '../types';
-import { parseHeightToInches } from '../utils/heightRules';
-import { getCandidateQualifiedEvents } from '../utils/qualificationRules';
+import { parseHeightToInches, isClubAllowedForEvent0 } from '../utils/heightRules';
+import { 
+  getCandidateRestrictionStatus, 
+  getCandidateEditRestrictedMessage 
+} from '../utils/qualificationRules';
 import { Pencil, Check, X, AlertTriangle, Lock } from 'lucide-react';
 
 interface CandidateEditModalProps {
@@ -27,13 +30,13 @@ export const CandidateEditModal: React.FC<CandidateEditModalProps> = ({
   onSave,
   onClose,
 }) => {
-  // Check if candidate has already qualified from hit to final in at least one event
-  const qualifiedEvents = useMemo(() => {
-    if (mode !== 'server') return [];
-    return getCandidateQualifiedEvents(candidate, heats, results);
-  }, [candidate, heats, results, mode]);
+  // Check if candidate editing is restricted
+  const restrictionStatus = useMemo(() => {
+    return getCandidateRestrictionStatus(candidate, events, heats, results, mode);
+  }, [candidate, events, heats, results, mode]);
 
-  const isEditRestricted = qualifiedEvents.length > 0;
+  const isEditRestricted = restrictionStatus.isRestricted;
+  const qualifiedEvents = restrictionStatus.restrictingEvents;
   // Normalize initial gender (B, G, C, ALL)
   const initialGender = useMemo(() => {
     const g = (candidate.gender || '').toUpperCase();
@@ -65,6 +68,16 @@ export const CandidateEditModal: React.FC<CandidateEditModalProps> = ({
   // Multi-select events modal (Design matching 2nd attachment with golden border)
   const [showSelectEventsModal, setShowSelectEventsModal] = useState(false);
   const [tempSelectedEvents, setTempSelectedEvents] = useState<number[]>([]);
+
+  // Auto-remove Event #0 if candidate club is not in Sasthitala Agrani or Agrani or SA or Sasthitala
+  useEffect(() => {
+    if (!isClubAllowedForEvent0(editClub)) {
+      if (editSelectedEvents.includes(0)) {
+        setEditSelectedEvents(prev => prev.filter(n => n !== 0));
+      }
+      setTempSelectedEvents(prev => prev.filter(n => n !== 0));
+    }
+  }, [editClub, editSelectedEvents]);
 
   // Available heights sorted numerically in inches
   const availableHeights = useMemo(() => {
@@ -158,6 +171,11 @@ export const CandidateEditModal: React.FC<CandidateEditModalProps> = ({
   // Toggle selection in event multi-select modal:
   // Prevents multiple gendered events (only higher events under same gender + event 15 allowed)
   const toggleTempEvent = (evtNo: number) => {
+    // Rule: Always disable event no 0 where club name not in Sasthitala Agrani or Agrani or SA or Sasthitala
+    if (evtNo === 0 && !isClubAllowedForEvent0(editClub)) {
+      return;
+    }
+
     setTempSelectedEvents(prev => {
       if (prev.includes(evtNo)) {
         return prev.filter(no => no !== evtNo);
@@ -209,7 +227,7 @@ export const CandidateEditModal: React.FC<CandidateEditModalProps> = ({
 
     // Duplicate check
     const duplicate = allCandidates.find(
-      c => c.id !== candidate.id && (c.name || '').trim().toUpperCase() === trimmedName
+      c => c.id !== candidate.id && (!candidate.chestNo || Number(c.chestNo) !== Number(candidate.chestNo)) && (c.name || '').trim().toUpperCase() === trimmedName
     );
     if (duplicate) {
       setEditErrorMsg(`Duplicate Candidate Name! "${trimmedName}" is already registered (${duplicate.club || 'Independent'}). Duplicate names are not allowed.`);
@@ -217,12 +235,18 @@ export const CandidateEditModal: React.FC<CandidateEditModalProps> = ({
     }
 
     if (isEditRestricted) {
-      setEditErrorMsg(`Editing Restricted: Candidate "${candidate.name}" (Chest #${candidate.chestNo}) has already qualified from hit to final in Event #${qualifiedEvents.join(', #')}. Editing candidate details is restricted.`);
+      setEditErrorMsg(getCandidateEditRestrictedMessage(candidate, restrictionStatus));
       return;
     }
 
     if (editSelectedEvents.length === 0) {
       setEditErrorMsg('Please tap to select at least one event from the multi-select box.');
+      return;
+    }
+
+    const targetClub = editClub.trim().toUpperCase() || candidate.club;
+    if (editSelectedEvents.includes(0) && !isClubAllowedForEvent0(targetClub)) {
+      setEditErrorMsg('Event #0 is restricted to Sasthitala Agrani, Agrani, SA, or Sasthitala club members only.');
       return;
     }
 
@@ -244,8 +268,8 @@ export const CandidateEditModal: React.FC<CandidateEditModalProps> = ({
         selectedEvents: editSelectedEvents,
         totalFees,
         updatedAt: new Date().toISOString(),
-        isDirty: true,
-        synced: false,
+        isDirty: mode !== 'server',
+        synced: mode === 'server',
       };
 
       await onSave(updated);
@@ -266,7 +290,7 @@ export const CandidateEditModal: React.FC<CandidateEditModalProps> = ({
           {/* Header Title with Golden Text */}
           <div className="flex items-center justify-between pb-1">
             <h2 className="text-yellow-400 font-bold text-lg sm:text-xl">
-              Edit Candidate ({mode === 'client' ? `#${candidate.localRecordNo || candidate.chestNo || 1}` : `Chest #${candidate.chestNo || candidate.localRecordNo || 1}`})
+              Edit Candidate ({mode === 'server' ? `Chest #${candidate.chestNo || '—'}` : (candidate.chestNo && Number(candidate.chestNo) >= 101 ? `Chest #${candidate.chestNo}` : `#${candidate.localRecordNo || candidate.chestNo || 1}`)})
             </h2>
             <button
               type="button"
@@ -276,6 +300,19 @@ export const CandidateEditModal: React.FC<CandidateEditModalProps> = ({
               <X className="w-5 h-5 stroke-[2.5]" />
             </button>
           </div>
+
+          {/* Promoted to Final / Restricted Banner */}
+          {isEditRestricted && (
+            <div className="p-3 rounded-xl bg-amber-950/70 border border-amber-500/70 text-amber-200 text-xs flex items-start gap-2.5">
+              <Lock className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+              <div>
+                <div className="font-bold text-amber-300">Editing Details Disabled</div>
+                <div className="text-[11px] mt-0.5 text-amber-200/90 whitespace-pre-line">
+                  {getCandidateEditRestrictedMessage(candidate, restrictionStatus)}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Form Fields matching 1st Attachment with Floating Labels and Yellow Accents */}
           <div className="space-y-3.5">
@@ -413,7 +450,9 @@ export const CandidateEditModal: React.FC<CandidateEditModalProps> = ({
               <div>
                 <p className="font-extrabold text-amber-300 uppercase tracking-wide">Editing Restricted</p>
                 <p className="text-[11px] font-medium text-amber-200/90 mt-0.5">
-                  Candidate has already qualified from hit to final in Event #{qualifiedEvents.join(', #')}. Editing candidate details is restricted even if other enrolled events are not completed yet.
+                  {restrictionStatus.reason === 'hit_qualified'
+                    ? `Candidate has already qualified from hit to final in Event #${restrictionStatus.qualifiedHitEvents.join(', #')}. Editing candidate details is restricted once an athlete qualifies for finals in any hit-based event.`
+                    : `Official ranking list preparation has already been completed for Event #${restrictionStatus.rankingCompletedEvents.join(', #')}. Editing candidate details is restricted once ranking has been prepared.`}
                 </p>
               </div>
             </div>
@@ -434,7 +473,7 @@ export const CandidateEditModal: React.FC<CandidateEditModalProps> = ({
               disabled={isSaving || isEditRestricted || Boolean(editErrorMsg)}
               className="flex-1 py-3 rounded-full bg-yellow-400 hover:bg-yellow-300 text-slate-950 font-black text-sm shadow-md active:scale-98 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {isSaving ? 'Saving...' : 'Save Changes'}
+              {isEditRestricted ? 'Editing Disabled' : isSaving ? 'Saving...' : 'Save Changes'}
             </button>
           </div>
 
@@ -476,31 +515,39 @@ export const CandidateEditModal: React.FC<CandidateEditModalProps> = ({
               ) : (
                 eligibleEditEvents.map((evt) => {
                   const isSelected = tempSelectedEvents.includes(evt.Evt_No);
+                  const isEvt0Disabled = Number(evt.Evt_No) === 0 && !isClubAllowedForEvent0(editClub);
+                  const isDisabled = isEvt0Disabled;
                   return (
                     <div
                       key={evt.Evt_No}
-                      onClick={() => toggleTempEvent(evt.Evt_No)}
-                      className={`rounded-2xl p-3 flex items-center gap-3 cursor-pointer transition-all ${
-                        isSelected
-                          ? 'border-2 border-yellow-400 bg-[#0e172a] shadow-md shadow-yellow-500/10'
-                          : 'border border-slate-700 bg-[#0b1222] hover:border-slate-500'
+                      onClick={() => !isDisabled && toggleTempEvent(evt.Evt_No)}
+                      className={`rounded-2xl p-3 flex items-center gap-3 transition-all ${
+                        isDisabled
+                          ? 'opacity-35 bg-slate-900/60 border border-slate-800 cursor-not-allowed pointer-events-none select-none'
+                          : isSelected
+                          ? 'border-2 border-yellow-400 bg-[#0e172a] shadow-md shadow-yellow-500/10 cursor-pointer'
+                          : 'border border-slate-700 bg-[#0b1222] hover:border-slate-500 cursor-pointer'
                       }`}
                     >
                       {/* Checkbox Icon */}
                       <div
                         className={`w-6 h-6 rounded flex items-center justify-center shrink-0 transition-colors ${
-                          isSelected
+                          isDisabled
+                            ? 'border-2 border-slate-700 bg-transparent'
+                            : isSelected
                             ? 'bg-yellow-400 text-slate-950 font-black'
                             : 'border-2 border-slate-500 bg-transparent'
                         }`}
                       >
-                        {isSelected && <Check className="w-4 h-4 stroke-[3]" />}
+                        {isSelected && !isDisabled && <Check className="w-4 h-4 stroke-[3]" />}
                       </div>
 
                       {/* Event Number Badge */}
                       <div
                         className={`w-7 h-7 rounded flex items-center justify-center font-black text-xs shrink-0 ${
-                          isSelected
+                          isDisabled
+                            ? 'bg-slate-800 text-slate-500'
+                            : isSelected
                             ? 'bg-amber-400 text-slate-950'
                             : 'bg-[#1a2b4c] text-blue-200'
                         }`}
@@ -510,8 +557,15 @@ export const CandidateEditModal: React.FC<CandidateEditModalProps> = ({
 
                       {/* Event Details */}
                       <div className="flex-1 min-w-0">
-                        <div className="font-extrabold text-white text-xs sm:text-sm uppercase tracking-wide truncate">
-                          {evt.Evt_Name}
+                        <div className="flex items-center gap-2">
+                          <span className={`font-extrabold text-xs sm:text-sm uppercase tracking-wide truncate ${isDisabled ? 'text-slate-500' : 'text-white'}`}>
+                            {evt.Evt_Name}
+                          </span>
+                          {isEvt0Disabled && (
+                            <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/40">
+                              Sasthitala Agrani Only
+                            </span>
+                          )}
                         </div>
                         <div className="text-[11px] text-slate-400 font-semibold truncate">
                           {evt.Gender} • {evt.Height} • ₹{Number(evt.Fees || 10).toFixed(2)}

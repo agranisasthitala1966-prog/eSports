@@ -1,0 +1,50 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Test connection doc
+    match /test/{docId} {
+      allow read, write: if true;
+    }
+
+    // Candidates: Global official candidate register
+    match /candidates/{candidateId} {
+      allow read, write: if true;
+    }
+
+    // Client Uploads: Staging area for client portal enrollments
+    match /uploads/{uploadId} {
+      allow read, write: if true;
+    }
+
+    // Heats: Lane arrangements and heats
+    match /heats/{heatId} {
+      allow read, write: if true;
+    }
+
+    // Results: Event timings, scores, and rankings
+    match /results/{resultId} {
+      allow read, write: if true;
+    }
+
+    // Events: Meet events definition
+    match /events/{eventId} {
+      allow read, write: if true;
+    }
+
+    // Clubs: Participating clubs
+    match /clubs/{clubId} {
+      allow read, write: if true;
+    }
+
+    // Settings: Global meet parameters
+    match /settings/{settingsId} {
+      allow read, write: if true;
+    }
+
+    // Server Session: Single-device active server session
+    match /serverSession/{docId} {
+      allow read, write: if true;
+    }
+  }
+}

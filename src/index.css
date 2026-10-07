@@ -2,24 +2,41 @@
 
 @media print {
   @page {
-    size: A4 portrait;
-    margin: 12mm 10mm;
+    size: auto;
+    margin: 0;
   }
 
-  body {
-    background: white !important;
-    color: black !important;
+  html, body {
+    background: #ffffff !important;
+    color: #000000 !important;
+    margin: 0 !important;
+    padding: 0 !important;
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;
+  }
+
+  /* Completely hide standard web page shell, navigation, footers, and app wrappers when printing */
+  nav,
+  header,
+  footer,
+  aside,
+  .print-hidden,
+  .print\:hidden,
+  .print-hidden-element {
+    display: none !important;
+  }
+
+  main {
+    max-width: 100% !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #ffffff !important;
   }
 
   /* Force table borders to remain sharp in print */
   table {
     border-collapse: collapse !important;
-  }
-
-  th, td {
-    border-color: #000000 !important;
   }
 
   .print-page-break {
@@ -28,8 +45,8 @@
   }
 
   .avoid-break {
-    page-break-inside: avoid;
-    break-inside: avoid;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
   }
 }
 

@@ -31,10 +31,25 @@ export const clientStorage = {
         unique.push(c);
       });
 
-      // Ensure that in client storage, provisional chest numbers / record numbers are strictly unique and never duplicate
+      // Ensure that in client storage, chest numbers and record numbers are strictly unique and never duplicate
       const usedRecordNos = new Set<number>();
+      const usedServerChests = new Set<number>();
       let needsResave = false;
-      const sanitized = unique.map((c, idx) => {
+      const deduplicated: Candidate[] = [];
+
+      unique.forEach((c) => {
+        const sChest = Number(c.chestNo);
+        if (sChest >= 101 && usedServerChests.has(sChest)) {
+          needsResave = true;
+          return;
+        }
+        if (sChest >= 101) {
+          usedServerChests.add(sChest);
+        }
+        deduplicated.push(c);
+      });
+
+      const sanitized = deduplicated.map((c, idx) => {
         // If official server chest number is assigned (>= 101), keep it
         const isServerChest = Number(c.chestNo) >= 101;
         let recNo = Number(c.localRecordNo);
@@ -152,14 +167,42 @@ export const clientStorage = {
 
   updateCandidate(id: string, updates: Partial<Candidate>): Candidate {
     const list = this.getCandidates();
-    const index = list.findIndex(c => c.id === id);
+    let index = list.findIndex(c => c.id === id);
     if (index === -1) {
-      throw new Error('Candidate not found in local storage');
+      index = list.findIndex(c =>
+        (updates.chestNo && Number(c.chestNo) === Number(updates.chestNo)) ||
+        (updates.localRecordNo && Number(c.localRecordNo) === Number(updates.localRecordNo)) ||
+        (c.name && updates.name && c.name.trim().toUpperCase() === updates.name.trim().toUpperCase())
+      );
+    }
+    if (index === -1) {
+      const now = new Date().toISOString();
+      const rec = Number(updates.localRecordNo) || Number(updates.chestNo) || (list.length + 1);
+      const newCand: Candidate = {
+        name: updates.name || '',
+        club: updates.club || '',
+        gender: updates.gender || 'ALL',
+        height: updates.height || 'ALL',
+        feeStatus: updates.feeStatus || 'Due',
+        selectedEvents: updates.selectedEvents || [],
+        totalFees: updates.totalFees || 0,
+        ...updates,
+        id,
+        localRecordNo: rec,
+        chestNo: Number(updates.chestNo) || rec,
+        createdAt: updates.createdAt || now,
+        updatedAt: now,
+        synced: false,
+        isDirty: true,
+      };
+      list.push(newCand);
+      this.saveCandidates(list);
+      return newCand;
     }
 
     if (updates.name) {
       const updatedName = updates.name.trim().toUpperCase();
-      const duplicate = list.find(c => c.id !== id && (c.name || '').trim().toUpperCase() === updatedName);
+      const duplicate = list.find(c => c.id !== id && (!updates.chestNo || Number(c.chestNo) !== Number(updates.chestNo)) && (c.name || '').trim().toUpperCase() === updatedName);
       if (duplicate) {
         throw new Error(`Candidate "${updatedName}" is already registered! Duplicate candidate names are not allowed.`);
       }
@@ -167,9 +210,9 @@ export const clientStorage = {
 
     const now = new Date().toISOString();
     const existing = list[index];
-    const isServerChest = Number(existing.chestNo) >= 101;
+    const isServerChest = (Number(existing.chestNo) >= 101) || (Number(updates.chestNo) >= 101);
     const recNo = existing.localRecordNo || Number(updates.localRecordNo) || (index + 1);
-    const chestNo = isServerChest ? existing.chestNo : recNo;
+    const chestNo = Number(updates.chestNo) >= 101 ? Number(updates.chestNo) : (isServerChest ? existing.chestNo : recNo);
 
     const updated: Candidate = {
       ...existing,
@@ -344,6 +387,12 @@ export const clientStorage = {
   setCachedSettings(settings: SportsMeetSettings): void {
     try {
       localStorage.setItem(CACHED_SETTINGS_KEY, JSON.stringify(settings));
+    } catch {}
+  },
+
+  clearCandidates(): void {
+    try {
+      localStorage.removeItem(CANDIDATES_KEY);
     } catch {}
   },
 };

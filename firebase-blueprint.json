@@ -1,0 +1,142 @@
+{
+  "entities": {
+    "Candidate": {
+      "title": "Candidate",
+      "description": "Athlete registered in the sports meet",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "chestNo": { "type": "number" },
+        "localRecordNo": { "type": "number" },
+        "name": { "type": "string" },
+        "club": { "type": "string" },
+        "gender": { "type": "string" },
+        "height": { "type": "string" },
+        "feeStatus": { "type": "string" },
+        "totalFees": { "type": "number" }
+      },
+      "required": ["id", "name"]
+    },
+    "ClientUpload": {
+      "title": "ClientUpload",
+      "description": "Upload batch submitted by club client portal awaiting server review",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "club": { "type": "string" },
+        "clientName": { "type": "string" },
+        "uploadedAt": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "merged", "rejected"] },
+        "totalFees": { "type": "number" },
+        "notes": { "type": "string" }
+      },
+      "required": ["id", "club", "status", "uploadedAt"]
+    },
+    "EventHeat": {
+      "title": "EventHeat",
+      "description": "Heat or final lane assignment for an athletic event",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "eventNo": { "type": "number" },
+        "eventName": { "type": "string" },
+        "heatNo": { "type": "number" },
+        "isFinal": { "type": "boolean" },
+        "status": { "type": "string" }
+      },
+      "required": ["id", "eventNo"]
+    },
+    "EventResult": {
+      "title": "EventResult",
+      "description": "Official result or ranking for an event heat/final",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "eventNo": { "type": "number" },
+        "candidateId": { "type": "string" },
+        "rank": { "type": "number" }
+      },
+      "required": ["id", "eventNo"]
+    },
+    "SportEvent": {
+      "title": "SportEvent",
+      "description": "Sports meet event definition",
+      "type": "object",
+      "properties": {
+        "Evt_No": { "type": "number" },
+        "Evt_Des": { "type": "string" },
+        "Gnd": { "type": "string" },
+        "Max_Ht": { "type": "string" }
+      },
+      "required": ["Evt_No", "Evt_Des"]
+    },
+    "Club": {
+      "title": "Club",
+      "description": "Registered sports club or institution",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" }
+      },
+      "required": ["id", "name"]
+    },
+    "SportsMeetSettings": {
+      "title": "SportsMeetSettings",
+      "description": "Global sports meet configuration and settings",
+      "type": "object",
+      "properties": {
+        "ordinalTitle": { "type": "string" },
+        "serverPin": { "type": "string" },
+        "lastUpdated": { "type": "string" }
+      },
+      "required": ["ordinalTitle"]
+    },
+    "ServerSession": {
+      "title": "ServerSession",
+      "description": "Active server session lock for multi-device login restriction",
+      "type": "object",
+      "properties": {
+        "sessionId": { "type": "string" },
+        "deviceId": { "type": "string" },
+        "deviceLabel": { "type": "string" },
+        "loggedInAt": { "type": "string" },
+        "lastActiveAt": { "type": "string" }
+      },
+      "required": ["sessionId", "deviceId"]
+    }
+  },
+  "firestore": {
+    "/candidates/{candidateId}": {
+      "schema": { "$ref": "#/entities/Candidate" },
+      "description": "Official server enrolled candidates collection"
+    },
+    "/uploads/{uploadId}": {
+      "schema": { "$ref": "#/entities/ClientUpload" },
+      "description": "Pending and reviewed client upload batches"
+    },
+    "/heats/{heatId}": {
+      "schema": { "$ref": "#/entities/EventHeat" },
+      "description": "Event heats and final lane arrangements"
+    },
+    "/results/{resultId}": {
+      "schema": { "$ref": "#/entities/EventResult" },
+      "description": "Event performance timings and official rankings"
+    },
+    "/events/{eventId}": {
+      "schema": { "$ref": "#/entities/SportEvent" },
+      "description": "Meet sports events"
+    },
+    "/clubs/{clubId}": {
+      "schema": { "$ref": "#/entities/Club" },
+      "description": "Participating sports clubs"
+    },
+    "/settings/{settingsId}": {
+      "schema": { "$ref": "#/entities/SportsMeetSettings" },
+      "description": "Global sports meet configuration"
+    },
+    "/serverSession/active": {
+      "schema": { "$ref": "#/entities/ServerSession" },
+      "description": "Global active server session lock"
+    }
+  }
+}

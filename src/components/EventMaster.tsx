@@ -18,6 +18,7 @@ interface EventMasterProps {
   onSaveEvent: (event: SportEvent) => Promise<void>;
   onDeleteEvent: (evtNo: number) => Promise<void>;
   onResetEvents: () => Promise<void>;
+  isEmbedded?: boolean;
 }
 
 export const EventMaster: React.FC<EventMasterProps> = ({
@@ -26,6 +27,7 @@ export const EventMaster: React.FC<EventMasterProps> = ({
   onSaveEvent,
   onDeleteEvent,
   onResetEvents,
+  isEmbedded = false,
 }) => {
   const [editingEvt, setEditingEvt] = useState<SportEvent | null>(null);
   const [isNew, setIsNew] = useState(false);
@@ -41,13 +43,19 @@ export const EventMaster: React.FC<EventMasterProps> = ({
       Height: '4`-2``',
       Gender: 'BOYS',
       Fees: 10.0,
+      requiredHit: true,
+      requiredFinal: true,
     });
     setIsNew(true);
     setErrorMsg(null);
   };
 
   const handleEdit = (evt: SportEvent) => {
-    setEditingEvt({ ...evt });
+    setEditingEvt({
+      ...evt,
+      requiredHit: evt.requiredHit !== false,
+      requiredFinal: evt.requiredFinal !== false,
+    });
     setIsNew(false);
     setErrorMsg(null);
   };
@@ -86,46 +94,77 @@ export const EventMaster: React.FC<EventMasterProps> = ({
   };
 
   return (
-    <div className="max-w-6xl mx-auto space-y-6">
+    <div className={isEmbedded ? "space-y-4" : "max-w-6xl mx-auto space-y-6"}>
       
       {/* Header */}
-      <div className="bg-white rounded-2xl p-5 sm:p-6 border border-slate-200 shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-blue-600 mb-1">
-            <Calendar className="w-4 h-4" />
-            <span>Server Operations</span>
+      {!isEmbedded ? (
+        <div className="bg-white rounded-2xl p-5 sm:p-6 border border-slate-200 shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-blue-600 mb-1">
+              <Calendar className="w-4 h-4" />
+              <span>Server Operations</span>
+            </div>
+            <h1 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight">
+              Event Master List Registry
+            </h1>
+            <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
+              Configure athletic meet disciplines, standard height brackets, categories, and entry fees.
+            </p>
           </div>
-          <h1 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight">
-            Event Master List Registry
-          </h1>
-          <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
-            Configure athletic meet disciplines, standard height brackets, categories, and entry fees.
-          </p>
-        </div>
 
-        <div className="flex items-center gap-2 w-full sm:w-auto">
-          <button
-            onClick={startAddNew}
-            className="flex-1 sm:flex-none px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs sm:text-sm font-bold flex items-center justify-center gap-2 transition-all shadow-xs"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Add New Event</span>
-          </button>
-          
-          <button
-            onClick={async () => {
-              if (window.confirm('Reset all events back to the default 16 standard meet events?')) {
-                await onResetEvents();
-              }
-            }}
-            className="px-3.5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs sm:text-sm font-semibold flex items-center gap-1.5 transition-colors"
-            title="Reset to 16 standard events"
-          >
-            <RotateCcw className="w-4 h-4" />
-            <span className="hidden sm:inline">Reset Defaults</span>
-          </button>
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <button
+              onClick={startAddNew}
+              className="flex-1 sm:flex-none px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs sm:text-sm font-bold flex items-center justify-center gap-2 transition-all shadow-xs cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Add New Event</span>
+            </button>
+            
+            <button
+              onClick={async () => {
+                if (window.confirm('Reset all events back to the default 16 standard meet events?')) {
+                  await onResetEvents();
+                }
+              }}
+              className="px-3.5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs sm:text-sm font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+              title="Reset to 16 standard events"
+            >
+              <RotateCcw className="w-4 h-4" />
+              <span className="hidden sm:inline">Reset Defaults</span>
+            </button>
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-50 p-4 rounded-xl border border-slate-200">
+          <p className="text-xs text-slate-600 font-medium">
+            Configure athletic meet disciplines, height brackets, gender categories, and entry fees.
+          </p>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={startAddNew}
+              className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 active:scale-98 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Add New Event</span>
+            </button>
+            <button
+              type="button"
+              onClick={async () => {
+                if (window.confirm('Reset all events back to the default 16 standard meet events?')) {
+                  await onResetEvents();
+                }
+              }}
+              className="px-3 py-2 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+              title="Reset to 16 standard events"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Reset Defaults</span>
+            </button>
+          </div>
+        </div>
+      )}
 
       {successMsg && (
         <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm font-medium flex items-center gap-2">
@@ -217,7 +256,29 @@ export const EventMaster: React.FC<EventMasterProps> = ({
               />
             </div>
 
-            <div className="lg:col-span-4 flex items-center justify-end gap-2 pt-2">
+            <div className="flex items-center gap-6 pt-1 sm:pt-6">
+              <label className="inline-flex items-center gap-2 cursor-pointer text-xs font-bold text-slate-800 select-none">
+                <input
+                  type="checkbox"
+                  checked={editingEvt.requiredHit !== false}
+                  onChange={(e) => setEditingEvt({ ...editingEvt, requiredHit: e.target.checked })}
+                  className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 cursor-pointer"
+                />
+                <span>Required Hit</span>
+              </label>
+
+              <label className="inline-flex items-center gap-2 cursor-pointer text-xs font-bold text-slate-800 select-none">
+                <input
+                  type="checkbox"
+                  checked={editingEvt.requiredFinal !== false}
+                  onChange={(e) => setEditingEvt({ ...editingEvt, requiredFinal: e.target.checked })}
+                  className="w-4 h-4 rounded text-purple-600 focus:ring-purple-500 cursor-pointer"
+                />
+                <span>Final</span>
+              </label>
+            </div>
+
+            <div className="lg:col-span-3 flex items-center justify-end gap-2 pt-2">
               <button
                 type="button"
                 onClick={handleCancel}
@@ -248,6 +309,8 @@ export const EventMaster: React.FC<EventMasterProps> = ({
                 <th className="py-3.5 px-4">Height</th>
                 <th className="py-3.5 px-4">Gender</th>
                 <th className="py-3.5 px-4 text-right">Fees</th>
+                <th className="py-3.5 px-4 text-center w-28">Required Hit</th>
+                <th className="py-3.5 px-4 text-center w-24">Final</th>
                 <th className="py-3.5 px-4 text-right">Actions</th>
               </tr>
             </thead>
@@ -288,6 +351,36 @@ export const EventMaster: React.FC<EventMasterProps> = ({
 
                   <td className="py-3 px-4 text-right font-bold text-slate-900 font-mono">
                     {settings.currencySymbol || '₹'}{Number(evt.Fees).toFixed(2)}
+                  </td>
+
+                  <td className="py-3 px-4 text-center">
+                    <label className="inline-flex items-center justify-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={evt.requiredHit !== false}
+                        onChange={async (e) => {
+                          const updated = { ...evt, requiredHit: e.target.checked };
+                          await onSaveEvent(updated);
+                        }}
+                        className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 cursor-pointer"
+                        title={evt.requiredHit !== false ? 'Required Hit: Enabled' : 'Required Hit: Disabled (Direct Final)'}
+                      />
+                    </label>
+                  </td>
+
+                  <td className="py-3 px-4 text-center">
+                    <label className="inline-flex items-center justify-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={evt.requiredFinal !== false}
+                        onChange={async (e) => {
+                          const updated = { ...evt, requiredFinal: e.target.checked };
+                          await onSaveEvent(updated);
+                        }}
+                        className="w-4 h-4 rounded text-purple-600 focus:ring-purple-500 cursor-pointer"
+                        title={evt.requiredFinal !== false ? 'Final: Enabled' : 'Final: Disabled'}
+                      />
+                    </label>
                   </td>
 
                   <td className="py-3 px-4 text-right">

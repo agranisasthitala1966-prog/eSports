@@ -5,13 +5,12 @@ import {
   Candidate, 
   SportsMeetSettings 
 } from '../types';
-import { isEventCardEnabled, parseHeightToInches } from '../utils/heightRules';
+import { isEventCardEnabled, parseHeightToInches, isClubAllowedForEvent0 } from '../utils/heightRules';
 import { 
   UserPlus, 
   AlertTriangle,
   RotateCcw,
   CheckCircle2,
-  QrCode,
   Copy,
   Check,
   X,
@@ -30,7 +29,11 @@ import {
   XCircle,
 } from 'lucide-react';
 import { EventHeat, EventResult } from '../types';
-import { getCandidateQualifiedEvents } from '../utils/qualificationRules';
+import { 
+  getCandidateRestrictionStatus, 
+  getCandidateEditRestrictedMessage, 
+  getCandidateQualifiedEvents 
+} from '../utils/qualificationRules';
 
 interface CandidateEnrollProps {
   events: SportEvent[];
@@ -85,6 +88,20 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
   const [keypadInput, setKeypadInput] = useState('');
   const [feedbackMsg, setFeedbackMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Effective club name for active enrollment / edit form:
+  // In client mode it's clientClubName, in server mode it's clubName (or candidateToEdit club)
+  const effectiveClubForEvent0 = useMemo(() => {
+    if (mode === 'client') return clientClubName;
+    return (clubName || candidateToEdit?.club || '').trim();
+  }, [mode, clientClubName, clubName, candidateToEdit]);
+
+  // Always disable and deselect Event #0 if current club is not in Sasthitala Agrani or Agrani or SA or Sasthitala
+  useEffect(() => {
+    if (!isClubAllowedForEvent0(effectiveClubForEvent0) && selectedEvents.includes(0)) {
+      setSelectedEvents(prev => prev.filter(n => n !== 0));
+    }
+  }, [effectiveClubForEvent0, selectedEvents]);
 
   // Keypad focus tracker and auto-scroll anchor ref
   const isKeypadFocusedRef = React.useRef(false);
@@ -161,9 +178,6 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
   const [tempSelectedEvents, setTempSelectedEvents] = useState<number[]>([]);
 
   const [showSummaryPopup, setShowSummaryPopup] = useState(false);
-  const [showQrModal, setShowQrModal] = useState(false);
-  const [qrTargetMode, setQrTargetMode] = useState<'desktop' | 'dev' | 'shared'>('desktop');
-  const [copiedLink, setCopiedLink] = useState(false);
 
   // Save client club name to localStorage on change
   const handleClientClubChange = (val: string) => {
@@ -257,6 +271,15 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
       return;
     }
 
+    // Rule: Always disable event no 0 thumbnail where club name not in Sasthitala Agrani or Agrani or SA or Sasthitala
+    if (Number(evt.Evt_No) === 0 && !isClubAllowedForEvent0(effectiveClubForEvent0)) {
+      setFeedbackMsg({
+        type: 'error',
+        text: 'Event #0 is restricted to Sasthitala Agrani, Agrani, SA, or Sasthitala club members only.',
+      });
+      return;
+    }
+
     // Autofill gender & height if not set
     let activeGender = gender;
     let activeHeight = height;
@@ -272,7 +295,7 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
     }
 
     // Eligibility check
-    const check = isEventCardEnabled(evt, activeGender, activeHeight);
+    const check = isEventCardEnabled(evt, activeGender, activeHeight, effectiveClubForEvent0);
     if (!check.enabled) {
       setFeedbackMsg({
         type: 'error',
@@ -325,6 +348,14 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
 
       if (isNaN(Number(tok))) continue;
       const num = Number(tok);
+
+      // Rule: Always disable event no 0 where club name not in Sasthitala Agrani or Agrani or SA or Sasthitala
+      if (num === 0 && !isClubAllowedForEvent0(effectiveClubForEvent0)) {
+        rejectedMsg = `Event #0 is not allowed! Restricted to Sasthitala Agrani / Agrani / SA / Sasthitala only.`;
+        shouldPruneLastToken = isLastToken;
+        continue;
+      }
+
       const found = events.find(e => Number(e.Evt_No) === num);
 
       if (!firstValidEvt) {
@@ -440,7 +471,7 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
     // Ensure Duplicate candidate name is not allowed for new entry or for edit both
     const normalizedName = trimmedName.toUpperCase();
     const existingDuplicate = candidates.find(c => {
-      if (candidateToEdit && c.id === candidateToEdit.id) return false;
+      if (candidateToEdit && (c.id === candidateToEdit.id || (candidateToEdit.chestNo && Number(c.chestNo) === Number(candidateToEdit.chestNo)))) return false;
       return (c.name || '').trim().toUpperCase() === normalizedName;
     });
 
@@ -466,6 +497,15 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
         ? (candidateToEdit ? (candidateToEdit.localRecordNo || candidateToEdit.chestNo || clientProvisionalChestNo) : clientProvisionalChestNo)
         : undefined;
       const targetClub = (mode === 'client' ? clientClubName : (clubName || clientClubName)).trim() || 'Independent';
+
+      if (selectedEvents.includes(0) && !isClubAllowedForEvent0(targetClub)) {
+        setFeedbackMsg({
+          type: 'error',
+          text: 'Event #0 is restricted to Sasthitala Agrani, Agrani, SA, or Sasthitala club members only.',
+        });
+        setIsSubmitting(false);
+        return;
+      }
 
       await onSaveCandidate({
         id: candidateToEdit?.id,
@@ -642,7 +682,7 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
         const matchName = (c.name || '').toLowerCase().includes(q);
         const matchClub = (c.club || '').toLowerCase().includes(q);
         const matchEvents = (c.selectedEvents || []).some(no => String(no).includes(q));
-        const matchChest = String(c.chestNo || c.localRecordNo || '').includes(q);
+        const matchChest = String(mode === 'server' ? (c.chestNo || '') : (c.chestNo || c.localRecordNo || '')).includes(q);
         if (!matchName && !matchClub && !matchEvents && !matchChest) return false;
       }
       return true;
@@ -655,8 +695,8 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
           const diff = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
           if (diff !== 0) return diff;
         }
-        const numA = Number(a.localRecordNo || a.chestNo) || 0;
-        const numB = Number(b.localRecordNo || b.chestNo) || 0;
+        const numA = Number(a.chestNo && Number(a.chestNo) >= 101 ? a.chestNo : (a.localRecordNo || a.chestNo)) || 0;
+        const numB = Number(b.chestNo && Number(b.chestNo) >= 101 ? b.chestNo : (b.localRecordNo || b.chestNo)) || 0;
         if (numB !== numA) return numB - numA;
         return targetClubCandidates.indexOf(b) - targetClubCandidates.indexOf(a);
       });
@@ -674,11 +714,9 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
     }
 
     if (mode === 'server') {
-      const qualifiedEvts = getCandidateQualifiedEvents(cand, heats, results);
-      if (qualifiedEvts.length > 0) {
-        alert(
-          `Editing Restricted!\n\nCandidate "${cand.name}" (Chest #${cand.chestNo}) has already qualified from hit to final in Event #${qualifiedEvts.join(', #')}.\n\nEditing candidate details is restricted once an athlete qualifies for finals in any enrolled event, even after hits of other events are not completed yet.`
-        );
+      const restrictionStatus = getCandidateRestrictionStatus(cand, events, heats, results, mode);
+      if (restrictionStatus.isRestricted) {
+        alert(getCandidateEditRestrictedMessage(cand, restrictionStatus));
         return;
       }
     }
@@ -704,6 +742,18 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
     setEditSelectedEvents(cand.selectedEvents ? [...cand.selectedEvents] : []);
     setEditErrorMsg(null);
   };
+
+  // Auto-remove Event #0 in Candidate Edit Modal if edited club is not allowed
+  useEffect(() => {
+    if (editingCandidateItem && !isClubAllowedForEvent0(editClub)) {
+      if (editSelectedEvents.includes(0)) {
+        setEditSelectedEvents(prev => prev.filter(n => n !== 0));
+      }
+      if (tempSelectedEvents.includes(0)) {
+        setTempSelectedEvents(prev => prev.filter(n => n !== 0));
+      }
+    }
+  }, [editingCandidateItem, editClub]);
 
   // Handle Edit Name change with duplicate detection
   const handleEditNameChange = (val: string) => {
@@ -795,6 +845,11 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
   // Ensure that event selection cannot mix multiple genders (e.g. Children and Boys / Children and Girls / Girls and Boys)
   // while allowing Event no 15 alongside any gender's events.
   const toggleTempEvent = (evtNo: number) => {
+    // Rule: Always disable event no 0 where club name not in Sasthitala Agrani or Agrani or SA or Sasthitala
+    if (evtNo === 0 && !isClubAllowedForEvent0(editClub)) {
+      return;
+    }
+
     setTempSelectedEvents(prev => {
       if (prev.includes(evtNo)) {
         return prev.filter(no => no !== evtNo);
@@ -848,7 +903,7 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
 
     // Duplicate candidate name check
     const duplicate = candidates.find(
-      c => c.id !== editingCandidateItem.id && (c.name || '').trim().toUpperCase() === trimmedName
+      c => c.id !== editingCandidateItem.id && (!editingCandidateItem.chestNo || Number(c.chestNo) !== Number(editingCandidateItem.chestNo)) && (c.name || '').trim().toUpperCase() === trimmedName
     );
     if (duplicate) {
       setEditErrorMsg(`Duplicate Candidate Name! "${trimmedName}" is already registered (${duplicate.club || 'Independent'}). Duplicate names are not allowed.`);
@@ -856,9 +911,9 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
     }
 
     if (mode === 'server') {
-      const qualifiedEvts = getCandidateQualifiedEvents(editingCandidateItem, heats, results);
-      if (qualifiedEvts.length > 0) {
-        setEditErrorMsg(`Editing Restricted: Candidate "${editingCandidateItem.name}" (Chest #${editingCandidateItem.chestNo}) has already qualified from hit to final in Event #${qualifiedEvts.join(', #')}. Editing candidate details is restricted.`);
+      const restrictionStatus = getCandidateRestrictionStatus(editingCandidateItem, events, heats, results, mode);
+      if (restrictionStatus.isRestricted) {
+        setEditErrorMsg(getCandidateEditRestrictedMessage(editingCandidateItem, restrictionStatus));
         return;
       }
     }
@@ -872,6 +927,12 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
     try {
       const targetGender = criteriaGenderDisplay;
       const targetClub = editClub.trim().toUpperCase() || clientClubName || 'SASTHITALA AGRANI';
+
+      if (editSelectedEvents.includes(0) && !isClubAllowedForEvent0(targetClub)) {
+        setEditErrorMsg('Event #0 is restricted to Sasthitala Agrani, Agrani, SA, or Sasthitala club members only.');
+        setIsSavingEdit(false);
+        return;
+      }
 
       // Calculate total fees
       let totalFees = 0;
@@ -946,40 +1007,8 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
     });
   };
 
-  const DEV_APP_URL = 'https://ais-dev-g4v5u3ijukxjajvttmnfdk-944293067646.asia-southeast1.run.app/?mode=client';
-  const SHARED_APP_URL = 'https://ais-pre-g4v5u3ijukxjajvttmnfdk-944293067646.asia-southeast1.run.app/?mode=client';
-  const DESKTOP_SERVER_URL = 'https://ais-dev-g4v5u3ijukxjajvttmnfdk-944293067646.asia-southeast1.run.app/?mode=server';
-
-  const appUrl = useMemo(() => {
-    if (qrTargetMode === 'desktop') {
-      if (typeof window !== 'undefined' && window.location.origin) {
-        return `${window.location.origin}/?mode=server`;
-      }
-      return DESKTOP_SERVER_URL;
-    }
-    if (qrTargetMode === 'shared') {
-      return SHARED_APP_URL;
-    }
-    if (typeof window !== 'undefined') {
-      const origin = window.location.origin;
-      if (origin.includes('localhost') || origin.includes('ais-pre')) {
-        return DEV_APP_URL;
-      }
-      return `${origin}${window.location.pathname}?mode=client`;
-    }
-    return DEV_APP_URL;
-  }, [qrTargetMode]);
-
-  const handleCopyLink = () => {
-    if (navigator.clipboard && appUrl) {
-      navigator.clipboard.writeText(appUrl);
-      setCopiedLink(true);
-      setTimeout(() => setCopiedLink(false), 2500);
-    }
-  };
-
   return (
-    <div className="max-w-6xl xl:max-w-7xl mx-auto">
+    <div className="max-w-6xl xl:max-w-7xl mx-auto space-y-2.5">
       {/* Dark Card Frame matching User's Mobile Mockup */}
       <div className="bg-[#0b1120] rounded-2xl border border-slate-800 shadow-2xl overflow-hidden text-slate-100 font-sans">
         
@@ -1003,9 +1032,6 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
                     className="w-full sm:w-80 px-3 py-1.5 rounded-xl bg-[#0e172e] border border-amber-400/80 text-amber-400 font-extrabold uppercase text-xs sm:text-sm focus:outline-hidden focus:ring-2 focus:ring-amber-400/40 transition-all shadow-inner"
                   />
                 </div>
-                <p className="text-[10px] text-slate-400 font-medium mt-0.5 truncate">
-                  {settings.ordinalTitle || '47th Annual Sports Meet 2026'}
-                </p>
               </div>
             ) : (
               <div className="flex-1 min-w-0">
@@ -1020,9 +1046,9 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
               </div>
             )}
 
-            {/* Right: QR Link Button */}
-            <div className="shrink-0 flex items-center gap-2">
-              {candidateToEdit && (
+            {/* Right: Actions */}
+            {candidateToEdit && (
+              <div className="shrink-0 flex items-center gap-2">
                 <button
                   type="button"
                   onClick={resetForm}
@@ -1031,19 +1057,8 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
                   <RotateCcw className="w-3.5 h-3.5 text-amber-400" />
                   <span className="hidden sm:inline">Cancel</span>
                 </button>
-              )}
-
-              <button
-                type="button"
-                id="btn-qr-link"
-                onClick={() => setShowQrModal(true)}
-                className="px-3 py-1.5 rounded-xl bg-[#1e1416] hover:bg-[#2e191d] border border-red-900/80 text-amber-400 font-bold text-xs flex items-center gap-1.5 transition-all shadow-md active:scale-98 cursor-pointer"
-                title="View & Share QR Link"
-              >
-                <QrCode className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                <span>QR Link</span>
-              </button>
-            </div>
+              </div>
+            )}
 
           </div>
         </div>
@@ -1365,12 +1380,19 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
                     )}
                   </div>
 
-                  {/* Concise 4-Column Grid on desktop, fits without page scroll */}
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-4 gap-1.5 max-h-[220px] lg:max-h-[250px] overflow-y-auto pr-0.5">
+                  {/* Event Thumbnails Grid: fully expanded for mobile app mode without scroll bar */}
+                  <div
+                    className={`grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-4 gap-1.5 no-scrollbar ${
+                      mode === 'client'
+                        ? 'overflow-visible max-h-none h-auto'
+                        : 'max-lg:overflow-visible max-lg:max-h-none lg:max-h-[250px] lg:overflow-y-auto pr-0.5'
+                    }`}
+                  >
                     {events.map((evt) => {
                       const isSelected = selectedEvents.includes(evt.Evt_No);
-                      const eligibility = isEventCardEnabled(evt, gender, height);
+                      const eligibility = isEventCardEnabled(evt, gender, height, effectiveClubForEvent0);
                       const isEnabled = eligibility.enabled;
+                      const isEvt0Restricted = Number(evt.Evt_No) === 0 && !isClubAllowedForEvent0(effectiveClubForEvent0);
 
                       return (
                         <div
@@ -1381,6 +1403,7 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
                           tabIndex={isEnabled ? 0 : -1}
                           aria-disabled={!isEnabled}
                           aria-pressed={isSelected}
+                          title={!isEnabled ? eligibility.reason : undefined}
                           onClick={() => isEnabled && handleToggleEvent(evt)}
                           onKeyDown={(e) => {
                             if (!isEnabled) return;
@@ -1425,7 +1448,7 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
                               : 'bg-[#080d19] border-slate-900 opacity-25 cursor-not-allowed pointer-events-none'
                           }`}
                         >
-                          {/* Top Row: #Number + Name */}
+                          {/* Top Row: #Number + Name (No Final label on entry page per specification) */}
                           <div className="flex items-center gap-1 overflow-hidden">
                             <span className="text-amber-400 font-extrabold font-mono text-[11px] shrink-0">
                               #{evt.Evt_No}
@@ -1433,6 +1456,11 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
                             <span className="text-white font-bold text-[11px] uppercase tracking-tight truncate">
                               {evt.Evt_Name}
                             </span>
+                            {isEvt0Restricted && (
+                              <span className="text-[8px] sm:text-[9px] font-black uppercase px-1 py-0.2 rounded-md bg-rose-500/20 text-rose-300 border border-rose-500/40 tracking-wider font-mono shrink-0 ml-auto" title="Restricted to Sasthitala Agrani / Agrani / SA / Sasthitala">
+                                SA ONLY
+                              </span>
+                            )}
                           </div>
 
                           {/* Bottom Row: Shorthand Category + Price */}
@@ -1457,7 +1485,6 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
                       <label htmlFor="fee-status-select" className="block text-xs font-semibold text-slate-300">
                         Fee Status
                       </label>
-                      <span className="text-[10px] text-amber-400 font-bold">Press Enter to Enroll</span>
                     </div>
                     <select
                       id="fee-status-select"
@@ -1675,12 +1702,12 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
                   <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
                     {stats.candidatesList.map((cand, idx) => (
                       <div
-                        key={cand.id || idx}
+                        key={`${cand.id || cand.chestNo || idx}-${idx}`}
                         className="flex items-center justify-between px-3 py-2 rounded-lg bg-[#0b1326] border border-slate-800 text-xs"
                       >
                         <div className="flex items-center gap-2 truncate pr-2">
                           <span className="font-mono font-bold text-amber-400">
-                            #{cand.localRecordNo || cand.chestNo || (idx + 1)}
+                            #{mode === 'server' ? (cand.chestNo || (idx + 1)) : (cand.chestNo && Number(cand.chestNo) >= 101 ? cand.chestNo : (cand.localRecordNo || cand.chestNo || (idx + 1)))}
                           </span>
                           <span className="font-bold text-white uppercase truncate">
                             {cand.name}
@@ -1727,164 +1754,6 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
               >
                 Close
               </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* MODAL 2: QR LINK POPUP */}
-      {showQrModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xs">
-          <div className="bg-[#0e172e] border border-slate-700 rounded-2xl max-w-md w-full p-5 shadow-2xl text-slate-100 animate-in fade-in zoom-in-95">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-4">
-              <div className="flex items-center gap-2">
-                <QrCode className="w-5 h-5 text-amber-400" />
-                <h3 className="font-bold text-base text-amber-400">
-                  Client QR Enrollment Link
-                </h3>
-              </div>
-              <button
-                onClick={() => setShowQrModal(false)}
-                className="p-1 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* Mode Switcher Tabs */}
-            <div className="grid grid-cols-3 gap-1 p-1 bg-[#070b15] rounded-xl border border-slate-800 mb-3 text-xs font-bold">
-              <button
-                type="button"
-                onClick={() => setQrTargetMode('desktop')}
-                className={`py-1.5 px-1.5 rounded-lg transition-all cursor-pointer text-center truncate ${
-                  qrTargetMode === 'desktop'
-                    ? 'bg-blue-600 text-white shadow'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-                title="Desktop Browser URL for Server Operations"
-              >
-                🖥️ Desktop Site
-              </button>
-              <button
-                type="button"
-                onClick={() => setQrTargetMode('dev')}
-                className={`py-1.5 px-1.5 rounded-lg transition-all cursor-pointer text-center truncate ${
-                  qrTargetMode === 'dev'
-                    ? 'bg-amber-400 text-slate-950 shadow'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-                title="Mobile Client Live Dev Link"
-              >
-                📱 Mobile Dev
-              </button>
-              <button
-                type="button"
-                onClick={() => setQrTargetMode('shared')}
-                className={`py-1.5 px-1.5 rounded-lg transition-all cursor-pointer text-center truncate ${
-                  qrTargetMode === 'shared'
-                    ? 'bg-emerald-400 text-slate-950 shadow'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-                title="Mobile Client Public Shared Link (No login required)"
-              >
-                🌐 Mobile Public
-              </button>
-            </div>
-
-            <div className="flex flex-col items-center text-center space-y-3">
-              {/* Scalable High Contrast QR Code Display */}
-              <div className="p-3 bg-white rounded-2xl shadow-xl flex flex-col items-center justify-center border-4 border-amber-400">
-                <img
-                  src={`https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(appUrl)}`}
-                  alt="QR Code for Mobile Portal"
-                  className="w-48 h-48 object-contain"
-                  loading="lazy"
-                />
-              </div>
-
-              <div className="space-y-1 text-center">
-                <p className="text-xs font-semibold text-slate-300">
-                  {qrTargetMode === 'desktop'
-                    ? 'Use this link on any desktop computer to access full Server Controls, Heats & Finals.'
-                    : 'Scan this QR code with any smartphone camera to open the Client Portal.'}
-                </p>
-                <p className="text-[11px] text-amber-400 font-bold">
-                  {qrTargetMode === 'desktop' ? 'Mode: Server / Official Admin Operations' : `Club: ${clientClubName}`}
-                </p>
-              </div>
-
-              {/* Troubleshooting Notice */}
-              <div className="w-full text-left p-2.5 rounded-xl bg-slate-900/90 border border-slate-800 text-[11px] space-y-1 text-slate-300">
-                <div className="flex items-center gap-1.5 font-bold text-amber-400">
-                  <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                  <span>Link Tips & Access:</span>
-                </div>
-                {qrTargetMode === 'desktop' ? (
-                  <>
-                    <p className="leading-relaxed">
-                      • <strong>Desktop Browser</strong>: Open this link in Chrome/Edge on your desktop computer to view all live candidate registrations, create heats, and record results.
-                    </p>
-                    <p className="leading-relaxed">
-                      • Default Server PIN: <strong>{settings.serverPin || '1234'}</strong> (unlocks Server Control).
-                    </p>
-                  </>
-                ) : (
-                  <>
-                    <p className="leading-relaxed">
-                      • <strong>Dev Link</strong>: Open on mobile logged into Google with <strong>agrani.sasthitala1966@gmail.com</strong>.
-                    </p>
-                    <p className="leading-relaxed">
-                      • <strong>Public Link (No login)</strong>: Published preview link for any smartphone without logging in.
-                    </p>
-                  </>
-                )}
-              </div>
-
-              {/* URL Box + Copy Button */}
-              <div className="w-full flex items-center gap-2 bg-[#0b1326] p-2 rounded-xl border border-slate-800">
-                <input
-                  type="text"
-                  readOnly
-                  value={appUrl}
-                  className="bg-transparent text-xs font-mono text-slate-300 w-full focus:outline-hidden px-2 truncate select-all"
-                />
-                <button
-                  type="button"
-                  onClick={handleCopyLink}
-                  className="px-3 py-1.5 rounded-lg bg-amber-400 hover:bg-amber-500 text-slate-950 font-bold text-xs flex items-center gap-1 shrink-0 transition-colors cursor-pointer"
-                >
-                  {copiedLink ? (
-                    <>
-                      <Check className="w-3.5 h-3.5 text-slate-950" />
-                      <span>Copied!</span>
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="w-3.5 h-3.5 text-slate-950" />
-                      <span>Copy</span>
-                    </>
-                  )}
-                </button>
-              </div>
-
-              <div className="w-full grid grid-cols-2 gap-2">
-                <a
-                  href={appUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="py-2.5 px-3 rounded-xl bg-emerald-700 hover:bg-emerald-600 text-white font-bold text-xs transition-colors flex items-center justify-center gap-1.5"
-                >
-                  <ExternalLink className="w-3.5 h-3.5" />
-                  <span>Open Portal</span>
-                </a>
-                <button
-                  type="button"
-                  onClick={() => setShowQrModal(false)}
-                  className="py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs transition-colors"
-                >
-                  Close
-                </button>
-              </div>
             </div>
           </div>
         </div>
@@ -2014,12 +1883,13 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
                   const isConfirmingDelete = deleteConfirmId === cand.id;
                   const isCancelled = cand.isCancelled || cand.status === 'cancelled';
                   const isServerSaved = mode === 'server' && (Boolean(cand.chestNo) && Number(cand.chestNo) >= 101 || cand.synced);
-                  const qualifiedEvts = mode === 'server' ? getCandidateQualifiedEvents(cand, heats, results) : [];
-                  const isRestricted = qualifiedEvts.length > 0;
+                  const restrictionStatus = getCandidateRestrictionStatus(cand, events, heats, results, mode);
+                  const isRestricted = restrictionStatus.isRestricted;
+                  const qualifiedEvts = restrictionStatus.restrictingEvents;
 
                   return (
                     <div
-                      key={cand.id || idx}
+                      key={`${cand.id || cand.chestNo || idx}-${idx}`}
                       className={`grid grid-cols-12 gap-1.5 sm:gap-2 px-3 sm:px-3.5 py-2.5 items-center transition-colors ${
                         isCancelled ? 'bg-rose-950/20 opacity-75' : 'hover:bg-[#0e172e]/60'
                       }`}
@@ -2036,7 +1906,7 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
                             ? 'bg-rose-950/80 border border-rose-500/70 text-rose-300 line-through'
                             : 'bg-amber-400/15 border border-amber-400/50 text-amber-300'
                         }`}>
-                          #{cand.localRecordNo || cand.chestNo || '—'}
+                          #{mode === 'server' ? (cand.chestNo || '—') : (cand.chestNo && Number(cand.chestNo) >= 101 ? cand.chestNo : (cand.localRecordNo || cand.chestNo || '—'))}
                         </span>
                         {isCancelled && (
                           <span className="block text-[9px] font-black tracking-wider text-rose-400 uppercase mt-0.5">
@@ -2052,8 +1922,15 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
                             {cand.name}
                           </span>
                           {isRestricted && (
-                            <span className="shrink-0 px-1 py-0.2 rounded bg-amber-500/20 border border-amber-400/60 text-amber-300 text-[9px] font-bold" title={`Qualified to Final in Event #${qualifiedEvts.join(', #')} - Editing locked`}>
-                              Finalist
+                            <span 
+                              className="shrink-0 px-1 py-0.2 rounded bg-amber-500/20 border border-amber-400/60 text-amber-300 text-[9px] font-bold" 
+                              title={
+                                restrictionStatus.reason === 'hit_qualified'
+                                  ? `Qualified from hit to final in Event #${restrictionStatus.qualifiedHitEvents.join(', #')} - Editing locked`
+                                  : `Ranking preparation completed in Event #${restrictionStatus.rankingCompletedEvents.join(', #')} - Editing locked`
+                              }
+                            >
+                              {restrictionStatus.reason === 'hit_qualified' ? 'Finalist' : 'Ranked'}
                             </span>
                           )}
                         </div>
@@ -2089,13 +1966,21 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
                             <>
                               <button
                                 type="button"
+                                disabled={isRestricted}
                                 onClick={() => handleInitiateEdit(cand)}
-                                className={`text-[10px] font-bold flex items-center gap-0.5 cursor-pointer hover:underline ${
-                                  isRestricted ? 'text-amber-400' : 'text-amber-300'
+                                className={`text-[10px] font-bold flex items-center gap-0.5 ${
+                                  isRestricted ? 'text-slate-500 opacity-50 cursor-not-allowed' : 'text-amber-300 cursor-pointer hover:underline'
                                 }`}
+                                title={
+                                  isRestricted
+                                    ? (restrictionStatus.reason === 'ranking_completed'
+                                        ? `Editing disabled: Ranking list prepared for Event #${restrictionStatus.rankingCompletedEvents.join(', #')}`
+                                        : `Editing disabled: Candidate has been promoted to final in Event #${restrictionStatus.promotedFinalEvents.join(', #')}`)
+                                    : `Edit ${cand.name}`
+                                }
                               >
-                                {isRestricted ? <Lock className="w-2.5 h-2.5 text-amber-400" /> : <Pencil className="w-2.5 h-2.5" />}
-                                <span>{isRestricted ? 'Locked' : 'Edit'}</span>
+                                {isRestricted ? <Lock className="w-2.5 h-2.5 text-slate-500" /> : <Pencil className="w-2.5 h-2.5" />}
+                                <span>{isRestricted ? 'Disabled' : 'Edit'}</span>
                               </button>
                               <span className="text-slate-600 text-[10px]">•</span>
 
@@ -2168,20 +2053,23 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
                             {/* Edit Button */}
                             <button
                               type="button"
+                              disabled={isRestricted}
                               onClick={() => handleInitiateEdit(cand)}
-                              className={`p-2 rounded-xl border transition-all active:scale-95 shadow cursor-pointer ${
+                              className={`p-2 rounded-xl border transition-all shadow ${
                                 isRestricted
-                                  ? 'bg-amber-950/60 hover:bg-amber-900/60 border-amber-600/70 text-amber-300'
-                                  : 'bg-[#18233c] hover:bg-[#23355b] border-blue-900/60 text-amber-300'
+                                  ? 'opacity-40 cursor-not-allowed bg-slate-900 border-slate-700/60 text-slate-500'
+                                  : 'bg-[#18233c] hover:bg-[#23355b] border-blue-900/60 text-amber-300 active:scale-95 cursor-pointer'
                               }`}
                               title={
                                 isRestricted
-                                  ? `Editing restricted: qualified to final in Event #${qualifiedEvts.join(', #')}`
+                                  ? (restrictionStatus.reason === 'ranking_completed'
+                                      ? `Editing disabled: Ranking list prepared for Event #${restrictionStatus.rankingCompletedEvents.join(', #')}`
+                                      : `Editing disabled: Candidate has been promoted to final in Event #${restrictionStatus.promotedFinalEvents.join(', #')}`)
                                   : `Edit ${cand.name}`
                               }
                             >
                               {isRestricted ? (
-                                <Lock className="w-3.5 h-3.5 text-amber-400 stroke-[2.2]" />
+                                <Lock className="w-3.5 h-3.5 text-slate-500 stroke-[2.2]" />
                               ) : (
                                 <Pencil className="w-3.5 h-3.5 text-amber-300 stroke-[2.2]" />
                               )}
@@ -2239,7 +2127,7 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
             
             {/* Title Header */}
             <h2 className="text-yellow-400 font-bold text-lg sm:text-xl">
-              Edit Candidate ({mode === 'client' ? `#${editingCandidateItem.localRecordNo || editingCandidateItem.chestNo || 1}` : `Chest #${editingCandidateItem.chestNo || editingCandidateItem.localRecordNo || 1}`})
+              Edit Candidate ({mode === 'server' ? `Chest #${editingCandidateItem.chestNo || '—'}` : (editingCandidateItem.chestNo && Number(editingCandidateItem.chestNo) >= 101 ? `Chest #${editingCandidateItem.chestNo}` : `#${editingCandidateItem.localRecordNo || editingCandidateItem.chestNo || 1}`)})
             </h2>
 
             {/* Form Fields matching Attachment 1 */}
@@ -2430,31 +2318,39 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
               ) : (
                 eligibleEditEvents.map((evt) => {
                   const isSelected = tempSelectedEvents.includes(evt.Evt_No);
+                  const isEvt0Disabled = Number(evt.Evt_No) === 0 && !isClubAllowedForEvent0(editClub);
+                  const isDisabled = isEvt0Disabled;
                   return (
                     <div
                       key={evt.Evt_No}
-                      onClick={() => toggleTempEvent(evt.Evt_No)}
-                      className={`rounded-2xl p-3 flex items-center gap-3 cursor-pointer transition-all ${
-                        isSelected
-                          ? 'border-2 border-yellow-400 bg-[#0e172a] shadow-md shadow-yellow-500/10'
-                          : 'border border-slate-700 bg-[#0b1222] hover:border-slate-500'
+                      onClick={() => !isDisabled && toggleTempEvent(evt.Evt_No)}
+                      className={`rounded-2xl p-3 flex items-center gap-3 transition-all ${
+                        isDisabled
+                          ? 'opacity-35 bg-slate-900/60 border border-slate-800 cursor-not-allowed pointer-events-none select-none'
+                          : isSelected
+                          ? 'border-2 border-yellow-400 bg-[#0e172a] shadow-md shadow-yellow-500/10 cursor-pointer'
+                          : 'border border-slate-700 bg-[#0b1222] hover:border-slate-500 cursor-pointer'
                       }`}
                     >
                       {/* Checkbox Icon */}
                       <div
                         className={`w-6 h-6 rounded flex items-center justify-center shrink-0 transition-colors ${
-                          isSelected
+                          isDisabled
+                            ? 'border-2 border-slate-700 bg-transparent'
+                            : isSelected
                             ? 'bg-yellow-400 text-slate-950 font-black'
                             : 'border-2 border-slate-500 bg-transparent'
                         }`}
                       >
-                        {isSelected && <Check className="w-4 h-4 stroke-[3]" />}
+                        {isSelected && !isDisabled && <Check className="w-4 h-4 stroke-[3]" />}
                       </div>
 
                       {/* Event Number Badge */}
                       <div
                         className={`w-7 h-7 rounded flex items-center justify-center font-black text-xs shrink-0 ${
-                          isSelected
+                          isDisabled
+                            ? 'bg-slate-800 text-slate-500'
+                            : isSelected
                             ? 'bg-amber-400 text-slate-950'
                             : 'bg-[#1a2b4c] text-blue-200'
                         }`}
@@ -2464,8 +2360,15 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
 
                       {/* Event Details */}
                       <div className="flex-1 min-w-0">
-                        <div className="font-extrabold text-white text-xs sm:text-sm uppercase tracking-wide truncate">
-                          {evt.Evt_Name}
+                        <div className="flex items-center gap-2">
+                          <span className={`font-extrabold text-xs sm:text-sm uppercase tracking-wide truncate ${isDisabled ? 'text-slate-500' : 'text-white'}`}>
+                            {evt.Evt_Name}
+                          </span>
+                          {isEvt0Disabled && (
+                            <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/40">
+                              Sasthitala Agrani Only
+                            </span>
+                          )}
                         </div>
                         <div className="text-[11px] text-slate-400 font-semibold truncate">
                           {evt.Gender} • {evt.Height} • ₹{Number(evt.Fees || 10).toFixed(2)}

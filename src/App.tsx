@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { 
   SportEvent, 
   Candidate, 
@@ -11,7 +11,12 @@ import {
 } from './types';
 import { api } from './services/api';
 import { clientStorage } from './services/clientStorage';
-import { getCandidateQualifiedEvents } from './utils/qualificationRules';
+import { firestoreSync } from './services/firestoreSync';
+import { 
+  getCandidateRestrictionStatus, 
+  getCandidateEditRestrictedMessage, 
+  getCandidateQualifiedEvents 
+} from './utils/qualificationRules';
 import { INITIAL_EVENTS, INITIAL_CLUBS, INITIAL_SETTINGS } from './constants/initialData';
 
 // Subcomponents
@@ -27,6 +32,40 @@ import { DbExplorer } from './components/DbExplorer';
 import { ClubUploadsReview } from './components/ClubUploadsReview';
 import { PinLoginModal } from './components/PinLoginModal';
 import { ResetPinModal } from './components/ResetPinModal';
+import { Phone } from 'lucide-react';
+
+function sanitizeUniqueCandidates(list: Candidate[]): Candidate[] {
+  if (!Array.isArray(list)) return [];
+  const seenIds = new Set<string>();
+  const seenChests = new Set<number>();
+  const result: Candidate[] = [];
+
+  list.forEach((c) => {
+    if (!c) return;
+    const cid = c.id ? String(c.id).trim() : '';
+    if (cid && seenIds.has(cid)) return;
+
+    if (cid) seenIds.add(cid);
+
+    const chest = Number(c.chestNo);
+    if (chest && chest >= 101) {
+      if (seenChests.has(chest)) {
+        // Resolve collision by renumbering candidate instead of silently dropping
+        let resolved = chest;
+        while (seenChests.has(resolved)) {
+          resolved++;
+        }
+        seenChests.add(resolved);
+        result.push({ ...c, chestNo: resolved });
+        return;
+      }
+      seenChests.add(chest);
+    }
+    result.push(c);
+  });
+
+  return result;
+}
 
 export default function App() {
   const [mode, setMode] = useState<'client' | 'server'>('client');
@@ -62,44 +101,159 @@ export default function App() {
     return candidates.filter((c) => !c.synced || c.isDirty).length;
   }, [candidates]);
 
-  // Number of pending uploads awaiting server review
+  // Number of pending athlete entries awaiting server review & approval
   const pendingUploadsCount = useMemo(() => {
-    return uploads.filter((u) => u.status === 'pending').length;
+    return uploads
+      .filter((u) => u.status === 'pending')
+      .reduce((sum, u) => {
+        const unmerged = (u.candidates || []).filter((c: any) => !c.merged && c.status !== 'rejected').length;
+        return sum + (unmerged > 0 ? unmerged : 1);
+      }, 0);
   }, [uploads]);
 
-  // Load data based on active mode
-  const loadData = useCallback(async () => {
+  // Reference to track last known server timestamp to avoid redundant fetches
+  const lastUpdatedRef = useRef<string>('');
+  const prevPendingCountRef = useRef<number>(-1);
+  const prevUploadsCountRef = useRef<number>(-1);
+  const prevCandidatesCountRef = useRef<number>(-1);
+  const isFetchingRef = useRef<boolean>(false);
+
+  // Load data based on active mode using single consolidated bootstrap endpoint
+  const loadData = useCallback(async (force = false, targetMode?: 'client' | 'server') => {
+    if (isFetchingRef.current && !force) return;
+    isFetchingRef.current = true;
+    const effectiveMode = targetMode || mode;
     try {
-      // 1. Fetch server events, clubs, settings, heats, results, uploads
-      const [srvEvents, srvClubs, srvSettings, srvHeats, srvResults, srvUploads] = await Promise.all([
-        api.getEvents().catch(() => INITIAL_EVENTS),
-        api.getClubs().catch(() => INITIAL_CLUBS),
-        api.getSettings().catch(() => INITIAL_SETTINGS),
-        api.getHeats().catch(() => []),
-        api.getResults().catch(() => []),
-        api.getUploads().catch(() => []),
-      ]);
+      // 1. Fetch entire state in a single lightweight API call
+      const bootstrap = await api.getBootstrap().catch(() => null);
+
+      const srvEvents = bootstrap?.events || (await api.getEvents().catch(() => INITIAL_EVENTS));
+      const srvClubs = bootstrap?.clubs || (await api.getClubs().catch(() => INITIAL_CLUBS));
+      const srvSettings = bootstrap?.settings || (await api.getSettings().catch(() => INITIAL_SETTINGS));
+      
+      let srvHeats: EventHeat[] = [];
+      try {
+        const cloudHeats = await api.getHeats();
+        srvHeats = cloudHeats.length > 0 ? cloudHeats : (bootstrap?.heats || []);
+      } catch {
+        srvHeats = bootstrap?.heats || [];
+      }
+
+      let srvResults: EventResult[] = [];
+      try {
+        const cloudResults = await api.getResults();
+        srvResults = cloudResults.length > 0 ? cloudResults : (bootstrap?.results || []);
+      } catch {
+        srvResults = bootstrap?.results || [];
+      }
+
+      // 2. Fetch and merge Cloud Firestore uploads so that any client submission
+      // from any link/container (ais-pre, mobile, direct link) is NEVER lost or wiped out!
+      let srvUploads: ClientUpload[] = [];
+      try {
+        const cloudUploads = await api.getUploads();
+        if (cloudUploads.length > 0) {
+          srvUploads = cloudUploads;
+        } else {
+          srvUploads = bootstrap?.uploads || [];
+        }
+      } catch (err) {
+        console.warn('Could not fetch cloud uploads:', err);
+        srvUploads = bootstrap?.uploads || [];
+      }
+
+      // 3. Fetch and merge Cloud Firestore candidates
+      let srvCandidates: Candidate[] = [];
+      try {
+        const cloudCandidates = await api.getCandidates();
+        if (cloudCandidates.length > 0) {
+          srvCandidates = cloudCandidates;
+        } else {
+          srvCandidates = bootstrap?.candidates || [];
+        }
+      } catch (err) {
+        console.warn('Could not fetch cloud candidates:', err);
+        srvCandidates = bootstrap?.candidates || [];
+      }
+
+      if (bootstrap?.lastUpdated) {
+        lastUpdatedRef.current = bootstrap.lastUpdated;
+      }
+      prevUploadsCountRef.current = srvUploads.length;
+      prevCandidatesCountRef.current = srvCandidates.length;
 
       setEvents(srvEvents);
       setClubs(srvClubs);
       setSettings(srvSettings);
       setHeats(srvHeats);
       setResults(srvResults);
-      setUploads(srvUploads);
+      setUploads((prev) => (srvUploads.length > 0 ? srvUploads : prev.length > 0 ? prev : []));
+
+      // Detect incoming approval requests for the server
+      const currentPendingCount = srvUploads
+        .filter((u: any) => u.status === 'pending')
+        .reduce((sum: number, u: any) => {
+          const unmerged = (u.candidates || []).filter((c: any) => !c.merged && c.status !== 'rejected').length;
+          return sum + (unmerged > 0 ? unmerged : 1);
+        }, 0);
+
+      if (effectiveMode === 'server') {
+        // Dynamic title notification for admin
+        if (currentPendingCount > 0) {
+          document.title = `(${currentPendingCount}) 🔔 Review Requests - ${srvSettings.ordinalTitle || 'eSports'}`;
+        } else {
+          document.title = `${srvSettings.ordinalTitle || '47th Annual Sports Meet 2027'} - Official Server Control`;
+        }
+
+        if (prevPendingCountRef.current === -1 && currentPendingCount > 0) {
+          // Immediate banner on server mount/login if requests are pending
+          setSyncNotice({
+            type: 'success',
+            message: `🔔 ${currentPendingCount} athlete approval request(s) awaiting review! Go to "Review & Approve" to allot chest numbers.`,
+          });
+        } else if (prevPendingCountRef.current !== -1 && currentPendingCount > prevPendingCountRef.current) {
+          const diff = currentPendingCount - prevPendingCountRef.current;
+          setSyncNotice({
+            type: 'success',
+            message: `🔔 New Approval Request: ${diff} new athlete(s) submitted from client portal! Go to "Review & Approve" to allot chest numbers.`,
+          });
+          // Web Audio chime notification
+          try {
+            const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
+            if (AudioContext) {
+              const ctx = new AudioContext();
+              const osc = ctx.createOscillator();
+              const gain = ctx.createGain();
+              osc.connect(gain);
+              gain.connect(ctx.destination);
+              osc.type = 'sine';
+              osc.frequency.setValueAtTime(587.33, ctx.currentTime);
+              osc.frequency.setValueAtTime(880, ctx.currentTime + 0.12);
+              gain.gain.setValueAtTime(0.15, ctx.currentTime);
+              gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.35);
+              osc.start();
+              osc.stop(ctx.currentTime + 0.35);
+            }
+          } catch {
+            // Audio playback requires user gesture on some browsers
+          }
+        }
+      } else {
+        document.title = `${srvSettings.ordinalTitle || '47th Annual Sports Meet 2027'} - Client Portal`;
+      }
+      prevPendingCountRef.current = currentPendingCount;
 
       // Cache events & clubs to localStorage for offline client capability
       clientStorage.saveEventsCache(srvEvents);
       clientStorage.saveClubsCache(srvClubs);
 
       // 2. Candidates loading:
-      if (mode === 'client') {
+      if (effectiveMode === 'client') {
         const localCandidates = clientStorage.getCandidates();
         
-        // Fetch server candidate registry to reflect merged chest numbers back to client
-        const srvCandidates = await api.getCandidates().catch(() => []);
         if (srvCandidates.length > 0) {
-          const srvMap = new Map(srvCandidates.map(c => [c.id, c]));
-          const srvNameMap = new Map(srvCandidates.map(c => [(c.name || '').trim().toUpperCase(), c]));
+          const srvMap = new Map<string, any>(srvCandidates.map((c: any) => [c.id, c]));
+          const srvNameMap = new Map<string, any>(srvCandidates.map((c: any) => [(c.name || '').trim().toUpperCase(), c]));
           let updated = false;
           const mergedList = localCandidates.map((local) => {
             const nameKey = (local.name || '').trim().toUpperCase();
@@ -116,84 +270,217 @@ export default function App() {
             return local;
           });
 
-          // Deduplicate merged list by ID and normalized candidate name
-          const seenIds = new Set<string>();
-          const seenNames = new Set<string>();
-          const uniqueList: Candidate[] = [];
-          mergedList.forEach(c => {
-            if (!c || !c.id) return;
-            const nameKey = (c.name || '').trim().toUpperCase();
-            if (seenIds.has(c.id) || (nameKey && seenNames.has(nameKey))) return;
-            seenIds.add(c.id);
-            if (nameKey) seenNames.add(nameKey);
-            uniqueList.push(c);
-          });
+          const uniqueList = sanitizeUniqueCandidates(mergedList);
 
           if (updated) {
             clientStorage.saveCandidates(uniqueList);
           }
           setCandidates(uniqueList);
         } else {
-          // Deduplicate local candidates by ID and candidate name
-          const seenIds = new Set<string>();
-          const seenNames = new Set<string>();
-          const uniqueList: Candidate[] = [];
-          localCandidates.forEach(c => {
-            if (!c || !c.id) return;
-            const nameKey = (c.name || '').trim().toUpperCase();
-            if (seenIds.has(c.id) || (nameKey && seenNames.has(nameKey))) return;
-            seenIds.add(c.id);
-            if (nameKey) seenNames.add(nameKey);
-            uniqueList.push(c);
-          });
+          const uniqueList = sanitizeUniqueCandidates(localCandidates);
           setCandidates(uniqueList);
         }
       } else {
-        const srvCandidates = await api.getCandidates().catch(() => []);
-        // Deduplicate srvCandidates by ID and candidate name
-        const seenIds = new Set<string>();
-        const seenNames = new Set<string>();
-        const uniqueList: Candidate[] = [];
-        (srvCandidates || []).forEach(c => {
-          if (!c || !c.id) return;
-          const nameKey = (c.name || '').trim().toUpperCase();
-          if (seenIds.has(c.id) || (nameKey && seenNames.has(nameKey))) return;
-          seenIds.add(c.id);
-          if (nameKey) seenNames.add(nameKey);
-          uniqueList.push(c);
-        });
+        // Mode is 'server': all official server candidates are canonical
+        const uniqueList = sanitizeUniqueCandidates(srvCandidates || []);
         setCandidates(uniqueList);
       }
     } catch (err) {
-      console.error('Error loading data:', err);
-      if (mode === 'client') {
+      console.warn('Network sync paused:', err);
+      if (effectiveMode === 'client') {
         const localCands = clientStorage.getCandidates();
-        const seenIds = new Set<string>();
-        const seenNames = new Set<string>();
-        const uniqueList: Candidate[] = [];
-        localCands.forEach(c => {
-          if (!c || !c.id) return;
-          const nameKey = (c.name || '').trim().toUpperCase();
-          if (seenIds.has(c.id) || (nameKey && seenNames.has(nameKey))) return;
-          seenIds.add(c.id);
-          if (nameKey) seenNames.add(nameKey);
-          uniqueList.push(c);
-        });
+        const uniqueList = sanitizeUniqueCandidates(localCands);
         setCandidates(uniqueList);
         setEvents(clientStorage.getEventsCache());
         setClubs(clientStorage.getClubsCache());
       }
+    } finally {
+      isFetchingRef.current = false;
     }
   }, [mode]);
 
   useEffect(() => {
     loadData();
-    // Poll server periodically (every 4 seconds) to auto-detect and display mobile client uploads and changes on desktop
-    const interval = setInterval(() => {
-      loadData();
-    }, 4000);
-    return () => clearInterval(interval);
+    // High-responsiveness sync interval: checks summary every 2.5s to instantly receive remote entries
+    const interval = setInterval(async () => {
+      try {
+        const summary = await api.getSyncSummary().catch(() => null);
+        if (summary) {
+          const hasChanged =
+            (summary.lastUpdated && summary.lastUpdated !== lastUpdatedRef.current) ||
+            (summary.pendingAthletesCount !== undefined && summary.pendingAthletesCount !== prevPendingCountRef.current) ||
+            (summary.uploadsCount !== undefined && prevUploadsCountRef.current !== -1 && summary.uploadsCount !== prevUploadsCountRef.current) ||
+            (summary.candidatesCount !== undefined && prevCandidatesCountRef.current !== -1 && summary.candidatesCount !== prevCandidatesCountRef.current);
+
+          if (hasChanged) {
+            loadData(true);
+          }
+        }
+      } catch {
+        // Ignore background sync errors gracefully
+      }
+    }, 2500);
+
+    const handleFocus = () => {
+      loadData(true);
+    };
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        loadData(true);
+      }
+    };
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
   }, [loadData]);
+
+  // Real-time Cloud Firestore synchronization across devices & containers
+  useEffect(() => {
+    // 1. Uploads subscription: Real-time approval requests from any remote device/portal
+    const unsubUploads = firestoreSync.subscribeUploads((cloudUploads) => {
+      setUploads(cloudUploads);
+
+      const currentPendingCount = cloudUploads
+        .filter((u) => u.status === 'pending')
+        .reduce((sum, u) => {
+          const unmerged = (u.candidates || []).filter((c) => !c.merged && c.status !== 'rejected').length;
+          return sum + (unmerged > 0 ? unmerged : 1);
+        }, 0);
+
+      if (mode === 'server') {
+        if (currentPendingCount > 0) {
+          document.title = `(${currentPendingCount}) 🔔 Review Requests - ${settings.ordinalTitle || 'eSports'}`;
+        } else {
+          document.title = `${settings.ordinalTitle || '47th Annual Sports Meet 2027'} - Official Server Control`;
+        }
+
+        if (prevPendingCountRef.current !== -1 && currentPendingCount > prevPendingCountRef.current) {
+          const diff = currentPendingCount - prevPendingCountRef.current;
+          setSyncNotice({
+            type: 'success',
+            message: `🔔 New Approval Request: ${diff} new athlete(s) submitted from client portal! Go to "Review & Approve" to allot chest numbers.`,
+          });
+          // Web Audio chime
+          try {
+            const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
+            if (AudioContext) {
+              const ctx = new AudioContext();
+              const osc = ctx.createOscillator();
+              const gain = ctx.createGain();
+              osc.connect(gain);
+              gain.connect(ctx.destination);
+              osc.type = 'sine';
+              osc.frequency.setValueAtTime(587.33, ctx.currentTime);
+              osc.frequency.setValueAtTime(880, ctx.currentTime + 0.12);
+              gain.gain.setValueAtTime(0.15, ctx.currentTime);
+              gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.35);
+              osc.start();
+              osc.stop(ctx.currentTime + 0.35);
+            }
+          } catch {}
+        }
+      }
+      prevPendingCountRef.current = currentPendingCount;
+    });
+
+    // 2. Official Candidates subscription
+    const unsubCandidates = firestoreSync.subscribeCandidates((cloudCandidates) => {
+      if (mode === 'server') {
+        setCandidates(sanitizeUniqueCandidates(cloudCandidates));
+      } else {
+        // Mode is client: merge any newly allotted official server chest numbers
+        const localCandidates = clientStorage.getCandidates();
+        if (cloudCandidates.length > 0) {
+          const srvMap = new Map<string, any>(cloudCandidates.map((c) => [c.id, c]));
+          const srvNameMap = new Map<string, any>(cloudCandidates.map((c) => [(c.name || '').trim().toUpperCase(), c]));
+          let updated = false;
+          const mergedList = localCandidates.map((local) => {
+            const nameKey = (local.name || '').trim().toUpperCase();
+            const matched = srvMap.get(local.id) || (nameKey ? srvNameMap.get(nameKey) : undefined);
+            if (matched && matched.chestNo && Number(matched.chestNo) >= 101 && matched.chestNo !== local.chestNo) {
+              updated = true;
+              return {
+                ...local,
+                chestNo: matched.chestNo,
+                synced: true,
+                isDirty: false,
+              };
+            }
+            return local;
+          });
+          if (updated) {
+            const sanitized = sanitizeUniqueCandidates(mergedList);
+            clientStorage.saveCandidates(sanitized);
+            setCandidates(sanitized);
+          }
+        }
+      }
+    });
+
+    // 3. Heats, Results, Settings subscriptions
+    const unsubHeats = firestoreSync.subscribeHeats((cloudHeats) => {
+      if (cloudHeats.length > 0) setHeats(cloudHeats);
+    });
+
+    const unsubResults = firestoreSync.subscribeResults((cloudResults) => {
+      if (cloudResults.length > 0) setResults(cloudResults);
+    });
+
+    const unsubSettings = firestoreSync.subscribeSettings((cloudSettings) => {
+      setSettings(cloudSettings);
+    });
+
+    const unsubEvents = firestoreSync.subscribeEvents((cloudEvents) => {
+      if (cloudEvents.length > 0) setEvents(cloudEvents);
+    });
+
+    const unsubClubs = firestoreSync.subscribeClubs((cloudClubs) => {
+      if (cloudClubs.length > 0) setClubs(cloudClubs);
+    });
+
+    return () => {
+      unsubUploads();
+      unsubCandidates();
+      unsubHeats();
+      unsubResults();
+      unsubSettings();
+      unsubEvents();
+      unsubClubs();
+    };
+  }, [mode, settings.ordinalTitle]);
+
+  // Single-device server session heartbeat & auto-lock if taken over
+  useEffect(() => {
+    if (!isServerAuthenticated) return;
+    const sessionId = sessionStorage.getItem('esports_server_session_id');
+    if (!sessionId) return;
+
+    const interval = setInterval(async () => {
+      try {
+        const res = await api.sendHeartbeat(sessionId);
+        if (res && res.valid === false) {
+          sessionStorage.removeItem('esports_server_auth');
+          sessionStorage.removeItem('esports_server_session_id');
+          setIsServerAuthenticated(false);
+          setMode('client');
+          setActiveTab('enroll');
+          setSyncNotice({
+            type: 'error',
+            message: res.reason || 'Server session terminated because another device logged in.',
+          });
+        }
+      } catch {
+        // network blip ignored
+      }
+    }, 12000);
+
+    return () => clearInterval(interval);
+  }, [isServerAuthenticated]);
 
   // Check URL parameters for explicit mode on initial mount
   useEffect(() => {
@@ -230,10 +517,11 @@ export default function App() {
       }
       return nextNum;
     }
-    if (candidates.length === 0) return 101;
+    const startingChest = settings.autoChestStart || 101;
+    if (candidates.length === 0) return startingChest;
     const maxChest = Math.max(...candidates.map((c) => Number(c.chestNo) || 0));
-    return maxChest >= 101 ? maxChest + 1 : 101;
-  }, [candidates, mode]);
+    return maxChest >= startingChest ? maxChest + 1 : startingChest;
+  }, [candidates, mode, settings.autoChestStart]);
 
   // Save Candidate Handler (Used by both Client and Server modes)
   const handleSaveCandidate = async (candidateData: any) => {
@@ -242,6 +530,7 @@ export default function App() {
     // Prevent duplicate candidate name (case-insensitive) across the candidates list
     const existingDuplicate = candidates.find(c => {
       if (candidateData.id && c.id === candidateData.id) return false;
+      if (candidateData.chestNo && Number(c.chestNo) === Number(candidateData.chestNo)) return false;
       return (c.name || '').trim().toUpperCase() === candidateName;
     });
 
@@ -253,7 +542,7 @@ export default function App() {
       // 1. Save locally to clientStorage (localStorage)
       const savedCandidate = clientStorage.saveCandidate(candidateData);
       const allLocal = clientStorage.getCandidates();
-      setCandidates(allLocal);
+      setCandidates(sanitizeUniqueCandidates(allLocal));
       setCandidateToEdit(null);
 
       // 2. Auto-submit immediately to Server Pending Queue
@@ -263,31 +552,58 @@ export default function App() {
         const unsynced = clientStorage.getUnsyncedCandidates();
         const batchToSubmit = unsynced.length > 0 ? unsynced : [savedCandidate];
 
-        await api.submitUpload({
-          club: clientClubName,
-          clientName: 'Client Portal',
-          candidates: batchToSubmit,
-          totalFees: batchToSubmit.reduce((sum, c) => sum + (c.totalFees || 0), 0),
-          notes: `Submitted from Client Entry Page`,
-        });
+        // Automatic retry (up to 2 attempts) to ensure transient network blips don't drop request
+        let uploadSuccess = false;
+        let lastErr: any = null;
+        for (let attempt = 1; attempt <= 2; attempt++) {
+          try {
+            await api.submitUpload({
+              club: clientClubName,
+              clientName: 'Client Portal',
+              candidates: batchToSubmit,
+              totalFees: batchToSubmit.reduce((sum, c) => sum + (c.totalFees || 0), 0),
+              notes: `Live entry from Client Portal (${new Date().toLocaleTimeString()})`,
+            });
+            uploadSuccess = true;
+            break;
+          } catch (err) {
+            lastErr = err;
+            if (attempt === 1) {
+              await new Promise(res => setTimeout(res, 500));
+            }
+          }
+        }
+
+        if (!uploadSuccess && lastErr) {
+          throw lastErr;
+        }
 
         clientStorage.markSynced(batchToSubmit.map(c => c.id), new Date().toISOString());
-        setCandidates(clientStorage.getCandidates());
+        setCandidates(sanitizeUniqueCandidates(clientStorage.getCandidates()));
 
         const updatedUploads = await api.getUploads().catch(() => []);
         setUploads(updatedUploads);
-      } catch (uploadErr) {
+
+        setSyncNotice({
+          type: 'success',
+          message: `Approval request for "${savedCandidate.name}" sent to server review queue!`,
+        });
+        setTimeout(() => setSyncNotice(null), 4000);
+      } catch (uploadErr: any) {
         console.warn('Auto-submit to server pending list deferred/offline:', uploadErr);
+        setSyncNotice({
+          type: 'error',
+          message: `Saved locally. Server approval request failed: ${uploadErr.message || 'Offline'}. Tap "Send" to retry.`,
+        });
+        setTimeout(() => setSyncNotice(null), 5000);
       }
     } else {
-      // Server direct entry: persist immediately to server DB
-      if (candidateToEdit) {
-        const qualifiedEvts = getCandidateQualifiedEvents(candidateToEdit, heats, results);
-        if (qualifiedEvts.length > 0) {
-          alert(
-            `Editing Restricted!\n\nCandidate "${candidateToEdit.name}" (Chest #${candidateToEdit.chestNo}) has already qualified from hit to final in Event #${qualifiedEvts.join(', #')}.\n\nEditing candidate details is restricted once an athlete qualifies for finals in any event, even if other events are not completed yet.`
-          );
-          return;
+      // Server direct entry: check restriction per Logic 1 before persisting
+      const targetCandidate = (candidateData.id ? candidates.find(c => c.id === candidateData.id) : null) || candidateToEdit;
+      if (targetCandidate) {
+        const restrictionStatus = getCandidateRestrictionStatus(targetCandidate, events, heats, results, 'server');
+        if (restrictionStatus.isRestricted) {
+          throw new Error(getCandidateEditRestrictedMessage(targetCandidate, restrictionStatus));
         }
       }
 
@@ -298,8 +614,7 @@ export default function App() {
         updatedAt: new Date().toISOString(),
       };
       await api.saveCandidate(srvCandidate);
-      const updatedList = await api.getCandidates();
-      setCandidates(updatedList);
+      await loadData(true);
       setCandidateToEdit(null);
     }
   };
@@ -320,7 +635,7 @@ export default function App() {
   const handleDeleteCandidate = async (id: string) => {
     if (mode === 'client') {
       clientStorage.deleteCandidate(id);
-      setCandidates(clientStorage.getCandidates());
+      setCandidates(sanitizeUniqueCandidates(clientStorage.getCandidates()));
       api.deleteUploadCandidateGlobally(id).then(async () => {
         const updatedUploads = await api.getUploads().catch(() => []);
         setUploads(updatedUploads);
@@ -336,7 +651,7 @@ export default function App() {
       try {
         await api.deleteCandidate(id);
         const updatedList = await api.getCandidates();
-        setCandidates(updatedList);
+        setCandidates(sanitizeUniqueCandidates(updatedList));
       } catch (err: any) {
         alert(err.message || 'Failed to delete candidate');
       }
@@ -375,7 +690,7 @@ export default function App() {
 
       // Mark locally as synced
       clientStorage.markSynced(toUpload.map(c => c.id), new Date().toISOString());
-      setCandidates(clientStorage.getCandidates());
+      setCandidates(sanitizeUniqueCandidates(clientStorage.getCandidates()));
 
       // Refresh uploads list
       const updatedUploads = await api.getUploads().catch(() => []);
@@ -423,7 +738,7 @@ export default function App() {
       });
 
       clientStorage.markAllAsSynced();
-      setCandidates(clientStorage.getCandidates());
+      setCandidates(sanitizeUniqueCandidates(clientStorage.getCandidates()));
 
       const updatedUploads = await api.getUploads().catch(() => []);
       setUploads(updatedUploads);
@@ -474,14 +789,12 @@ export default function App() {
   // Hit List / Heats Handlers
   const handleSaveHeat = async (heat: Partial<EventHeat>) => {
     await api.saveHeat(heat);
-    const updated = await api.getHeats();
-    setHeats(updated);
+    await loadData(true);
   };
 
   const handleDeleteHeat = async (heatId: string) => {
     await api.deleteHeat(heatId);
-    const updated = await api.getHeats();
-    setHeats(updated);
+    await loadData(true);
   };
 
   const handlePromoteToFinal = async (evtNo: number, qualified: HeatParticipant[]) => {
@@ -498,17 +811,13 @@ export default function App() {
       finalists: newFinalParticipants,
       completed: existing?.completed || false,
     });
-    const updatedResults = await api.getResults();
-    setResults(updatedResults);
-    // Stay on Hit List so user can immediately view/print the Final List
-    // or navigate if desired
+    await loadData(true);
   };
 
   // Results & Finals Handlers
   const handleSaveResult = async (result: Partial<EventResult>) => {
     await api.saveResult(result);
-    const updated = await api.getResults();
-    setResults(updated);
+    await loadData(true);
   };
 
   const handleNavigateToRanking = (evtNo?: number) => {
@@ -522,6 +831,21 @@ export default function App() {
   const handleSaveSettings = async (newSettings: SportsMeetSettings) => {
     await api.saveSettings(newSettings);
     setSettings(newSettings);
+
+    // Synchronize host club in clubs registry if registeredClubName, registeredClubLogo, or registeredClubPhone changed
+    if (newSettings.registeredClubName || newSettings.registeredClubLogo || newSettings.registeredClubPhone) {
+      const hostClub = clubs.find((c) => c.id === 'club_1') || clubs[0];
+      if (hostClub) {
+        const updatedClub: Club = {
+          ...hostClub,
+          name: newSettings.registeredClubName || hostClub.name,
+          logoUrl: newSettings.registeredClubLogo || hostClub.logoUrl,
+          phone: newSettings.registeredClubPhone || hostClub.phone,
+        };
+        await api.saveClub(updatedClub).catch(() => {});
+        setClubs((prev) => prev.map((c) => (c.id === updatedClub.id ? updatedClub : c)));
+      }
+    }
   };
 
   const handleSaveClub = async (clubData: Partial<Club>) => {
@@ -579,27 +903,36 @@ export default function App() {
   };
 
   // On successful PIN verification
-  const handlePinSuccess = () => {
+  const handlePinSuccess = async (sessionData?: any) => {
     setIsServerAuthenticated(true);
     setShowPinModal(false);
     setMode('server');
     setActiveTab('uploads');
+    // Force immediate sync of all server records
+    await loadData(true, 'server');
     setSyncNotice({
       type: 'success',
-      message: 'Server Control Unlocked. You now have full administrative access.',
+      message: sessionData?.message || 'Server Control Unlocked. Database synchronized with server.',
     });
     setTimeout(() => setSyncNotice(null), 4000);
   };
 
   // Lock server handler
-  const handleLockServer = () => {
+  const handleLockServer = async () => {
+    const sessId = sessionStorage.getItem('esports_server_session_id') || undefined;
     sessionStorage.removeItem('esports_server_auth');
+    sessionStorage.removeItem('esports_server_session_id');
     setIsServerAuthenticated(false);
     setMode('client');
     setActiveTab('enroll');
+    try {
+      await api.logoutServer(sessId);
+    } catch {
+      // ignore
+    }
     setSyncNotice({
       type: 'success',
-      message: 'Server control locked. Switched to Client Portal.',
+      message: 'Server control locked and session released. Switched to Client Portal.',
     });
     setTimeout(() => setSyncNotice(null), 3500);
   };
@@ -656,7 +989,7 @@ export default function App() {
             clubs={clubs}
             settings={settings}
             serverCandidates={candidates}
-            onRefresh={loadData}
+            onRefresh={() => loadData(true, 'server')}
             onNavigateToCandidates={() => setActiveTab('candidates')}
             onMergeSuccess={(msg) => {
               setSyncNotice({ type: 'success', message: msg });
@@ -727,6 +1060,7 @@ export default function App() {
             candidates={candidates}
             heats={heats}
             results={results}
+            clubs={clubs}
             settings={settings}
             onSaveHeat={handleSaveHeat}
             onDeleteHeat={handleDeleteHeat}
@@ -749,13 +1083,15 @@ export default function App() {
           />
         )}
 
-        {/* TAB 7: Reports (Printable Chest-wise and Club-wise grouped) */}
-        {activeTab === 'reports' && (
+        {/* TAB 7: Reports (Printable Chest-wise, Club-wise, Hit, Final, Rankings, Championship - Server Only) */}
+        {activeTab === 'reports' && mode === 'server' && (
           <Reports
             candidates={candidates}
             events={events}
             clubs={clubs}
             settings={settings}
+            heats={heats}
+            results={results}
           />
         )}
 
@@ -764,12 +1100,20 @@ export default function App() {
           <AdminPanel
             settings={settings}
             clubs={clubs}
+            events={events}
             onSaveSettings={handleSaveSettings}
             onSaveClub={handleSaveClub}
             onDeleteClub={handleDeleteClub}
+            onSaveEvent={handleSaveEvent}
+            onDeleteEvent={handleDeleteEvent}
+            onResetEvents={handleResetEvents}
             onDownloadBackup={handleDownloadBackup}
             onRestoreBackup={handleRestoreBackup}
             onResetAllData={handleResetAllData}
+            onPurgeExceptEvents={async () => {
+              await api.purgeAllExceptEvents();
+              await loadData();
+            }}
             onOpenResetPin={() => setShowResetPinModal(true)}
           />
         )}
@@ -787,23 +1131,75 @@ export default function App() {
               settings,
             }}
             onRefresh={loadData}
+            onDownloadBackup={handleDownloadBackup}
+            onRestoreBackup={handleRestoreBackup}
+            onResetAllData={handleResetAllData}
+            onPurgeExceptEvents={async () => {
+              await api.purgeAllExceptEvents();
+              await loadData();
+            }}
           />
         )}
       </main>
 
-      {/* Footer */}
-      <footer className="bg-white border-t border-slate-200 py-5 text-center text-xs text-slate-500 print:hidden">
-        <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
-          <p>
-            <strong>eSports</strong> • Sports Management System • {settings.ordinalTitle}
-          </p>
-          <div className="flex items-center gap-3 text-[11px] font-medium text-slate-400">
-            <span>Client/Server Staging &amp; Review Architecture</span>
-            <span>•</span>
-            <span>Multi-Device Accumulator</span>
-            <span>•</span>
-            <span>PIN Protected Server</span>
+      {/* Footer with Minimal Height, Left-Aligned Club Details & Right-Aligned Direct-Call Mobile */}
+      <footer className="bg-white border-t border-slate-200 py-1.5 px-3 sm:px-4 text-xs text-slate-500 print:hidden shrink-0">
+        <div className="max-w-7xl mx-auto flex items-center justify-between gap-3">
+          {/* Left Aligned: Registered Club Logo, Registered Club Name, and Meet Ordinal */}
+          <div className="flex items-center gap-2.5 min-w-0 text-left">
+            <img
+              src={
+                settings.registeredClubLogo ||
+                clubs.find((c) => c.id === 'club_1')?.logoUrl ||
+                clubs[0]?.logoUrl ||
+                '/icon.png'
+              }
+              alt={
+                settings.registeredClubName ||
+                clubs.find((c) => c.id === 'club_1')?.name ||
+                clubs[0]?.name ||
+                settings.organizer ||
+                'Registered Club Logo'
+              }
+              className="w-7 h-7 sm:w-8 sm:h-8 rounded-full object-contain p-0.5 border border-slate-200 shadow-2xs shrink-0 bg-white"
+              onError={(e) => {
+                (e.target as HTMLImageElement).src = '/icon.png';
+              }}
+            />
+            <div className="flex flex-col justify-center min-w-0 leading-tight">
+              <span className="text-xs sm:text-sm font-bold text-slate-900 tracking-tight truncate leading-tight">
+                {settings.registeredClubName ||
+                  clubs.find((c) => c.id === 'club_1')?.name ||
+                  clubs[0]?.name ||
+                  settings.organizer ||
+                  'Agrani Sasthitala Sangha'}
+              </span>
+              <span className="text-[10px] sm:text-xs font-semibold text-slate-500 truncate leading-tight">
+                {settings.ordinalTitle || '47th Annual Sports Meet 2027'}
+              </span>
+            </div>
           </div>
+
+          {/* Right Most Side: Registered Club Mobile (only digits) with Direct Call on Tap */}
+          {(() => {
+            const rawPhone =
+              settings.registeredClubPhone ||
+              clubs.find((c) => c.id === 'club_1')?.phone ||
+              clubs[0]?.phone ||
+              '';
+            const digitsOnly = String(rawPhone || '').replace(/\D/g, '');
+            if (!digitsOnly) return null;
+            return (
+              <a
+                href={`tel:${digitsOnly}`}
+                title={`Call ${digitsOnly}`}
+                className="shrink-0 flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-700 hover:text-emerald-800 border border-emerald-200 text-xs sm:text-sm font-mono font-bold transition-all active:scale-95 shadow-2xs"
+              >
+                <Phone className="w-3.5 h-3.5 text-emerald-600 shrink-0 animate-pulse" />
+                <span className="tracking-wide">{digitsOnly}</span>
+              </a>
+            );
+          })()}
         </div>
       </footer>
 

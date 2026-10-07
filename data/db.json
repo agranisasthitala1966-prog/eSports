@@ -5,285 +5,700 @@
       "Evt_Name": "50 MTS. RUN",
       "Height": "3`-4``",
       "Gender": "CHILDRENS",
-      "Fees": 10
+      "Fees": 10,
+      "requiredHit": true,
+      "requiredFinal": true
     },
     {
       "Evt_No": 1,
       "Evt_Name": "50 MTS. RUN",
       "Height": "3`-8``",
       "Gender": "CHILDRENS",
-      "Fees": 10
+      "Fees": 10,
+      "requiredHit": true,
+      "requiredFinal": true
     },
     {
       "Evt_No": 2,
       "Evt_Name": "KANAMACHHI",
       "Height": "3`-8``",
       "Gender": "CHILDRENS",
-      "Fees": 10
+      "Fees": 10,
+      "requiredHit": false,
+      "requiredFinal": true
     },
     {
       "Evt_No": 3,
       "Evt_Name": "100 MTS. RUN",
       "Height": "4`-2``",
       "Gender": "BOYS",
-      "Fees": 10
+      "Fees": 10,
+      "requiredHit": true,
+      "requiredFinal": true
     },
     {
       "Evt_No": 4,
       "Evt_Name": "POTATO RACE",
       "Height": "4`-2``",
       "Gender": "BOYS",
-      "Fees": 10
+      "Fees": 10,
+      "requiredHit": true,
+      "requiredFinal": true
     },
     {
       "Evt_No": 5,
       "Evt_Name": "200 MTS. RUN",
       "Height": "4`-6``",
       "Gender": "BOYS",
-      "Fees": 10
+      "Fees": 10,
+      "requiredHit": true,
+      "requiredFinal": true
     },
     {
       "Evt_No": 6,
       "Evt_Name": "BROAD JUMP",
       "Height": "4`-6``",
       "Gender": "BOYS",
-      "Fees": 10
+      "Fees": 10,
+      "requiredHit": false,
+      "requiredFinal": true
     },
     {
       "Evt_No": 7,
       "Evt_Name": "200 MTS. RUN",
       "Height": "4`-10``",
       "Gender": "BOYS",
-      "Fees": 10
+      "Fees": 10,
+      "requiredHit": true,
+      "requiredFinal": true
     },
     {
       "Evt_No": 8,
       "Evt_Name": "BROAD JUMP",
       "Height": "4`-10``",
       "Gender": "BOYS",
-      "Fees": 10
+      "Fees": 10,
+      "requiredHit": false,
+      "requiredFinal": true
     },
     {
       "Evt_No": 9,
       "Evt_Name": "100 MTS. RUN",
       "Height": "4`-2``",
       "Gender": "GIRLS",
-      "Fees": 10
+      "Fees": 10,
+      "requiredHit": true,
+      "requiredFinal": true
     },
     {
       "Evt_No": 10,
       "Evt_Name": "POTATO RACE",
       "Height": "4`-2``",
       "Gender": "GIRLS",
-      "Fees": 10
+      "Fees": 10,
+      "requiredHit": true,
+      "requiredFinal": true
     },
     {
       "Evt_No": 11,
       "Evt_Name": "200 MTS. RUN",
       "Height": "4`-6``",
       "Gender": "GIRLS",
-      "Fees": 10
+      "Fees": 10,
+      "requiredHit": true,
+      "requiredFinal": true
     },
     {
       "Evt_No": 12,
       "Evt_Name": "BROAD JUMP",
       "Height": "4`-6``",
       "Gender": "GIRLS",
-      "Fees": 10
+      "Fees": 10,
+      "requiredHit": false,
+      "requiredFinal": true
     },
     {
       "Evt_No": 13,
       "Evt_Name": "200 MTS. RUN",
       "Height": "4`-10``",
       "Gender": "GIRLS",
-      "Fees": 10
+      "Fees": 10,
+      "requiredHit": true,
+      "requiredFinal": true
     },
     {
       "Evt_No": 14,
       "Evt_Name": "BROAD JUMP",
       "Height": "4`-10``",
       "Gender": "GIRLS",
-      "Fees": 10
+      "Fees": 10,
+      "requiredHit": false,
+      "requiredFinal": true
     },
     {
       "Evt_No": 15,
       "Evt_Name": "GO AS YOU LIKE",
       "Height": "ALL",
       "Gender": "ALL",
-      "Fees": 20
+      "Fees": 20,
+      "requiredHit": false,
+      "requiredFinal": true
     }
   ],
   "candidates": [
     {
-      "id": "cand_loc_1789995077154_m8cs",
+      "id": "cand_loc_1790139636615_tp6e",
       "chestNo": 101,
-      "localRecordNo": 3,
-      "name": "POLO",
-      "club": "SASTHITALA AGRANI",
+      "name": "CHANCHALA",
+      "club": "BANDIPUR",
+      "gender": "GIRLS",
+      "height": "4`-6``",
+      "selectedEvents": [
+        11,
+        12
+      ],
+      "totalFees": 20,
+      "createdAt": "2026-09-23T05:00:36.614Z",
+      "updatedAt": "2026-10-06T07:27:41.055Z",
+      "synced": true,
+      "isDirty": false,
+      "syncedAt": "2026-10-06T07:27:41.055Z",
+      "feeStatus": "Paid [P]"
+    },
+    {
+      "id": "cand_loc_1790140142215_r13a",
+      "chestNo": 102,
+      "name": "SK MOZAUDDIN",
+      "club": "BANDIPUR",
       "gender": "BOYS",
       "height": "4`-2``",
-      "feeStatus": "Paid",
       "selectedEvents": [
         3,
         4,
+        5
+      ],
+      "totalFees": 30,
+      "createdAt": "2026-09-23T05:09:02.214Z",
+      "updatedAt": "2026-10-06T07:27:41.055Z",
+      "synced": true,
+      "isDirty": false,
+      "syncedAt": "2026-10-06T07:27:41.055Z",
+      "feeStatus": "Paid [P]"
+    },
+    {
+      "id": "cand_loc_1790140166341_paon",
+      "chestNo": 103,
+      "name": "TAMALI GUHA",
+      "club": "BANDIPUR",
+      "gender": "GIRLS",
+      "height": "4`-2``",
+      "selectedEvents": [
+        9,
+        10
+      ],
+      "totalFees": 20,
+      "createdAt": "2026-09-23T05:09:26.341Z",
+      "updatedAt": "2026-10-06T07:27:41.055Z",
+      "synced": true,
+      "isDirty": false,
+      "syncedAt": "2026-10-06T07:27:41.055Z",
+      "feeStatus": "Paid"
+    },
+    {
+      "id": "cand_loc_1790140210277_f3al",
+      "chestNo": 104,
+      "name": "PRANAB GOUTAM",
+      "club": "BANDIPUR",
+      "gender": "BOYS",
+      "height": "4`-2``",
+      "selectedEvents": [
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "totalFees": 50,
+      "createdAt": "2026-09-23T05:10:10.277Z",
+      "updatedAt": "2026-10-06T07:27:41.055Z",
+      "synced": true,
+      "isDirty": false,
+      "syncedAt": "2026-10-06T07:27:41.055Z",
+      "feeStatus": "Paid"
+    },
+    {
+      "id": "cand_loc_1790140236116_1don",
+      "chestNo": 105,
+      "name": "TATHOI NANDY",
+      "club": "BANDIPUR",
+      "gender": "BOYS",
+      "height": "4`-10``",
+      "selectedEvents": [
+        7,
+        8
+      ],
+      "totalFees": 20,
+      "createdAt": "2026-09-23T05:10:36.116Z",
+      "updatedAt": "2026-10-06T07:27:41.055Z",
+      "synced": true,
+      "isDirty": false,
+      "syncedAt": "2026-10-06T07:27:41.055Z",
+      "feeStatus": "Paid"
+    },
+    {
+      "id": "cand_loc_1790146355505_de08",
+      "chestNo": 106,
+      "name": "ARJUN SEN",
+      "club": "BANDIPUR",
+      "gender": "BOYS",
+      "height": "4`-2``",
+      "selectedEvents": [
+        3,
+        4
+      ],
+      "totalFees": 20,
+      "createdAt": "2026-09-23T06:52:35.504Z",
+      "updatedAt": "2026-10-06T07:27:41.055Z",
+      "synced": true,
+      "isDirty": false,
+      "syncedAt": "2026-10-06T07:27:41.055Z",
+      "feeStatus": "Paid"
+    },
+    {
+      "id": "cand_loc_1790147307054_gqum",
+      "chestNo": 107,
+      "name": "KARTIK",
+      "club": "BANDIPUR",
+      "gender": "BOYS",
+      "height": "4`-6``",
+      "selectedEvents": [
+        6,
+        7
+      ],
+      "totalFees": 20,
+      "createdAt": "2026-09-23T07:08:27.051Z",
+      "updatedAt": "2026-10-06T07:27:41.055Z",
+      "synced": true,
+      "isDirty": false,
+      "syncedAt": "2026-10-06T07:27:41.055Z",
+      "feeStatus": "Paid"
+    },
+    {
+      "id": "cand_loc_1790170654970_fwnl",
+      "chestNo": 108,
+      "name": "HOPP",
+      "club": "BANDIPUR",
+      "gender": "GIRLS",
+      "height": "4`-2``",
+      "selectedEvents": [
+        10,
+        11
+      ],
+      "totalFees": 20,
+      "createdAt": "2026-09-23T13:37:34.960Z",
+      "updatedAt": "2026-10-06T07:27:41.055Z",
+      "synced": true,
+      "isDirty": false,
+      "syncedAt": "2026-10-06T07:27:41.055Z",
+      "feeStatus": "Paid"
+    },
+    {
+      "id": "cand_loc_1790254621388_ht9c",
+      "chestNo": 109,
+      "name": "KAKA",
+      "club": "BANDIPUR",
+      "gender": "BOYS",
+      "height": "4`-2``",
+      "selectedEvents": [
+        4,
+        5,
+        7,
+        8
+      ],
+      "totalFees": 40,
+      "createdAt": "2026-09-24T12:57:01.384Z",
+      "updatedAt": "2026-10-06T07:27:41.055Z",
+      "synced": true,
+      "isDirty": false,
+      "syncedAt": "2026-10-06T07:27:41.055Z",
+      "feeStatus": "Paid"
+    },
+    {
+      "id": "cand_loc_1790254754086_803m",
+      "chestNo": 110,
+      "name": "SURUL",
+      "club": "BANDIPUR",
+      "gender": "BOYS",
+      "height": "4`-6``",
+      "selectedEvents": [
+        6,
+        8
+      ],
+      "totalFees": 20,
+      "createdAt": "2026-09-24T12:59:14.083Z",
+      "updatedAt": "2026-10-06T07:27:41.055Z",
+      "synced": true,
+      "isDirty": false,
+      "syncedAt": "2026-10-06T07:27:41.055Z",
+      "feeStatus": "Paid"
+    },
+    {
+      "id": "cand_loc_1790254994539_wz6w",
+      "chestNo": 111,
+      "name": "POMPY",
+      "club": "BANDIPUR",
+      "gender": "GIRLS",
+      "height": "4`-2``",
+      "selectedEvents": [
+        9,
+        10,
+        11
+      ],
+      "totalFees": 30,
+      "createdAt": "2026-09-24T13:03:14.538Z",
+      "updatedAt": "2026-10-06T07:27:41.055Z",
+      "synced": true,
+      "isDirty": false,
+      "syncedAt": "2026-10-06T07:27:41.055Z",
+      "feeStatus": "Paid"
+    },
+    {
+      "id": "cand_loc_1790255015928_xqvy",
+      "chestNo": 112,
+      "name": "FAIJAL",
+      "club": "BANDIPUR",
+      "gender": "BOYS",
+      "height": "4`-2``",
+      "selectedEvents": [
+        3,
+        5,
         7
       ],
       "totalFees": 30,
-      "createdAt": "2026-09-21T12:51:17.154Z",
-      "updatedAt": "2026-09-21T13:13:58.115Z",
+      "createdAt": "2026-09-24T13:03:35.928Z",
+      "updatedAt": "2026-10-06T07:27:41.055Z",
       "synced": true,
       "isDirty": false,
-      "syncedAt": "2026-09-23T04:41:02.594Z"
+      "syncedAt": "2026-10-06T07:27:41.055Z",
+      "feeStatus": "Paid"
     },
     {
-      "id": "cand_1790139823112_tpp9y",
-      "chestNo": 102,
-      "name": "THAKUR HEMBRAM",
-      "club": "Tentultala",
-      "gender": "CHILDRENS",
-      "height": "3`-4``",
-      "feeStatus": "Paid",
+      "id": "cand_loc_1790255041555_lb2u",
+      "chestNo": 113,
+      "name": "BARNALI",
+      "club": "BANDIPUR",
+      "gender": "GIRLS",
+      "height": "4`-6``",
       "selectedEvents": [
-        0,
-        2
+        11,
+        12
       ],
       "totalFees": 20,
+      "createdAt": "2026-09-24T13:04:01.555Z",
+      "updatedAt": "2026-10-06T07:27:41.055Z",
       "synced": true,
       "isDirty": false,
-      "updatedAt": "2026-09-23T05:04:22.418Z",
-      "createdAt": "2026-09-23T05:03:43.112Z",
-      "syncedAt": "2026-09-23T05:04:22.418Z"
+      "syncedAt": "2026-10-06T07:27:41.055Z",
+      "feeStatus": "Paid"
     },
     {
-      "id": "test_c1",
-      "name": "RAHUL ROY",
-      "gender": "BOYS",
-      "height": "4-8",
-      "totalFees": 50,
+      "id": "cand_loc_1790274245528_8fm7",
+      "chestNo": 114,
+      "name": "SANJIKA",
+      "club": "BANDIPUR",
+      "gender": "GIRLS",
+      "height": "4`-6``",
+      "selectedEvents": [
+        11,
+        13
+      ],
+      "totalFees": 20,
+      "createdAt": "2026-09-24T18:24:05.527Z",
+      "updatedAt": "2026-10-06T07:27:41.055Z",
+      "synced": true,
+      "isDirty": false,
+      "syncedAt": "2026-10-06T07:27:41.055Z",
+      "feeStatus": "Paid"
+    },
+    {
+      "id": "cand_loc_1790324440375_xe16",
+      "chestNo": 115,
+      "name": "KHU",
+      "club": "BANDIPUR",
+      "gender": "CHILDRENS",
+      "height": "3`-8``",
       "selectedEvents": [
         1,
         2
       ],
-      "createdAt": "2026-09-23T05:00:00Z",
-      "updatedAt": "2026-09-23T05:34:37.984Z",
-      "synced": true,
-      "localRecordNo": 1,
-      "uploadedAt": "2026-09-23T05:34:30.301Z",
-      "club": "SASTHITALA AGRANI",
-      "chestNo": 103,
-      "isDirty": false,
-      "syncedAt": "2026-09-23T05:34:37.984Z"
-    },
-    {
-      "chestNo": 104,
-      "name": "KANTI MURMU",
-      "club": "SUBHASH NAGAR YUBA PARISHAD",
-      "gender": "BOYS",
-      "height": "4`-6``",
-      "feeStatus": "Paid",
-      "selectedEvents": [
-        5,
-        6,
-        7
-      ],
-      "totalFees": 30,
+      "totalFees": 20,
+      "createdAt": "2026-09-25T08:20:40.375Z",
+      "updatedAt": "2026-10-06T07:27:41.055Z",
       "synced": true,
       "isDirty": false,
-      "updatedAt": "2026-09-25T07:18:04.771Z",
-      "id": "cand_1790320684771_ejg9b",
-      "createdAt": "2026-09-25T07:18:04.771Z",
-      "syncedAt": "2026-09-25T07:18:04.771Z"
+      "syncedAt": "2026-10-06T07:27:41.055Z",
+      "feeStatus": "Due"
     },
     {
-      "chestNo": 105,
-      "name": "KAJAL RAI",
-      "club": "SASTHITALA AGRANI",
-      "gender": "BOYS",
-      "height": "4`-6``",
-      "feeStatus": "Paid",
+      "id": "cand_loc_1790326538016_2n7u",
+      "chestNo": 116,
+      "name": "PAPOU",
+      "club": "BANDIPUR",
+      "gender": "CHILDRENS",
+      "height": "3`-8``",
       "selectedEvents": [
-        6,
-        7
+        1,
+        2
       ],
       "totalFees": 20,
+      "createdAt": "2026-09-25T08:55:38.010Z",
+      "updatedAt": "2026-10-06T07:27:41.055Z",
       "synced": true,
       "isDirty": false,
-      "updatedAt": "2026-09-25T07:18:54.974Z",
-      "id": "cand_1790320734974_ghm5k",
-      "createdAt": "2026-09-25T07:18:54.974Z",
-      "syncedAt": "2026-09-25T07:18:54.974Z"
+      "syncedAt": "2026-10-06T07:27:41.055Z",
+      "feeStatus": "Due"
     },
     {
-      "chestNo": 106,
-      "name": "GFHH",
-      "club": "AGRANI SASTHITALA SANGHA",
+      "id": "cand_loc_1790338834900_fsux",
+      "chestNo": 117,
+      "name": "INE",
+      "club": "BANDIPUR",
       "gender": "BOYS",
-      "height": "4`-6``",
-      "feeStatus": "Paid [P]",
+      "height": "4`-2``",
       "selectedEvents": [
+        3,
+        4,
+        5
+      ],
+      "totalFees": 30,
+      "createdAt": "2026-09-25T12:20:34.894Z",
+      "updatedAt": "2026-10-06T07:27:41.055Z",
+      "synced": true,
+      "isDirty": false,
+      "syncedAt": "2026-10-06T07:27:41.055Z",
+      "feeStatus": "Due"
+    },
+    {
+      "id": "cand_loc_1790338856850_2oga",
+      "chestNo": 118,
+      "name": "ONE",
+      "club": "BANDIPUR",
+      "gender": "BOYS",
+      "height": "4`-2``",
+      "selectedEvents": [
+        3,
+        4,
+        5
+      ],
+      "totalFees": 30,
+      "createdAt": "2026-09-25T12:20:56.850Z",
+      "updatedAt": "2026-10-06T07:27:41.055Z",
+      "synced": true,
+      "isDirty": false,
+      "syncedAt": "2026-10-06T07:27:41.055Z",
+      "feeStatus": "Due"
+    },
+    {
+      "id": "cand_loc_1790339143302_rsjr",
+      "chestNo": 119,
+      "name": "GD",
+      "club": "BANDIPUR",
+      "gender": "CHILDRENS",
+      "height": "3`-8``",
+      "selectedEvents": [
+        1,
+        2
+      ],
+      "totalFees": 20,
+      "createdAt": "2026-09-25T12:25:43.302Z",
+      "updatedAt": "2026-10-06T07:27:41.055Z",
+      "synced": true,
+      "isDirty": false,
+      "syncedAt": "2026-10-06T07:27:41.055Z",
+      "feeStatus": "Due"
+    },
+    {
+      "id": "cand_loc_1790473694420_31sq",
+      "chestNo": 120,
+      "name": "MANJUMA",
+      "club": "BANDIPUR",
+      "gender": "GIRLS",
+      "height": "4`-6``",
+      "selectedEvents": [
+        11,
+        12
+      ],
+      "totalFees": 20,
+      "createdAt": "2026-09-27T01:48:14.417Z",
+      "updatedAt": "2026-10-06T07:27:41.055Z",
+      "synced": true,
+      "isDirty": false,
+      "syncedAt": "2026-10-06T07:27:41.055Z",
+      "feeStatus": "Due"
+    },
+    {
+      "id": "cand_loc_1790526495564_fnxo",
+      "chestNo": 121,
+      "name": "DGHS",
+      "club": "BANDIPUR",
+      "gender": "BOYS",
+      "height": "4`-2``",
+      "selectedEvents": [
+        3,
+        4,
         5,
         6,
         7
       ],
-      "totalFees": 30,
+      "totalFees": 50,
+      "createdAt": "2026-09-27T16:28:15.559Z",
+      "updatedAt": "2026-10-06T07:27:41.055Z",
       "synced": true,
       "isDirty": false,
-      "updatedAt": "2026-09-25T07:21:35.585Z",
-      "id": "cand_1790320878063_8zjts",
-      "createdAt": "2026-09-25T07:21:18.063Z",
-      "syncedAt": "2026-09-25T07:21:35.585Z"
+      "syncedAt": "2026-10-06T07:27:41.055Z",
+      "feeStatus": "Due"
     },
     {
-      "chestNo": 107,
-      "name": "GTTG",
-      "club": "INDEPENDENT / UNATTACHED",
+      "id": "cand_loc_1790683815866_5451",
+      "chestNo": 122,
+      "name": "DGGFS",
+      "club": "BANDIPUR",
+      "gender": "CHILDRENS",
+      "height": "3`-8``",
+      "selectedEvents": [
+        1,
+        2
+      ],
+      "totalFees": 20,
+      "createdAt": "2026-09-29T12:10:15.859Z",
+      "updatedAt": "2026-10-06T07:27:41.055Z",
+      "synced": true,
+      "isDirty": false,
+      "syncedAt": "2026-10-06T07:27:41.055Z",
+      "feeStatus": "Due"
+    },
+    {
+      "id": "cand_loc_1790683831327_vjzv",
+      "chestNo": 123,
+      "name": "POIE",
+      "club": "BANDIPUR",
+      "gender": "CHILDRENS",
+      "height": "3`-8``",
+      "selectedEvents": [
+        1,
+        2
+      ],
+      "totalFees": 20,
+      "createdAt": "2026-09-29T12:10:31.327Z",
+      "updatedAt": "2026-10-06T07:27:41.055Z",
+      "synced": true,
+      "isDirty": false,
+      "syncedAt": "2026-10-06T07:27:41.055Z",
+      "feeStatus": "Due [D]"
+    },
+    {
+      "id": "cand_loc_1790767090208_qgbu",
+      "chestNo": 124,
+      "name": "HHSS",
+      "club": "BANDIPUR",
       "gender": "BOYS",
       "height": "4`-6``",
-      "feeStatus": "Paid",
       "selectedEvents": [
         5,
-        6,
-        7,
-        8,
-        15
+        6
       ],
-      "totalFees": 60,
+      "totalFees": 20,
+      "createdAt": "2026-09-30T11:18:10.208Z",
+      "updatedAt": "2026-10-06T07:27:41.055Z",
       "synced": true,
       "isDirty": false,
-      "updatedAt": "2026-09-25T07:28:03.154Z",
-      "id": "cand_1790321283154_1v5yj",
-      "createdAt": "2026-09-25T07:28:03.154Z",
-      "syncedAt": "2026-09-25T07:28:03.154Z"
+      "syncedAt": "2026-10-06T07:27:41.055Z",
+      "feeStatus": "Due"
     },
     {
-      "chestNo": 108,
-      "name": "KOLK",
+      "id": "cand_loc_1790767916533_90c2",
+      "chestNo": 125,
+      "name": "DGD",
+      "club": "BANDIPUR",
+      "gender": "BOYS",
+      "height": "4`-2``",
+      "selectedEvents": [
+        3,
+        4
+      ],
+      "totalFees": 20,
+      "createdAt": "2026-09-30T11:31:56.531Z",
+      "updatedAt": "2026-10-06T07:27:41.055Z",
+      "synced": true,
+      "isDirty": false,
+      "syncedAt": "2026-10-06T07:27:41.055Z",
+      "feeStatus": "Due"
+    },
+    {
+      "id": "cand_loc_1790839976295_zd1d",
+      "chestNo": 126,
+      "name": "HHD",
+      "club": "BANDIPUR",
+      "gender": "BOYS",
+      "height": "4`-2``",
+      "selectedEvents": [
+        3,
+        4
+      ],
+      "totalFees": 20,
+      "createdAt": "2026-10-01T07:32:56.289Z",
+      "updatedAt": "2026-10-06T07:27:41.055Z",
+      "synced": true,
+      "isDirty": false,
+      "syncedAt": "2026-10-06T07:27:41.055Z",
+      "feeStatus": "Due"
+    },
+    {
+      "id": "cand_1790843173334_0duam",
+      "chestNo": 127,
+      "name": "SOLOD",
+      "club": "SANTAN SANGHA",
+      "gender": "BOYS",
+      "height": "4`-2``",
+      "selectedEvents": [
+        3,
+        4
+      ],
+      "totalFees": 20,
+      "createdAt": "2026-10-01T08:26:13.334Z",
+      "updatedAt": "2026-10-06T07:27:41.055Z",
+      "synced": true,
+      "isDirty": false,
+      "syncedAt": "2026-10-06T07:27:41.055Z",
+      "feeStatus": "Due [D]"
+    },
+    {
+      "id": "cand_loc_1790935993742_1et6",
+      "chestNo": 128,
+      "name": "GHOLP",
       "club": "SASTHITALA AGRANI",
-      "gender": "BOYS",
-      "height": "4`-6``",
-      "feeStatus": "Due",
+      "gender": "CHILDRENS",
+      "height": "3`-4``",
       "selectedEvents": [
-        5,
-        6,
-        8
+        0
       ],
-      "totalFees": 30,
+      "totalFees": 10,
+      "createdAt": "2026-10-02T10:13:13.742Z",
+      "updatedAt": "2026-10-06T07:27:41.055Z",
       "synced": true,
       "isDirty": false,
-      "updatedAt": "2026-09-25T07:48:15.269Z",
-      "id": "cand_1790322495269_zsv68",
-      "createdAt": "2026-09-25T07:48:15.269Z",
-      "syncedAt": "2026-09-25T07:48:15.269Z"
+      "syncedAt": "2026-10-06T07:27:41.055Z",
+      "feeStatus": "Due"
     }
   ],
   "clubs": [
     {
       "id": "club_1",
-      "name": "Agrani Sasthitala Sangha",
+      "name": "Sasthitala Agrani",
       "shortCode": "ASS",
-      "logoUrl": "/icon.svg",
+      "logoUrl": "data:image/png;base64,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",
       "contactPerson": "S. Chakraborty",
-      "phone": "+91 98301 23456",
+      "phone": "9831096400",
       "address": "Sasthitala Main Road, Ward 4"
     },
     {
@@ -317,44 +732,269 @@
       "id": "club_5",
       "name": "Independent / Unattached",
       "shortCode": "IND",
-      "logoUrl": "/icon.svg",
+      "logoUrl": "/icon.png",
       "contactPerson": "Individual Entry",
       "phone": "-",
       "address": "General Public Entry"
     }
   ],
-  "results": [
-    {
-      "eventNo": 3,
-      "finalists": [
-        {
-          "chestNo": 101,
-          "candidateName": "POLO",
-          "club": "SASTHITALA AGRANI",
-          "lane": 1
-        }
-      ],
-      "completed": false,
-      "id": "res_evt_3"
-    }
-  ],
+  "results": [],
   "heats": [
     {
-      "eventNo": 3,
+      "id": "heat_10_1_1791015008966",
+      "eventNo": 10,
+      "status": "scheduled",
       "heatNumber": 1,
       "participants": [
         {
-          "chestNo": 101,
-          "candidateName": "POLO",
-          "club": "SASTHITALA AGRANI",
+          "lane": 1,
+          "candidateName": "ANANYA SARKAR",
+          "heatNumber": 1,
+          "qualified": false,
+          "chestNo": 111,
+          "club": "Agrani Sasthitala Sangha"
+        }
+      ]
+    },
+    {
+      "id": "heat_12_1_1791014996352",
+      "eventNo": 12,
+      "participants": [
+        {
+          "qualified": true,
           "lane": 1,
           "heatNumber": 1,
+          "candidateName": "SUHANI KARMAKAR",
+          "chestNo": 113,
+          "club": "Milan Samity Athletic Club"
+        },
+        {
+          "club": "Subhash Nagar Yuba Parishad",
+          "candidateName": "MOUMITA HALDER",
+          "chestNo": 117,
           "qualified": true,
-          "timeRecord": ""
+          "lane": 2,
+          "heatNumber": 1
         }
       ],
       "status": "scheduled",
-      "id": "heat_1790138913498_2qa4"
+      "heatNumber": 1
+    },
+    {
+      "id": "heat_13_1_1791014960810",
+      "participants": [
+        {
+          "lane": 1,
+          "chestNo": 114,
+          "candidateName": "TANUSHREE MAJUMDAR",
+          "heatNumber": 1,
+          "club": "Milan Samity Athletic Club",
+          "qualified": false
+        },
+        {
+          "lane": 2,
+          "candidateName": "SNEHA BHOWMIK",
+          "qualified": false,
+          "club": "Tarun Sangha Sports Club",
+          "heatNumber": 1,
+          "chestNo": 115
+        },
+        {
+          "qualified": false,
+          "club": "Tarun Sangha Sports Club",
+          "chestNo": 116,
+          "lane": 3,
+          "candidateName": "POOJA BISWAS",
+          "heatNumber": 1
+        }
+      ],
+      "eventNo": 13,
+      "heatNumber": 1,
+      "status": "scheduled"
+    },
+    {
+      "id": "heat_14_1_1791014991528",
+      "heatNumber": 1,
+      "status": "scheduled",
+      "participants": [
+        {
+          "heatNumber": 1,
+          "club": "Tarun Sangha Sports Club",
+          "qualified": true,
+          "chestNo": 115,
+          "lane": 1,
+          "candidateName": "SNEHA BHOWMIK"
+        },
+        {
+          "lane": 2,
+          "chestNo": 116,
+          "candidateName": "POOJA BISWAS",
+          "qualified": true,
+          "heatNumber": 1,
+          "club": "Tarun Sangha Sports Club"
+        }
+      ],
+      "eventNo": 14
+    },
+    {
+      "id": "heat_15_1_1791015000703",
+      "heatNumber": 1,
+      "eventNo": 15,
+      "status": "scheduled",
+      "participants": [
+        {
+          "chestNo": 103,
+          "lane": 1,
+          "qualified": true,
+          "candidateName": "ISHAAN GHOSH",
+          "club": "Milan Samity Athletic Club",
+          "heatNumber": 1
+        },
+        {
+          "candidateName": "RAJDEEP BHATTACHARYA",
+          "lane": 2,
+          "qualified": true,
+          "chestNo": 109,
+          "heatNumber": 1,
+          "club": "Agrani Sasthitala Sangha"
+        },
+        {
+          "club": "Independent / Unattached",
+          "heatNumber": 1,
+          "chestNo": 110,
+          "candidateName": "KOUSTAV NANDY",
+          "lane": 3,
+          "qualified": true
+        },
+        {
+          "candidateName": "POOJA BISWAS",
+          "qualified": true,
+          "lane": 4,
+          "club": "Tarun Sangha Sports Club",
+          "chestNo": 116,
+          "heatNumber": 1
+        },
+        {
+          "candidateName": "MOUMITA HALDER",
+          "chestNo": 117,
+          "lane": 5,
+          "qualified": true,
+          "club": "Subhash Nagar Yuba Parishad",
+          "heatNumber": 1
+        },
+        {
+          "qualified": true,
+          "club": "Agrani Sasthitala Sangha",
+          "chestNo": 118,
+          "lane": 6,
+          "heatNumber": 1,
+          "candidateName": "SAYAN MITRA"
+        }
+      ]
+    },
+    {
+      "id": "heat_2_1_1791014979112",
+      "participants": [
+        {
+          "chestNo": 102,
+          "lane": 1,
+          "candidateName": "ROHAN SEN",
+          "heatNumber": 1,
+          "club": "Agrani Sasthitala Sangha",
+          "qualified": true
+        },
+        {
+          "club": "BANDIPUR",
+          "chestNo": 122,
+          "lane": 2,
+          "heatNumber": 1,
+          "candidateName": "DGGFS",
+          "qualified": true
+        },
+        {
+          "candidateName": "POIE",
+          "heatNumber": 1,
+          "lane": 3,
+          "club": "BANDIPUR",
+          "chestNo": 123,
+          "qualified": true
+        }
+      ],
+      "status": "scheduled",
+      "heatNumber": 1,
+      "eventNo": 2
+    },
+    {
+      "id": "heat_6_1_1791014983392",
+      "eventNo": 6,
+      "heatNumber": 1,
+      "participants": [
+        {
+          "lane": 1,
+          "qualified": true,
+          "heatNumber": 1,
+          "chestNo": 106,
+          "candidateName": "SUBHAM DUTTA",
+          "club": "Tarun Sangha Sports Club"
+        },
+        {
+          "lane": 2,
+          "chestNo": 110,
+          "qualified": true,
+          "heatNumber": 1,
+          "candidateName": "KOUSTAV NANDY",
+          "club": "Independent / Unattached"
+        },
+        {
+          "heatNumber": 1,
+          "lane": 3,
+          "qualified": true,
+          "chestNo": 121,
+          "candidateName": "FRRF",
+          "club": "SANTAN SANGHA"
+        },
+        {
+          "lane": 4,
+          "candidateName": "HHSS",
+          "chestNo": 124,
+          "heatNumber": 1,
+          "qualified": true,
+          "club": "BANDIPUR"
+        }
+      ],
+      "status": "scheduled"
+    },
+    {
+      "eventNo": 8,
+      "heatNumber": 1,
+      "participants": [
+        {
+          "chestNo": 105,
+          "candidateName": "TATHOI NANDY",
+          "club": "BANDIPUR",
+          "lane": 1,
+          "heatNumber": 1,
+          "qualified": true
+        },
+        {
+          "chestNo": 109,
+          "candidateName": "KAKA",
+          "club": "BANDIPUR",
+          "lane": 2,
+          "heatNumber": 1,
+          "qualified": true
+        },
+        {
+          "chestNo": 110,
+          "candidateName": "SURUL",
+          "club": "BANDIPUR",
+          "lane": 3,
+          "heatNumber": 1,
+          "qualified": true
+        }
+      ],
+      "status": "scheduled",
+      "id": "heat_1791275707377_uecc"
     }
   ],
   "settings": {
@@ -366,39 +1006,1337 @@
     "secretary": "Shri Tapas Ghosh",
     "currencySymbol": "₹",
     "autoChestStart": 101,
-    "serverPin": "1234"
+    "serverPin": "1234",
+    "broadJumpPreviousRecords": {
+      "6": {
+        "eventNo": 6,
+        "eventName": "BROAD JUMP",
+        "gender": "BOYS",
+        "height": "4'-6\"",
+        "recordHolderName": "Sourav Mondal",
+        "recordHolderClub": "Milan Samity Athletic Club",
+        "recordYear": "2025",
+        "recordValue": "14'-05\""
+      },
+      "8": {
+        "eventNo": 8,
+        "eventName": "BROAD JUMP",
+        "gender": "BOYS",
+        "height": "4'-10\"",
+        "recordHolderName": "Rahul Ghosh",
+        "recordHolderClub": "Agrani Sasthitala Sangha",
+        "recordYear": "2024",
+        "recordValue": "16'-02\""
+      },
+      "12": {
+        "eventNo": 12,
+        "eventName": "BROAD JUMP",
+        "gender": "GIRLS",
+        "height": "4'-6\"",
+        "recordHolderName": "Priya Mukherjee",
+        "recordHolderClub": "Tarun Sangha Sports Club",
+        "recordYear": "2025",
+        "recordValue": "13'-08\""
+      },
+      "14": {
+        "eventNo": 14,
+        "eventName": "BROAD JUMP",
+        "gender": "GIRLS",
+        "height": "4'-10\"",
+        "recordHolderName": "Tanushree Das",
+        "recordHolderClub": "Subhash Nagar Yuba Parishad",
+        "recordYear": "2025",
+        "recordValue": "14'-09\""
+      }
+    },
+    "registeredClubName": "Sasthitala Agrani",
+    "registeredClubLogo": "data:image/png;base64,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",
+    "registeredClubPhone": "9831096400"
   },
   "clientUploads": [
     {
-      "id": "upload_1790141670301_klzlj",
-      "club": "SASTHITALA AGRANI",
-      "clientName": "Mobile Client Tab 1",
-      "uploadedAt": "2026-09-23T05:34:30.301Z",
+      "id": "upload_1790843050003_shiky",
       "status": "merged",
+      "mergedAt": "2026-10-01T08:24:35.468Z",
+      "clientName": "Mobile Client",
+      "uploadedAt": "2026-10-01T08:24:09.957Z",
+      "reviewedAt": "2026-10-01T08:24:35.468Z",
+      "totalFees": 650,
+      "club": "AGRADUTI",
+      "notes": "Uploaded via client portal (26 athletes)",
       "candidates": [
         {
-          "id": "test_c1",
-          "name": "RAHUL ROY",
+          "isDirty": false,
+          "feeStatus": "Paid [P]",
+          "gender": "GIRLS",
+          "syncedAt": "2026-10-01T07:33:06.973Z",
+          "uploadedAt": "2026-10-01T08:24:09.957Z",
+          "synced": true,
+          "selectedEvents": [
+            11,
+            12
+          ],
+          "status": "merged",
+          "localRecordNo": 1,
+          "id": "cand_loc_1790139636615_tp6e",
+          "chestNo": 101,
+          "totalFees": 20,
+          "createdAt": "2026-09-23T05:00:36.614Z",
+          "merged": true,
+          "updatedAt": "2026-10-01T08:24:35.468Z",
+          "height": "4`-6``",
+          "name": "CHANCHALA",
+          "club": "AGRADUTI"
+        },
+        {
+          "totalFees": 30,
+          "createdAt": "2026-09-23T05:09:02.214Z",
+          "chestNo": 102,
+          "height": "4`-2``",
+          "updatedAt": "2026-10-01T08:24:35.468Z",
+          "merged": true,
+          "selectedEvents": [
+            3,
+            4,
+            5
+          ],
+          "club": "AGRADUTI",
+          "status": "merged",
+          "feeStatus": "Paid [P]",
+          "synced": true,
+          "syncedAt": "2026-10-01T07:33:06.973Z",
+          "isDirty": false,
+          "name": "SK MOZAUDDIN",
           "gender": "BOYS",
-          "height": "4-8",
+          "id": "cand_loc_1790140142215_r13a",
+          "uploadedAt": "2026-10-01T08:24:09.957Z",
+          "localRecordNo": 2
+        },
+        {
+          "chestNo": 103,
+          "gender": "GIRLS",
+          "selectedEvents": [
+            9,
+            10
+          ],
+          "totalFees": 20,
+          "status": "merged",
+          "updatedAt": "2026-10-01T08:24:35.468Z",
+          "synced": true,
+          "syncedAt": "2026-10-01T07:33:06.973Z",
+          "createdAt": "2026-09-23T05:09:26.341Z",
+          "isDirty": false,
+          "uploadedAt": "2026-10-01T08:24:09.957Z",
+          "localRecordNo": 3,
+          "merged": true,
+          "id": "cand_loc_1790140166341_paon",
+          "name": "TAMALI GUHA",
+          "feeStatus": "Paid",
+          "height": "4`-2``",
+          "club": "AGRADUTI"
+        },
+        {
+          "merged": true,
+          "id": "cand_loc_1790140210277_f3al",
+          "feeStatus": "Paid",
+          "chestNo": 104,
+          "name": "PRANAB GOUTAM",
+          "syncedAt": "2026-10-01T07:33:06.973Z",
+          "height": "4`-2``",
+          "club": "AGRADUTI",
+          "gender": "BOYS",
+          "selectedEvents": [
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "uploadedAt": "2026-10-01T08:24:09.957Z",
+          "isDirty": false,
           "totalFees": 50,
+          "status": "merged",
+          "updatedAt": "2026-10-01T08:24:35.468Z",
+          "localRecordNo": 4,
+          "createdAt": "2026-09-23T05:10:10.277Z",
+          "synced": true
+        },
+        {
+          "isDirty": false,
+          "gender": "BOYS",
+          "syncedAt": "2026-10-01T07:33:06.973Z",
+          "status": "merged",
+          "totalFees": 20,
+          "createdAt": "2026-09-23T05:10:36.116Z",
+          "localRecordNo": 5,
+          "updatedAt": "2026-10-01T08:24:35.468Z",
+          "synced": true,
+          "chestNo": 105,
+          "uploadedAt": "2026-10-01T08:24:09.957Z",
+          "merged": true,
+          "selectedEvents": [
+            7,
+            8
+          ],
+          "id": "cand_loc_1790140236116_1don",
+          "name": "TATHOI NANDY",
+          "feeStatus": "Paid",
+          "club": "AGRADUTI",
+          "height": "4`-10``"
+        },
+        {
+          "name": "ARJUN SEN",
+          "id": "cand_loc_1790146355505_de08",
+          "chestNo": 106,
+          "club": "AGRADUTI",
+          "syncedAt": "2026-10-01T07:33:06.973Z",
+          "gender": "BOYS",
+          "uploadedAt": "2026-10-01T08:24:09.957Z",
+          "synced": true,
+          "totalFees": 20,
+          "updatedAt": "2026-10-01T08:24:35.468Z",
+          "localRecordNo": 6,
+          "createdAt": "2026-09-23T06:52:35.504Z",
+          "status": "merged",
+          "isDirty": false,
+          "merged": true,
+          "feeStatus": "Paid",
+          "selectedEvents": [
+            3,
+            4
+          ],
+          "height": "4`-2``"
+        },
+        {
+          "status": "merged",
+          "syncedAt": "2026-10-01T07:33:06.973Z",
+          "synced": true,
+          "gender": "BOYS",
+          "localRecordNo": 7,
+          "club": "AGRADUTI",
+          "isDirty": false,
+          "name": "KARTIK",
+          "feeStatus": "Paid",
+          "selectedEvents": [
+            6,
+            7
+          ],
+          "uploadedAt": "2026-10-01T08:24:09.957Z",
+          "height": "4`-6``",
+          "id": "cand_loc_1790147307054_gqum",
+          "updatedAt": "2026-10-01T08:24:35.468Z",
+          "merged": true,
+          "createdAt": "2026-09-23T07:08:27.051Z",
+          "totalFees": 20,
+          "chestNo": 107
+        },
+        {
+          "selectedEvents": [
+            10,
+            11
+          ],
+          "synced": true,
+          "status": "merged",
+          "uploadedAt": "2026-10-01T08:24:09.957Z",
+          "localRecordNo": 8,
+          "club": "AGRADUTI",
+          "gender": "GIRLS",
+          "feeStatus": "Paid",
+          "name": "HOPP",
+          "chestNo": 108,
+          "height": "4`-2``",
+          "syncedAt": "2026-10-01T07:33:06.973Z",
+          "updatedAt": "2026-10-01T08:24:35.468Z",
+          "id": "cand_loc_1790170654970_fwnl",
+          "createdAt": "2026-09-23T13:37:34.960Z",
+          "totalFees": 20,
+          "isDirty": false,
+          "merged": true
+        },
+        {
+          "chestNo": 109,
+          "merged": true,
+          "selectedEvents": [
+            4,
+            5,
+            7,
+            8
+          ],
+          "localRecordNo": 9,
+          "id": "cand_loc_1790254621388_ht9c",
+          "uploadedAt": "2026-10-01T08:24:09.957Z",
+          "club": "AGRADUTI",
+          "height": "4`-2``",
+          "name": "KAKA",
+          "feeStatus": "Paid",
+          "syncedAt": "2026-10-01T07:33:06.973Z",
+          "isDirty": false,
+          "gender": "BOYS",
+          "createdAt": "2026-09-24T12:57:01.384Z",
+          "status": "merged",
+          "updatedAt": "2026-10-01T08:24:35.468Z",
+          "totalFees": 40,
+          "synced": true
+        },
+        {
+          "status": "merged",
+          "chestNo": 110,
+          "uploadedAt": "2026-10-01T08:24:09.957Z",
+          "synced": true,
+          "gender": "BOYS",
+          "syncedAt": "2026-10-01T07:33:06.973Z",
+          "feeStatus": "Paid",
+          "localRecordNo": 10,
+          "id": "cand_loc_1790254754086_803m",
+          "isDirty": false,
+          "height": "4`-6``",
+          "name": "SURUL",
+          "createdAt": "2026-09-24T12:59:14.083Z",
+          "merged": true,
+          "selectedEvents": [
+            6,
+            8
+          ],
+          "updatedAt": "2026-10-01T08:24:35.468Z",
+          "totalFees": 20,
+          "club": "AGRADUTI"
+        },
+        {
+          "height": "4`-2``",
+          "localRecordNo": 11,
+          "syncedAt": "2026-10-01T07:33:06.973Z",
+          "isDirty": false,
+          "feeStatus": "Paid",
+          "merged": true,
+          "createdAt": "2026-09-24T13:03:14.538Z",
+          "synced": true,
+          "updatedAt": "2026-10-01T08:24:35.468Z",
+          "status": "merged",
+          "chestNo": 111,
+          "totalFees": 30,
+          "club": "AGRADUTI",
+          "uploadedAt": "2026-10-01T08:24:09.957Z",
+          "selectedEvents": [
+            9,
+            10,
+            11
+          ],
+          "gender": "GIRLS",
+          "id": "cand_loc_1790254994539_wz6w",
+          "name": "POMPY"
+        },
+        {
+          "gender": "BOYS",
+          "localRecordNo": 12,
+          "syncedAt": "2026-10-01T07:33:06.973Z",
+          "updatedAt": "2026-10-01T08:24:35.468Z",
+          "id": "cand_loc_1790255015928_xqvy",
+          "chestNo": 112,
+          "status": "merged",
+          "createdAt": "2026-09-24T13:03:35.928Z",
+          "synced": true,
+          "totalFees": 30,
+          "uploadedAt": "2026-10-01T08:24:09.957Z",
+          "club": "AGRADUTI",
+          "merged": true,
+          "name": "FAIJAL",
+          "isDirty": false,
+          "feeStatus": "Paid",
+          "selectedEvents": [
+            3,
+            5,
+            7
+          ],
+          "height": "4`-2``"
+        },
+        {
+          "club": "AGRADUTI",
+          "synced": true,
+          "name": "BARNALI",
+          "status": "merged",
+          "feeStatus": "Paid",
+          "gender": "GIRLS",
+          "chestNo": 113,
+          "uploadedAt": "2026-10-01T08:24:09.957Z",
+          "syncedAt": "2026-10-01T07:33:06.973Z",
+          "height": "4`-6``",
+          "updatedAt": "2026-10-01T08:24:35.468Z",
+          "selectedEvents": [
+            11,
+            12
+          ],
+          "id": "cand_loc_1790255041555_lb2u",
+          "createdAt": "2026-09-24T13:04:01.555Z",
+          "totalFees": 20,
+          "merged": true,
+          "localRecordNo": 13,
+          "isDirty": false
+        },
+        {
+          "uploadedAt": "2026-10-01T08:24:09.957Z",
+          "isDirty": false,
+          "selectedEvents": [
+            11,
+            13
+          ],
+          "localRecordNo": 14,
+          "gender": "GIRLS",
+          "createdAt": "2026-09-24T18:24:05.527Z",
+          "synced": true,
+          "updatedAt": "2026-10-01T08:24:35.468Z",
+          "totalFees": 20,
+          "status": "merged",
+          "name": "SANJIKA",
+          "chestNo": 114,
+          "merged": true,
+          "id": "cand_loc_1790274245528_8fm7",
+          "club": "AGRADUTI",
+          "height": "4`-6``",
+          "feeStatus": "Paid",
+          "syncedAt": "2026-10-01T07:33:06.973Z"
+        },
+        {
+          "synced": true,
+          "status": "merged",
+          "uploadedAt": "2026-10-01T08:24:09.957Z",
+          "chestNo": 115,
+          "name": "KHU",
+          "gender": "CHILDRENS",
+          "club": "AGRADUTI",
+          "feeStatus": "Due",
+          "id": "cand_loc_1790324440375_xe16",
+          "localRecordNo": 15,
+          "height": "3`-8``",
           "selectedEvents": [
             1,
             2
           ],
-          "createdAt": "2026-09-23T05:00:00Z",
-          "updatedAt": "2026-09-23T05:00:00Z",
+          "isDirty": false,
+          "createdAt": "2026-09-25T08:20:40.375Z",
+          "updatedAt": "2026-10-01T08:24:35.468Z",
+          "syncedAt": "2026-10-01T07:33:06.973Z",
+          "merged": true,
+          "totalFees": 20
+        },
+        {
+          "uploadedAt": "2026-10-01T08:24:09.957Z",
+          "isDirty": false,
+          "gender": "CHILDRENS",
+          "name": "PAPOU",
+          "club": "AGRADUTI",
+          "totalFees": 20,
+          "localRecordNo": 16,
+          "status": "merged",
           "synced": true,
-          "localRecordNo": 1,
-          "uploadedAt": "2026-09-23T05:34:30.301Z",
-          "club": "SASTHITALA AGRANI"
+          "updatedAt": "2026-10-01T08:24:35.468Z",
+          "createdAt": "2026-09-25T08:55:38.010Z",
+          "syncedAt": "2026-10-01T07:33:06.973Z",
+          "id": "cand_loc_1790326538016_2n7u",
+          "merged": true,
+          "chestNo": 116,
+          "feeStatus": "Due",
+          "selectedEvents": [
+            1,
+            2
+          ],
+          "height": "3`-8``"
+        },
+        {
+          "isDirty": false,
+          "gender": "BOYS",
+          "uploadedAt": "2026-10-01T08:24:09.957Z",
+          "syncedAt": "2026-10-01T07:33:06.973Z",
+          "status": "merged",
+          "id": "cand_loc_1790338834900_fsux",
+          "feeStatus": "Due",
+          "localRecordNo": 17,
+          "selectedEvents": [
+            3,
+            4,
+            5
+          ],
+          "synced": true,
+          "chestNo": 117,
+          "merged": true,
+          "name": "INE",
+          "totalFees": 30,
+          "club": "AGRADUTI",
+          "createdAt": "2026-09-25T12:20:34.894Z",
+          "height": "4`-2``",
+          "updatedAt": "2026-10-01T08:24:35.468Z"
+        },
+        {
+          "localRecordNo": 18,
+          "totalFees": 30,
+          "chestNo": 118,
+          "updatedAt": "2026-10-01T08:24:35.468Z",
+          "uploadedAt": "2026-10-01T08:24:09.957Z",
+          "selectedEvents": [
+            3,
+            4,
+            5
+          ],
+          "merged": true,
+          "createdAt": "2026-09-25T12:20:56.850Z",
+          "club": "AGRADUTI",
+          "height": "4`-2``",
+          "id": "cand_loc_1790338856850_2oga",
+          "syncedAt": "2026-10-01T07:33:06.973Z",
+          "name": "ONE",
+          "feeStatus": "Due",
+          "isDirty": false,
+          "gender": "BOYS",
+          "synced": true,
+          "status": "merged"
+        },
+        {
+          "selectedEvents": [
+            1,
+            2
+          ],
+          "totalFees": 20,
+          "name": "GD",
+          "status": "merged",
+          "synced": true,
+          "createdAt": "2026-09-25T12:25:43.302Z",
+          "club": "AGRADUTI",
+          "localRecordNo": 19,
+          "chestNo": 119,
+          "updatedAt": "2026-10-01T08:24:35.468Z",
+          "gender": "CHILDRENS",
+          "id": "cand_loc_1790339143302_rsjr",
+          "feeStatus": "Due",
+          "syncedAt": "2026-10-01T07:33:06.973Z",
+          "isDirty": false,
+          "height": "3`-8``",
+          "merged": true,
+          "uploadedAt": "2026-10-01T08:24:09.957Z"
+        },
+        {
+          "gender": "GIRLS",
+          "club": "AGRADUTI",
+          "feeStatus": "Due",
+          "isDirty": false,
+          "id": "cand_loc_1790473694420_31sq",
+          "synced": true,
+          "status": "merged",
+          "name": "MANJUMA",
+          "syncedAt": "2026-10-01T07:33:06.973Z",
+          "merged": true,
+          "height": "4`-6``",
+          "totalFees": 20,
+          "chestNo": 120,
+          "localRecordNo": 20,
+          "selectedEvents": [
+            11,
+            12
+          ],
+          "updatedAt": "2026-10-01T08:24:35.468Z",
+          "uploadedAt": "2026-10-01T08:24:09.957Z",
+          "createdAt": "2026-09-27T01:48:14.417Z"
+        },
+        {
+          "status": "merged",
+          "uploadedAt": "2026-10-01T08:24:09.957Z",
+          "chestNo": 121,
+          "synced": true,
+          "feeStatus": "Due",
+          "gender": "BOYS",
+          "id": "cand_loc_1790526495564_fnxo",
+          "createdAt": "2026-09-27T16:28:15.559Z",
+          "updatedAt": "2026-10-01T08:24:35.468Z",
+          "localRecordNo": 21,
+          "isDirty": false,
+          "height": "4`-2``",
+          "totalFees": 50,
+          "merged": true,
+          "name": "DGHS",
+          "club": "AGRADUTI",
+          "syncedAt": "2026-10-01T07:33:06.973Z",
+          "selectedEvents": [
+            3,
+            4,
+            5,
+            6,
+            7
+          ]
+        },
+        {
+          "chestNo": 122,
+          "gender": "CHILDRENS",
+          "synced": true,
+          "totalFees": 20,
+          "createdAt": "2026-09-29T12:10:15.859Z",
+          "uploadedAt": "2026-10-01T08:24:09.957Z",
+          "updatedAt": "2026-10-01T08:24:35.468Z",
+          "status": "merged",
+          "name": "DGGFS",
+          "isDirty": false,
+          "id": "cand_loc_1790683815866_5451",
+          "merged": true,
+          "localRecordNo": 22,
+          "syncedAt": "2026-10-01T07:33:06.973Z",
+          "club": "AGRADUTI",
+          "selectedEvents": [
+            1,
+            2
+          ],
+          "feeStatus": "Due",
+          "height": "3`-8``"
+        },
+        {
+          "height": "3`-8``",
+          "merged": true,
+          "localRecordNo": 23,
+          "feeStatus": "Due [D]",
+          "syncedAt": "2026-10-01T07:33:06.973Z",
+          "id": "cand_loc_1790683831327_vjzv",
+          "uploadedAt": "2026-10-01T08:24:09.957Z",
+          "isDirty": false,
+          "name": "POIE",
+          "status": "merged",
+          "synced": true,
+          "club": "AGRADUTI",
+          "selectedEvents": [
+            1,
+            2
+          ],
+          "totalFees": 20,
+          "gender": "CHILDRENS",
+          "updatedAt": "2026-10-01T08:24:35.468Z",
+          "chestNo": 123,
+          "createdAt": "2026-09-29T12:10:31.327Z"
+        },
+        {
+          "selectedEvents": [
+            5,
+            6
+          ],
+          "chestNo": 124,
+          "gender": "BOYS",
+          "updatedAt": "2026-10-01T08:24:35.468Z",
+          "name": "HHSS",
+          "createdAt": "2026-09-30T11:18:10.208Z",
+          "synced": true,
+          "localRecordNo": 24,
+          "totalFees": 20,
+          "status": "merged",
+          "club": "AGRADUTI",
+          "syncedAt": "2026-10-01T07:33:06.973Z",
+          "id": "cand_loc_1790767090208_qgbu",
+          "isDirty": false,
+          "uploadedAt": "2026-10-01T08:24:09.957Z",
+          "merged": true,
+          "height": "4`-6``",
+          "feeStatus": "Due"
+        },
+        {
+          "status": "merged",
+          "synced": true,
+          "gender": "BOYS",
+          "syncedAt": "2026-10-01T07:33:06.973Z",
+          "localRecordNo": 25,
+          "chestNo": 125,
+          "feeStatus": "Due",
+          "height": "4`-2``",
+          "uploadedAt": "2026-10-01T08:24:09.957Z",
+          "club": "AGRADUTI",
+          "updatedAt": "2026-10-01T08:24:35.468Z",
+          "createdAt": "2026-09-30T11:31:56.531Z",
+          "merged": true,
+          "selectedEvents": [
+            3,
+            4
+          ],
+          "id": "cand_loc_1790767916533_90c2",
+          "totalFees": 20,
+          "isDirty": false,
+          "name": "DGD"
+        },
+        {
+          "uploadedAt": "2026-10-01T08:24:09.957Z",
+          "totalFees": 20,
+          "status": "merged",
+          "synced": true,
+          "isDirty": false,
+          "createdAt": "2026-10-01T07:32:56.289Z",
+          "localRecordNo": 26,
+          "updatedAt": "2026-10-01T08:24:35.468Z",
+          "gender": "BOYS",
+          "name": "HHD",
+          "selectedEvents": [
+            3,
+            4
+          ],
+          "id": "cand_loc_1790839976295_zd1d",
+          "feeStatus": "Due",
+          "chestNo": 126,
+          "club": "AGRADUTI",
+          "height": "4`-2``",
+          "merged": true,
+          "syncedAt": "2026-10-01T07:33:06.973Z"
+        }
+      ]
+    },
+    {
+      "id": "upload_1790935993814_um7bs",
+      "totalFees": 10,
+      "notes": "Live entry from Client Portal (15:43:13)",
+      "status": "merged",
+      "clientName": "Client Portal",
+      "club": "SASTHITALA AGRANI",
+      "candidates": [
+        {
+          "updatedAt": "2026-10-02T10:19:09.490Z",
+          "status": "merged",
+          "club": "SASTHITALA AGRANI",
+          "createdAt": "2026-10-02T10:13:13.742Z",
+          "totalFees": 10,
+          "synced": true,
+          "name": "GHOLP",
+          "selectedEvents": [
+            0
+          ],
+          "gender": "CHILDRENS",
+          "isDirty": false,
+          "localRecordNo": 27,
+          "uploadedAt": "2026-10-02T10:13:13.795Z",
+          "feeStatus": "Due",
+          "height": "3`-4``",
+          "id": "cand_loc_1790935993742_1et6",
+          "syncedAt": null,
+          "merged": true,
+          "chestNo": 128
         }
       ],
-      "totalFees": 50,
-      "notes": "",
-      "mergedAt": "2026-09-23T05:34:37.984Z",
-      "reviewedAt": "2026-09-23T05:34:37.984Z"
+      "mergedAt": "2026-10-02T10:19:09.490Z",
+      "uploadedAt": "2026-10-02T10:13:13.795Z",
+      "reviewedAt": "2026-10-02T10:19:09.490Z"
+    },
+    {
+      "id": "upload_1790936004132_j6o8x",
+      "candidates": [
+        {
+          "updatedAt": "2026-10-02T10:18:38.575Z",
+          "status": "merged",
+          "createdAt": "2026-09-23T05:00:36.614Z",
+          "club": "BANDIPUR",
+          "totalFees": 20,
+          "name": "CHANCHALA",
+          "selectedEvents": [
+            11,
+            12
+          ],
+          "synced": true,
+          "gender": "GIRLS",
+          "isDirty": false,
+          "localRecordNo": 1,
+          "uploadedAt": "2026-10-02T10:13:24.115Z",
+          "feeStatus": "Paid [P]",
+          "height": "4`-6``",
+          "id": "cand_loc_1790139636615_tp6e",
+          "syncedAt": "2026-10-01T08:24:11.199Z",
+          "merged": true,
+          "chestNo": 101
+        },
+        {
+          "totalFees": 30,
+          "height": "4`-2``",
+          "createdAt": "2026-09-23T05:09:02.214Z",
+          "updatedAt": "2026-10-02T10:18:38.575Z",
+          "selectedEvents": [
+            3,
+            4,
+            5
+          ],
+          "merged": true,
+          "id": "cand_loc_1790140142215_r13a",
+          "chestNo": 102,
+          "synced": true,
+          "syncedAt": "2026-10-01T08:24:11.199Z",
+          "name": "SK MOZAUDDIN",
+          "feeStatus": "Paid [P]",
+          "club": "BANDIPUR",
+          "status": "merged",
+          "uploadedAt": "2026-10-02T10:13:24.115Z",
+          "localRecordNo": 2,
+          "gender": "BOYS",
+          "isDirty": false
+        },
+        {
+          "synced": true,
+          "status": "merged",
+          "uploadedAt": "2026-10-02T10:13:24.115Z",
+          "id": "cand_loc_1790140166341_paon",
+          "feeStatus": "Paid",
+          "gender": "GIRLS",
+          "isDirty": false,
+          "height": "4`-2``",
+          "syncedAt": "2026-10-01T08:24:11.199Z",
+          "selectedEvents": [
+            9,
+            10
+          ],
+          "localRecordNo": 3,
+          "totalFees": 20,
+          "club": "BANDIPUR",
+          "updatedAt": "2026-10-02T10:18:38.575Z",
+          "name": "TAMALI GUHA",
+          "chestNo": 103,
+          "merged": true,
+          "createdAt": "2026-09-23T05:09:26.341Z"
+        },
+        {
+          "updatedAt": "2026-10-02T10:18:38.575Z",
+          "syncedAt": "2026-10-01T08:24:11.199Z",
+          "createdAt": "2026-09-23T05:10:10.277Z",
+          "status": "merged",
+          "club": "BANDIPUR",
+          "totalFees": 50,
+          "name": "PRANAB GOUTAM",
+          "synced": true,
+          "selectedEvents": [
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "gender": "BOYS",
+          "chestNo": 104,
+          "uploadedAt": "2026-10-02T10:13:24.115Z",
+          "localRecordNo": 4,
+          "feeStatus": "Paid",
+          "height": "4`-2``",
+          "id": "cand_loc_1790140210277_f3al",
+          "merged": true,
+          "isDirty": false
+        },
+        {
+          "club": "BANDIPUR",
+          "localRecordNo": 5,
+          "isDirty": false,
+          "height": "4`-10``",
+          "name": "TATHOI NANDY",
+          "selectedEvents": [
+            7,
+            8
+          ],
+          "merged": true,
+          "feeStatus": "Paid",
+          "id": "cand_loc_1790140236116_1don",
+          "uploadedAt": "2026-10-02T10:13:24.115Z",
+          "syncedAt": "2026-10-01T08:24:11.199Z",
+          "status": "merged",
+          "chestNo": 105,
+          "synced": true,
+          "totalFees": 20,
+          "gender": "BOYS",
+          "createdAt": "2026-09-23T05:10:36.116Z",
+          "updatedAt": "2026-10-02T10:18:38.575Z"
+        },
+        {
+          "gender": "BOYS",
+          "localRecordNo": 6,
+          "updatedAt": "2026-10-02T10:18:38.575Z",
+          "chestNo": 106,
+          "createdAt": "2026-09-23T06:52:35.504Z",
+          "synced": true,
+          "status": "merged",
+          "selectedEvents": [
+            3,
+            4
+          ],
+          "totalFees": 20,
+          "merged": true,
+          "height": "4`-2``",
+          "club": "BANDIPUR",
+          "syncedAt": "2026-10-01T08:24:11.199Z",
+          "isDirty": false,
+          "feeStatus": "Paid",
+          "uploadedAt": "2026-10-02T10:13:24.115Z",
+          "name": "ARJUN SEN",
+          "id": "cand_loc_1790146355505_de08"
+        },
+        {
+          "chestNo": 107,
+          "selectedEvents": [
+            6,
+            7
+          ],
+          "merged": true,
+          "feeStatus": "Paid",
+          "club": "BANDIPUR",
+          "height": "4`-6``",
+          "localRecordNo": 7,
+          "name": "KARTIK",
+          "syncedAt": "2026-10-01T08:24:11.199Z",
+          "isDirty": false,
+          "gender": "BOYS",
+          "uploadedAt": "2026-10-02T10:13:24.115Z",
+          "id": "cand_loc_1790147307054_gqum",
+          "status": "merged",
+          "totalFees": 20,
+          "createdAt": "2026-09-23T07:08:27.051Z",
+          "updatedAt": "2026-10-02T10:18:38.575Z",
+          "synced": true
+        },
+        {
+          "chestNo": 108,
+          "selectedEvents": [
+            10,
+            11
+          ],
+          "feeStatus": "Paid",
+          "merged": true,
+          "height": "4`-2``",
+          "uploadedAt": "2026-10-02T10:13:24.115Z",
+          "updatedAt": "2026-10-02T10:18:38.575Z",
+          "localRecordNo": 8,
+          "createdAt": "2026-09-23T13:37:34.960Z",
+          "isDirty": false,
+          "gender": "GIRLS",
+          "totalFees": 20,
+          "id": "cand_loc_1790170654970_fwnl",
+          "synced": true,
+          "club": "BANDIPUR",
+          "status": "merged",
+          "name": "HOPP",
+          "syncedAt": "2026-10-01T08:24:11.199Z"
+        },
+        {
+          "club": "BANDIPUR",
+          "selectedEvents": [
+            4,
+            5,
+            7,
+            8
+          ],
+          "gender": "BOYS",
+          "name": "KAKA",
+          "synced": true,
+          "isDirty": false,
+          "feeStatus": "Paid",
+          "localRecordNo": 9,
+          "status": "merged",
+          "uploadedAt": "2026-10-02T10:13:24.115Z",
+          "merged": true,
+          "updatedAt": "2026-10-02T10:18:38.575Z",
+          "syncedAt": "2026-10-01T08:24:11.199Z",
+          "createdAt": "2026-09-24T12:57:01.384Z",
+          "height": "4`-2``",
+          "id": "cand_loc_1790254621388_ht9c",
+          "chestNo": 109,
+          "totalFees": 40
+        },
+        {
+          "isDirty": false,
+          "id": "cand_loc_1790254754086_803m",
+          "gender": "BOYS",
+          "feeStatus": "Paid",
+          "selectedEvents": [
+            6,
+            8
+          ],
+          "localRecordNo": 10,
+          "uploadedAt": "2026-10-02T10:13:24.115Z",
+          "status": "merged",
+          "synced": true,
+          "chestNo": 110,
+          "merged": true,
+          "totalFees": 20,
+          "createdAt": "2026-09-24T12:59:14.083Z",
+          "updatedAt": "2026-10-02T10:18:38.575Z",
+          "syncedAt": "2026-10-01T08:24:11.199Z",
+          "name": "SURUL",
+          "height": "4`-6``",
+          "club": "BANDIPUR"
+        },
+        {
+          "id": "cand_loc_1790254994539_wz6w",
+          "uploadedAt": "2026-10-02T10:13:24.115Z",
+          "syncedAt": "2026-10-01T08:24:11.199Z",
+          "chestNo": 111,
+          "height": "4`-2``",
+          "merged": true,
+          "feeStatus": "Paid",
+          "club": "BANDIPUR",
+          "status": "merged",
+          "localRecordNo": 11,
+          "name": "POMPY",
+          "synced": true,
+          "isDirty": false,
+          "selectedEvents": [
+            9,
+            10,
+            11
+          ],
+          "totalFees": 30,
+          "gender": "GIRLS",
+          "createdAt": "2026-09-24T13:03:14.538Z",
+          "updatedAt": "2026-10-02T10:18:38.575Z"
+        },
+        {
+          "isDirty": false,
+          "uploadedAt": "2026-10-02T10:13:24.115Z",
+          "gender": "BOYS",
+          "synced": true,
+          "selectedEvents": [
+            3,
+            5,
+            7
+          ],
+          "feeStatus": "Paid",
+          "id": "cand_loc_1790255015928_xqvy",
+          "status": "merged",
+          "chestNo": 112,
+          "name": "FAIJAL",
+          "merged": true,
+          "club": "BANDIPUR",
+          "localRecordNo": 12,
+          "totalFees": 30,
+          "height": "4`-2``",
+          "createdAt": "2026-09-24T13:03:35.928Z",
+          "syncedAt": "2026-10-01T08:24:11.199Z",
+          "updatedAt": "2026-10-02T10:18:38.575Z"
+        },
+        {
+          "height": "4`-6``",
+          "selectedEvents": [
+            11,
+            12
+          ],
+          "uploadedAt": "2026-10-02T10:13:24.115Z",
+          "name": "BARNALI",
+          "updatedAt": "2026-10-02T10:18:38.575Z",
+          "createdAt": "2026-09-24T13:04:01.555Z",
+          "totalFees": 20,
+          "merged": true,
+          "club": "BANDIPUR",
+          "localRecordNo": 13,
+          "isDirty": false,
+          "syncedAt": "2026-10-01T08:24:11.199Z",
+          "id": "cand_loc_1790255041555_lb2u",
+          "synced": true,
+          "status": "merged",
+          "feeStatus": "Paid",
+          "gender": "GIRLS",
+          "chestNo": 113
+        },
+        {
+          "club": "BANDIPUR",
+          "createdAt": "2026-09-24T18:24:05.527Z",
+          "syncedAt": "2026-10-01T08:24:11.199Z",
+          "updatedAt": "2026-10-02T10:18:38.575Z",
+          "gender": "GIRLS",
+          "totalFees": 20,
+          "name": "SANJIKA",
+          "synced": true,
+          "id": "cand_loc_1790274245528_8fm7",
+          "chestNo": 114,
+          "status": "merged",
+          "localRecordNo": 14,
+          "merged": true,
+          "uploadedAt": "2026-10-02T10:13:24.115Z",
+          "feeStatus": "Paid",
+          "height": "4`-6``",
+          "isDirty": false,
+          "selectedEvents": [
+            11,
+            13
+          ]
+        },
+        {
+          "feeStatus": "Due",
+          "club": "BANDIPUR",
+          "status": "merged",
+          "synced": true,
+          "name": "KHU",
+          "uploadedAt": "2026-10-02T10:13:24.115Z",
+          "gender": "CHILDRENS",
+          "chestNo": 115,
+          "id": "cand_loc_1790324440375_xe16",
+          "totalFees": 20,
+          "selectedEvents": [
+            1,
+            2
+          ],
+          "syncedAt": "2026-10-01T08:24:11.199Z",
+          "updatedAt": "2026-10-02T10:18:38.575Z",
+          "height": "3`-8``",
+          "createdAt": "2026-09-25T08:20:40.375Z",
+          "merged": true,
+          "localRecordNo": 15,
+          "isDirty": false
+        },
+        {
+          "club": "BANDIPUR",
+          "createdAt": "2026-09-25T08:55:38.010Z",
+          "updatedAt": "2026-10-02T10:18:38.575Z",
+          "isDirty": false,
+          "merged": true,
+          "name": "PAPOU",
+          "totalFees": 20,
+          "id": "cand_loc_1790326538016_2n7u",
+          "height": "3`-8``",
+          "syncedAt": "2026-10-01T08:24:11.199Z",
+          "chestNo": 116,
+          "selectedEvents": [
+            1,
+            2
+          ],
+          "localRecordNo": 16,
+          "feeStatus": "Due",
+          "gender": "CHILDRENS",
+          "synced": true,
+          "uploadedAt": "2026-10-02T10:13:24.115Z",
+          "status": "merged"
+        },
+        {
+          "height": "4`-2``",
+          "localRecordNo": 17,
+          "merged": true,
+          "feeStatus": "Due",
+          "isDirty": false,
+          "synced": true,
+          "name": "INE",
+          "id": "cand_loc_1790338834900_fsux",
+          "status": "merged",
+          "uploadedAt": "2026-10-02T10:13:24.115Z",
+          "club": "BANDIPUR",
+          "syncedAt": "2026-10-01T08:24:11.199Z",
+          "updatedAt": "2026-10-02T10:18:38.575Z",
+          "createdAt": "2026-09-25T12:20:34.894Z",
+          "totalFees": 30,
+          "selectedEvents": [
+            3,
+            4,
+            5
+          ],
+          "gender": "BOYS",
+          "chestNo": 117
+        },
+        {
+          "localRecordNo": 18,
+          "chestNo": 118,
+          "selectedEvents": [
+            3,
+            4,
+            5
+          ],
+          "gender": "BOYS",
+          "totalFees": 30,
+          "name": "ONE",
+          "createdAt": "2026-09-25T12:20:56.850Z",
+          "club": "BANDIPUR",
+          "updatedAt": "2026-10-02T10:18:38.575Z",
+          "status": "merged",
+          "synced": true,
+          "id": "cand_loc_1790338856850_2oga",
+          "merged": true,
+          "isDirty": false,
+          "feeStatus": "Due",
+          "syncedAt": "2026-10-01T08:24:11.199Z",
+          "uploadedAt": "2026-10-02T10:13:24.115Z",
+          "height": "4`-2``"
+        },
+        {
+          "name": "GD",
+          "merged": true,
+          "club": "BANDIPUR",
+          "feeStatus": "Due",
+          "uploadedAt": "2026-10-02T10:13:24.115Z",
+          "localRecordNo": 19,
+          "height": "3`-8``",
+          "isDirty": false,
+          "selectedEvents": [
+            1,
+            2
+          ],
+          "createdAt": "2026-09-25T12:25:43.302Z",
+          "updatedAt": "2026-10-02T10:18:38.575Z",
+          "totalFees": 20,
+          "gender": "CHILDRENS",
+          "id": "cand_loc_1790339143302_rsjr",
+          "synced": true,
+          "syncedAt": "2026-10-01T08:24:11.199Z",
+          "chestNo": 119,
+          "status": "merged"
+        },
+        {
+          "isDirty": false,
+          "merged": true,
+          "height": "4`-6``",
+          "totalFees": 20,
+          "createdAt": "2026-09-27T01:48:14.417Z",
+          "updatedAt": "2026-10-02T10:18:38.575Z",
+          "id": "cand_loc_1790473694420_31sq",
+          "chestNo": 120,
+          "gender": "GIRLS",
+          "uploadedAt": "2026-10-02T10:13:24.115Z",
+          "syncedAt": "2026-10-01T08:24:11.199Z",
+          "selectedEvents": [
+            11,
+            12
+          ],
+          "club": "BANDIPUR",
+          "feeStatus": "Due",
+          "synced": true,
+          "localRecordNo": 20,
+          "status": "merged",
+          "name": "MANJUMA"
+        },
+        {
+          "totalFees": 50,
+          "name": "DGHS",
+          "status": "merged",
+          "synced": true,
+          "createdAt": "2026-09-27T16:28:15.559Z",
+          "club": "BANDIPUR",
+          "chestNo": 121,
+          "updatedAt": "2026-10-02T10:18:38.575Z",
+          "gender": "BOYS",
+          "id": "cand_loc_1790526495564_fnxo",
+          "localRecordNo": 21,
+          "feeStatus": "Due",
+          "isDirty": false,
+          "syncedAt": "2026-10-01T08:24:11.199Z",
+          "selectedEvents": [
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "height": "4`-2``",
+          "merged": true,
+          "uploadedAt": "2026-10-02T10:13:24.115Z"
+        },
+        {
+          "synced": true,
+          "status": "merged",
+          "isDirty": false,
+          "uploadedAt": "2026-10-02T10:13:24.115Z",
+          "localRecordNo": 22,
+          "createdAt": "2026-09-29T12:10:15.859Z",
+          "updatedAt": "2026-10-02T10:18:38.575Z",
+          "gender": "CHILDRENS",
+          "id": "cand_loc_1790683815866_5451",
+          "totalFees": 20,
+          "height": "3`-8``",
+          "syncedAt": "2026-10-01T08:24:11.199Z",
+          "chestNo": 122,
+          "name": "DGGFS",
+          "club": "BANDIPUR",
+          "selectedEvents": [
+            1,
+            2
+          ],
+          "merged": true,
+          "feeStatus": "Due"
+        },
+        {
+          "feeStatus": "Due [D]",
+          "status": "merged",
+          "synced": true,
+          "gender": "CHILDRENS",
+          "chestNo": 123,
+          "localRecordNo": 23,
+          "totalFees": 20,
+          "syncedAt": "2026-10-01T08:24:11.199Z",
+          "uploadedAt": "2026-10-02T10:13:24.115Z",
+          "selectedEvents": [
+            1,
+            2
+          ],
+          "club": "BANDIPUR",
+          "id": "cand_loc_1790683831327_vjzv",
+          "name": "POIE",
+          "updatedAt": "2026-10-02T10:18:38.575Z",
+          "height": "3`-8``",
+          "createdAt": "2026-09-29T12:10:31.327Z",
+          "merged": true,
+          "isDirty": false
+        },
+        {
+          "status": "merged",
+          "isDirty": false,
+          "synced": true,
+          "gender": "BOYS",
+          "feeStatus": "Due",
+          "selectedEvents": [
+            5,
+            6
+          ],
+          "uploadedAt": "2026-10-02T10:13:24.115Z",
+          "id": "cand_loc_1790767090208_qgbu",
+          "chestNo": 124,
+          "syncedAt": "2026-10-01T08:24:11.199Z",
+          "height": "4`-6``",
+          "localRecordNo": 24,
+          "name": "HHSS",
+          "merged": true,
+          "totalFees": 20,
+          "createdAt": "2026-09-30T11:18:10.208Z",
+          "club": "BANDIPUR",
+          "updatedAt": "2026-10-02T10:18:38.575Z"
+        },
+        {
+          "merged": true,
+          "selectedEvents": [
+            3,
+            4
+          ],
+          "feeStatus": "Due",
+          "height": "4`-2``",
+          "isDirty": false,
+          "uploadedAt": "2026-10-02T10:13:24.115Z",
+          "syncedAt": "2026-10-01T08:24:11.199Z",
+          "gender": "BOYS",
+          "localRecordNo": 25,
+          "totalFees": 20,
+          "synced": true,
+          "chestNo": 125,
+          "name": "DGD",
+          "updatedAt": "2026-10-02T10:18:38.575Z",
+          "id": "cand_loc_1790767916533_90c2",
+          "status": "merged",
+          "club": "BANDIPUR",
+          "createdAt": "2026-09-30T11:31:56.531Z"
+        },
+        {
+          "height": "4`-2``",
+          "selectedEvents": [
+            3,
+            4
+          ],
+          "syncedAt": "2026-10-01T08:24:11.199Z",
+          "updatedAt": "2026-10-02T10:18:38.575Z",
+          "merged": true,
+          "createdAt": "2026-10-01T07:32:56.289Z",
+          "chestNo": 126,
+          "totalFees": 20,
+          "uploadedAt": "2026-10-02T10:13:24.115Z",
+          "localRecordNo": 26,
+          "status": "merged",
+          "synced": true,
+          "gender": "BOYS",
+          "name": "HHD",
+          "id": "cand_loc_1790839976295_zd1d",
+          "club": "BANDIPUR",
+          "isDirty": false,
+          "feeStatus": "Due"
+        }
+      ],
+      "status": "merged",
+      "uploadedAt": "2026-10-02T10:13:24.115Z",
+      "reviewedAt": "2026-10-02T10:18:38.575Z",
+      "mergedAt": "2026-10-02T10:18:38.575Z",
+      "clientName": "Mobile Client",
+      "club": "BANDIPUR",
+      "notes": "Uploaded via client portal (27 athletes)",
+      "totalFees": 660
     }
   ],
-  "lastUpdated": "2026-09-26T19:48:48.788Z"
+  "lastUpdated": "2026-10-06T08:35:07.377Z"
 }

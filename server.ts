@@ -1,4 +1,5 @@
-import express, { Request, Response } from 'express';
+import express from 'express';
+import type { Request, Response } from 'express';
 import path from 'path';
 import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
@@ -20,24 +21,58 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: '20mb' }));
 app.use(express.urlencoded({ extended: true, limit: '20mb' }));
 
+// Never cache API responses across devices (ensures desktop/mobile always receive latest data)
+app.use('/api', (req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  next();
+});
+
+// ----------------------------------------------------
+// MULTI-DEVICE SERVER LOGIN RESTRICTION & SESSION MANAGEMENT
+// ----------------------------------------------------
+interface ServerSession {
+  sessionId: string;
+  deviceId: string;
+  deviceLabel: string;
+  ip?: string;
+  loggedInAt: string;
+  lastActiveAt: string;
+}
+
+let activeServerSession: ServerSession | null = null;
+const SESSION_INACTIVITY_LIMIT_MS = 10 * 60 * 1000; // 10 minutes timeout if no heartbeat
+
+function getValidActiveSession(): ServerSession | null {
+  if (!activeServerSession) return null;
+  const elapsed = Date.now() - new Date(activeServerSession.lastActiveAt).getTime();
+  if (elapsed > SESSION_INACTIVITY_LIMIT_MS) {
+    console.log(`[AUTH] Active server session ${activeServerSession.sessionId} expired due to inactivity (${Math.round(elapsed / 1000)}s)`);
+    activeServerSession = null;
+    return null;
+  }
+  return activeServerSession;
+}
+
 // Initial data definition
 const DEFAULT_EVENTS = [
-  { Evt_No: 0, Evt_Name: '50 MTS. RUN', Height: '3`-4``', Gender: 'CHILDRENS', Fees: 10.0 },
-  { Evt_No: 1, Evt_Name: '50 MTS. RUN', Height: '3`-8``', Gender: 'CHILDRENS', Fees: 10.0 },
-  { Evt_No: 2, Evt_Name: 'KANAMACHHI', Height: '3`-8``', Gender: 'CHILDRENS', Fees: 10.0 },
-  { Evt_No: 3, Evt_Name: '100 MTS. RUN', Height: '4`-2``', Gender: 'BOYS', Fees: 10.0 },
-  { Evt_No: 4, Evt_Name: 'POTATO RACE', Height: '4`-2``', Gender: 'BOYS', Fees: 10.0 },
-  { Evt_No: 5, Evt_Name: '200 MTS. RUN', Height: '4`-6``', Gender: 'BOYS', Fees: 10.0 },
-  { Evt_No: 6, Evt_Name: 'BROAD JUMP', Height: '4`-6``', Gender: 'BOYS', Fees: 10.0 },
-  { Evt_No: 7, Evt_Name: '200 MTS. RUN', Height: '4`-10``', Gender: 'BOYS', Fees: 10.0 },
-  { Evt_No: 8, Evt_Name: 'BROAD JUMP', Height: '4`-10``', Gender: 'BOYS', Fees: 10.0 },
-  { Evt_No: 9, Evt_Name: '100 MTS. RUN', Height: '4`-2``', Gender: 'GIRLS', Fees: 10.0 },
-  { Evt_No: 10, Evt_Name: 'POTATO RACE', Height: '4`-2``', Gender: 'GIRLS', Fees: 10.0 },
-  { Evt_No: 11, Evt_Name: '200 MTS. RUN', Height: '4`-6``', Gender: 'GIRLS', Fees: 10.0 },
-  { Evt_No: 12, Evt_Name: 'BROAD JUMP', Height: '4`-6``', Gender: 'GIRLS', Fees: 10.0 },
-  { Evt_No: 13, Evt_Name: '200 MTS. RUN', Height: '4`-10``', Gender: 'GIRLS', Fees: 10.0 },
-  { Evt_No: 14, Evt_Name: 'BROAD JUMP', Height: '4`-10``', Gender: 'GIRLS', Fees: 10.0 },
-  { Evt_No: 15, Evt_Name: 'GO AS YOU LIKE', Height: 'ALL', Gender: 'ALL', Fees: 20.0 },
+  { Evt_No: 0, Evt_Name: '50 MTS. RUN', Height: '3`-4``', Gender: 'CHILDRENS', Fees: 10.0, requiredHit: true, requiredFinal: true },
+  { Evt_No: 1, Evt_Name: '50 MTS. RUN', Height: '3`-8``', Gender: 'CHILDRENS', Fees: 10.0, requiredHit: true, requiredFinal: true },
+  { Evt_No: 2, Evt_Name: 'KANAMACHHI', Height: '3`-8``', Gender: 'CHILDRENS', Fees: 10.0, requiredHit: true, requiredFinal: true },
+  { Evt_No: 3, Evt_Name: '100 MTS. RUN', Height: '4`-2``', Gender: 'BOYS', Fees: 10.0, requiredHit: true, requiredFinal: true },
+  { Evt_No: 4, Evt_Name: 'POTATO RACE', Height: '4`-2``', Gender: 'BOYS', Fees: 10.0, requiredHit: true, requiredFinal: true },
+  { Evt_No: 5, Evt_Name: '200 MTS. RUN', Height: '4`-6``', Gender: 'BOYS', Fees: 10.0, requiredHit: true, requiredFinal: true },
+  { Evt_No: 6, Evt_Name: 'BROAD JUMP', Height: '4`-6``', Gender: 'BOYS', Fees: 10.0, requiredHit: true, requiredFinal: true },
+  { Evt_No: 7, Evt_Name: '200 MTS. RUN', Height: '4`-10``', Gender: 'BOYS', Fees: 10.0, requiredHit: true, requiredFinal: true },
+  { Evt_No: 8, Evt_Name: 'BROAD JUMP', Height: '4`-10``', Gender: 'BOYS', Fees: 10.0, requiredHit: true, requiredFinal: true },
+  { Evt_No: 9, Evt_Name: '100 MTS. RUN', Height: '4`-2``', Gender: 'GIRLS', Fees: 10.0, requiredHit: true, requiredFinal: true },
+  { Evt_No: 10, Evt_Name: 'POTATO RACE', Height: '4`-2``', Gender: 'GIRLS', Fees: 10.0, requiredHit: true, requiredFinal: true },
+  { Evt_No: 11, Evt_Name: '200 MTS. RUN', Height: '4`-6``', Gender: 'GIRLS', Fees: 10.0, requiredHit: true, requiredFinal: true },
+  { Evt_No: 12, Evt_Name: 'BROAD JUMP', Height: '4`-6``', Gender: 'GIRLS', Fees: 10.0, requiredHit: true, requiredFinal: true },
+  { Evt_No: 13, Evt_Name: '200 MTS. RUN', Height: '4`-10``', Gender: 'GIRLS', Fees: 10.0, requiredHit: true, requiredFinal: true },
+  { Evt_No: 14, Evt_Name: 'BROAD JUMP', Height: '4`-10``', Gender: 'GIRLS', Fees: 10.0, requiredHit: true, requiredFinal: true },
+  { Evt_No: 15, Evt_Name: 'GO AS YOU LIKE', Height: 'ALL', Gender: 'ALL', Fees: 20.0, requiredHit: false, requiredFinal: true },
 ];
 
 const DEFAULT_CLUBS = [
@@ -125,6 +160,50 @@ let db: DBData = {
   lastUpdated: new Date().toISOString(),
 };
 
+// Helper: Builds a canonical server candidate record with exact server columns
+// Discards all temporary/client-side fields (localRecordNo, provisionalChestNo, status, merged, uploadedAt, etc.)
+function toServerCandidateRecord(cand: any, assignedChestNo: number, existing?: any): any {
+  const now = new Date().toISOString();
+  const record: any = {
+    id: cand.id || existing?.id || `cand_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+    chestNo: Number(assignedChestNo),
+    name: (cand.name || existing?.name || '').trim().toUpperCase(),
+    club: (cand.club || existing?.club || 'Independent').trim(),
+    gender: cand.gender || existing?.gender || 'ALL',
+    height: cand.height || existing?.height || 'ALL',
+    selectedEvents: Array.isArray(cand.selectedEvents)
+      ? cand.selectedEvents.map(Number)
+      : (Array.isArray(existing?.selectedEvents) ? existing.selectedEvents.map(Number) : []),
+    totalFees: Number(cand.totalFees !== undefined ? cand.totalFees : existing?.totalFees) || 0,
+    createdAt: existing?.createdAt || cand.createdAt || now,
+    updatedAt: now,
+    synced: true,
+    isDirty: false,
+    syncedAt: now,
+  };
+
+  const feeStatus = cand.feeStatus || existing?.feeStatus;
+  if (feeStatus) {
+    record.feeStatus = feeStatus;
+  }
+
+  if (cand.isCancelled || existing?.isCancelled || cand.status === 'cancelled' || existing?.status === 'cancelled') {
+    record.isCancelled = true;
+    record.cancelledAt = cand.cancelledAt || existing?.cancelledAt || now;
+  }
+
+  // Explicitly discard client-side temporary fields
+  delete record.localRecordNo;
+  delete record.provisionalChestNo;
+  delete record.status;
+  delete record.merged;
+  delete record.uploadedAt;
+  delete record.clientName;
+  delete record.notes;
+
+  return record;
+}
+
 // Ensure data directory and load existing db if available
 function loadDB() {
   try {
@@ -145,14 +224,76 @@ function loadDB() {
         }
       });
       const uniqueCandidates = Array.from(candidateMap.values());
+      const sanitizedCandidates = uniqueCandidates.map((c: any) => {
+        const chest = Number(c.chestNo) || 101;
+        return toServerCandidateRecord(c, chest, c);
+      });
+
+      const loadedEvents = (parsed.events || [...DEFAULT_EVENTS]).map((e: any) => ({
+        ...e,
+        requiredHit: e.requiredHit !== undefined ? e.requiredHit : (e.Evt_No === 15 ? false : true),
+        requiredFinal: e.requiredFinal !== undefined ? e.requiredFinal : true,
+      }));
+
+      const defaultBroadJumpRecords = {
+        6: {
+          eventNo: 6,
+          eventName: 'BROAD JUMP',
+          gender: 'BOYS',
+          height: "4'-6\"",
+          recordHolderName: 'Sourav Mondal',
+          recordHolderClub: 'Milan Samity Athletic Club',
+          recordYear: '2025',
+          recordValue: `14'-05"`,
+        },
+        8: {
+          eventNo: 8,
+          eventName: 'BROAD JUMP',
+          gender: 'BOYS',
+          height: "4'-10\"",
+          recordHolderName: 'Rahul Ghosh',
+          recordHolderClub: 'Agrani Sasthitala Sangha',
+          recordYear: '2024',
+          recordValue: `16'-02"`,
+        },
+        12: {
+          eventNo: 12,
+          eventName: 'BROAD JUMP',
+          gender: 'GIRLS',
+          height: "4'-6\"",
+          recordHolderName: 'Priya Mukherjee',
+          recordHolderClub: 'Tarun Sangha Sports Club',
+          recordYear: '2025',
+          recordValue: `13'-08"`,
+        },
+        14: {
+          eventNo: 14,
+          eventName: 'BROAD JUMP',
+          gender: 'GIRLS',
+          height: "4'-10\"",
+          recordHolderName: 'Tanushree Das',
+          recordHolderClub: 'Subhash Nagar Yuba Parishad',
+          recordYear: '2025',
+          recordValue: `14'-09"`,
+        },
+      };
+
+      const mergedSettings = {
+        ...DEFAULT_SETTINGS,
+        broadJumpPreviousRecords: defaultBroadJumpRecords,
+        ...(parsed.settings || {}),
+      };
+      if (!mergedSettings.broadJumpPreviousRecords) {
+        mergedSettings.broadJumpPreviousRecords = defaultBroadJumpRecords;
+      }
 
       db = {
-        events: parsed.events || [...DEFAULT_EVENTS],
-        candidates: uniqueCandidates,
+        events: loadedEvents,
+        candidates: sanitizedCandidates,
         clubs: parsed.clubs || [...DEFAULT_CLUBS],
         results: parsed.results || [],
         heats: parsed.heats || [],
-        settings: { ...DEFAULT_SETTINGS, ...(parsed.settings || {}) },
+        settings: mergedSettings,
         clientUploads: parsed.clientUploads || [],
         lastUpdated: parsed.lastUpdated || new Date().toISOString(),
       };
@@ -192,6 +333,48 @@ app.get('/api/health', (req: Request, res: Response) => {
     candidateCount: db.candidates.length,
     eventsCount: db.events.length,
     meetTitle: db.settings.ordinalTitle,
+  });
+});
+
+// Single consolidated bootstrap endpoint to eliminate multi-request overhead and prevent rate limit issues
+app.get('/api/bootstrap', (req: Request, res: Response) => {
+  const currentActive = getValidActiveSession();
+  res.json({
+    events: db.events,
+    clubs: db.clubs,
+    settings: db.settings,
+    heats: db.heats,
+    results: db.results,
+    uploads: db.clientUploads,
+    candidates: db.candidates,
+    lastUpdated: db.lastUpdated,
+    serverSession: currentActive
+      ? {
+          isLoggedIn: true,
+          deviceId: currentActive.deviceId,
+          deviceLabel: currentActive.deviceLabel,
+          loggedInAt: currentActive.loggedInAt,
+        }
+      : { isLoggedIn: false },
+  });
+});
+
+// Lightweight sync summary endpoint for non-intrusive background sync checks
+app.get('/api/sync-summary', (req: Request, res: Response) => {
+  const pendingUploads = (db.clientUploads || []).filter((u: any) => u.status === 'pending');
+  const pendingAthletesCount = pendingUploads.reduce((sum: number, u: any) => {
+    const pendingCands = (u.candidates || []).filter((c: any) => !c.merged && c.status !== 'rejected').length;
+    return sum + (pendingCands > 0 ? pendingCands : 1);
+  }, 0);
+
+  res.json({
+    lastUpdated: db.lastUpdated,
+    candidatesCount: (db.candidates || []).length,
+    uploadsCount: (db.clientUploads || []).length,
+    pendingUploadsCount: pendingUploads.length,
+    pendingAthletesCount,
+    heatsCount: (db.heats || []).length,
+    resultsCount: (db.results || []).length,
   });
 });
 
@@ -245,6 +428,77 @@ app.get('/api/candidates', (req: Request, res: Response) => {
   res.json(db.candidates);
 });
 
+// Helper: Evaluates candidate edit restriction
+// Whenever a candidate has been promoted to final from any one of the events that he/she applied,
+// or ranking list preparation is completed, edit details for that candidate is disabled.
+function checkCandidateEditRestriction(existingCandidate: any): { isRestricted: boolean; message?: string; promotedFinalEvents?: number[]; rankingCompletedEvents?: number[] } {
+  if (!existingCandidate || !existingCandidate.chestNo) {
+    return { isRestricted: false };
+  }
+  const candChest = Number(existingCandidate.chestNo);
+  if (!candChest || candChest <= 0) return { isRestricted: false };
+
+  const appliedEvents = (existingCandidate.selectedEvents || []).map(Number);
+  const promotedFinalEvents: number[] = [];
+  const rankingCompletedEvents: number[] = [];
+
+  appliedEvents.forEach((evtNo: number) => {
+    // 1. Check if promoted to final in this event:
+    // Case A: in results.finalists (promoted from hit OR direct final prepared)
+    const res = (db.results || []).find((r: any) => Number(r.eventNo) === Number(evtNo));
+    const isPromotedFinalist = Boolean(
+      res &&
+      Array.isArray(res.finalists) &&
+      res.finalists.some((f: any) => Number(f.chestNo) === candChest)
+    );
+
+    // Case B: qualified in a heat
+    const hasQualifiedInHeat = (db.heats || []).some(
+      (h: any) =>
+        Number(h.eventNo) === Number(evtNo) &&
+        Array.isArray(h.participants) &&
+        h.participants.some((p: any) => Number(p.chestNo) === candChest && Boolean(p.qualified))
+    );
+
+    if (isPromotedFinalist || hasQualifiedInHeat) {
+      promotedFinalEvents.push(evtNo);
+    }
+
+    // 2. Check for ranking list preparation completion
+    const isRankingDone = Boolean(
+      res && (
+        res.completed === true ||
+        (Array.isArray(res.finalists) && res.finalists.some((f: any) => f.position && f.position > 0)) ||
+        (Array.isArray(res.winners) && res.winners.length > 0)
+      )
+    );
+
+    if (isRankingDone) {
+      rankingCompletedEvents.push(evtNo);
+    }
+  });
+
+  if (promotedFinalEvents.length > 0) {
+    return {
+      isRestricted: true,
+      promotedFinalEvents,
+      rankingCompletedEvents,
+      message: `Editing disabled: Candidate "${existingCandidate.name}" (Chest #${existingCandidate.chestNo}) has been promoted to final in Event(s) ${promotedFinalEvents.map(e => `#${e}`).join(', ')}. Editing details is disabled once a candidate is promoted to final in any applied event.`,
+    };
+  }
+
+  if (rankingCompletedEvents.length > 0) {
+    return {
+      isRestricted: true,
+      promotedFinalEvents: [],
+      rankingCompletedEvents,
+      message: `Editing disabled: Ranking list preparation has already been completed for Event(s) ${rankingCompletedEvents.map(e => `#${e}`).join(', ')}.`,
+    };
+  }
+
+  return { isRestricted: false };
+}
+
 // Single candidate create or update (for server front-end direct entry)
 app.post('/api/candidates', (req: Request, res: Response) => {
   const cand = req.body;
@@ -260,25 +514,11 @@ app.post('/api/candidates', (req: Request, res: Response) => {
     const existing = db.candidates[existingIdx];
     const isCancelling = cand.status === 'cancelled' || cand.isCancelled === true;
     if (!isCancelling) {
-      const qualifiedEvents: number[] = [];
-      (db.results || []).forEach((r: any) => {
-        if (r.finalists && r.finalists.some((f: any) => Number(f.chestNo) === Number(existing.chestNo))) {
-          qualifiedEvents.push(Number(r.eventNo));
-        }
-      });
-      (db.heats || []).forEach((h: any) => {
-        if (h.participants && h.participants.some((p: any) => Number(p.chestNo) === Number(existing.chestNo) && Boolean(p.qualified))) {
-          if (!qualifiedEvents.includes(Number(h.eventNo))) {
-            qualifiedEvents.push(Number(h.eventNo));
-          }
-        }
-      });
-
-      if (qualifiedEvents.length > 0) {
-        const evtList = qualifiedEvents.map(n => `#${n}`).join(', ');
+      const restriction = checkCandidateEditRestriction(existing);
+      if (restriction.isRestricted) {
         return res.status(403).json({
-          error: `Editing restricted: Candidate "${existing.name}" (Chest #${existing.chestNo}) has already qualified from hit to final in Event(s) ${evtList}. Editing is not permitted even if heats of other events are not completed yet.`,
-          qualifiedEvents,
+          error: restriction.message,
+          qualifiedEvents: restriction.promotedFinalEvents || [],
           isEditRestricted: true,
         });
       }
@@ -290,6 +530,10 @@ app.post('/api/candidates', (req: Request, res: Response) => {
     assignedChestNo = Number(cand.chestNo);
   } else if (existingIdx >= 0 && db.candidates[existingIdx].chestNo && Number(db.candidates[existingIdx].chestNo) >= 101) {
     assignedChestNo = Number(db.candidates[existingIdx].chestNo);
+  } else if (existingIdx >= 0 && db.candidates[existingIdx].chestNo) {
+    assignedChestNo = Number(db.candidates[existingIdx].chestNo);
+  } else if (cand.chestNo) {
+    assignedChestNo = Number(cand.chestNo);
   } else {
     const highestChest = db.candidates.reduce((max, c) => {
       const num = parseInt(String(c.chestNo), 10) || 0;
@@ -298,20 +542,44 @@ app.post('/api/candidates', (req: Request, res: Response) => {
     assignedChestNo = highestChest + 1;
   }
 
-  const candidateRecord = {
-    ...(existingIdx >= 0 ? db.candidates[existingIdx] : {}),
-    ...cand,
-    id,
-    chestNo: assignedChestNo,
-    createdAt: (existingIdx >= 0 ? db.candidates[existingIdx].createdAt : cand.createdAt) || now,
-    updatedAt: now,
-    synced: true,
-    isDirty: false,
-    syncedAt: now,
-  };
+  const existing = existingIdx >= 0 ? db.candidates[existingIdx] : undefined;
+  const candidateRecord = toServerCandidateRecord(cand, assignedChestNo, existing);
 
   if (existingIdx >= 0) {
     db.candidates[existingIdx] = candidateRecord;
+    // Keep heats and results participant details in sync with updated candidate name and club
+    if (Array.isArray(db.heats)) {
+      db.heats.forEach((h: any) => {
+        if (Array.isArray(h.participants)) {
+          h.participants.forEach((p: any) => {
+            if (Number(p.chestNo) === assignedChestNo) {
+              if (cand.name) p.candidateName = cand.name.trim().toUpperCase();
+              if (cand.club) p.club = cand.club.trim().toUpperCase();
+            }
+          });
+        }
+      });
+    }
+    if (Array.isArray(db.results)) {
+      db.results.forEach((r: any) => {
+        if (Array.isArray(r.finalists)) {
+          r.finalists.forEach((f: any) => {
+            if (Number(f.chestNo) === assignedChestNo) {
+              if (cand.name) f.candidateName = cand.name.trim().toUpperCase();
+              if (cand.club) f.club = cand.club.trim().toUpperCase();
+            }
+          });
+        }
+        if (Array.isArray(r.winners)) {
+          r.winners.forEach((w: any) => {
+            if (Number(w.chestNo) === assignedChestNo) {
+              if (cand.name) w.candidateName = cand.name.trim().toUpperCase();
+              if (cand.club) w.club = cand.club.trim().toUpperCase();
+            }
+          });
+        }
+      });
+    }
   } else {
     db.candidates.push(candidateRecord);
   }
@@ -329,43 +597,57 @@ app.put('/api/candidates/:id', (req: Request, res: Response) => {
 
   const existing = db.candidates[idx];
 
-  // Restrict edit for candidates who already qualified from hit to final in at least one event
+  // Restrict edit per Logic 1
   const isCancelling = req.body.status === 'cancelled' || req.body.isCancelled === true;
   if (!isCancelling) {
-    const qualifiedEvents: number[] = [];
-    (db.results || []).forEach((r: any) => {
-      if (r.finalists && r.finalists.some((f: any) => Number(f.chestNo) === Number(existing.chestNo))) {
-        qualifiedEvents.push(Number(r.eventNo));
-      }
-    });
-    (db.heats || []).forEach((h: any) => {
-      if (h.participants && h.participants.some((p: any) => Number(p.chestNo) === Number(existing.chestNo) && Boolean(p.qualified))) {
-        if (!qualifiedEvents.includes(Number(h.eventNo))) {
-          qualifiedEvents.push(Number(h.eventNo));
-        }
-      }
-    });
-
-    if (qualifiedEvents.length > 0) {
-      const evtList = qualifiedEvents.map(n => `#${n}`).join(', ');
+    const restriction = checkCandidateEditRestriction(existing);
+    if (restriction.isRestricted) {
       return res.status(403).json({
-        error: `Editing restricted: Candidate "${existing.name}" (Chest #${existing.chestNo}) has already qualified from hit to final in Event(s) ${evtList}. Editing is not permitted even if heats of other events are not completed yet.`,
-        qualifiedEvents,
+        error: restriction.message,
+        qualifiedEvents: restriction.promotedFinalEvents || [],
         isEditRestricted: true,
       });
     }
   }
 
-  const now = new Date().toISOString();
-  db.candidates[idx] = {
-    ...db.candidates[idx],
-    ...req.body,
-    id,
-    updatedAt: now,
-    synced: true,
-    isDirty: false,
-    syncedAt: now,
-  };
+  const chestNo = Number(existing.chestNo) || 101;
+  const candidateRecord = toServerCandidateRecord({ ...existing, ...req.body, id }, chestNo, existing);
+  db.candidates[idx] = candidateRecord;
+
+  // Keep heats and results participant details in sync with updated candidate name and club
+  if (Array.isArray(db.heats)) {
+    db.heats.forEach((h: any) => {
+      if (Array.isArray(h.participants)) {
+        h.participants.forEach((p: any) => {
+          if (Number(p.chestNo) === chestNo) {
+            if (req.body.name) p.candidateName = req.body.name.trim().toUpperCase();
+            if (req.body.club) p.club = req.body.club.trim().toUpperCase();
+          }
+        });
+      }
+    });
+  }
+  if (Array.isArray(db.results)) {
+    db.results.forEach((r: any) => {
+      if (Array.isArray(r.finalists)) {
+        r.finalists.forEach((f: any) => {
+          if (Number(f.chestNo) === chestNo) {
+            if (req.body.name) f.candidateName = req.body.name.trim().toUpperCase();
+            if (req.body.club) f.club = req.body.club.trim().toUpperCase();
+          }
+        });
+      }
+      if (Array.isArray(r.winners)) {
+        r.winners.forEach((w: any) => {
+          if (Number(w.chestNo) === chestNo) {
+            if (req.body.name) w.candidateName = req.body.name.trim().toUpperCase();
+            if (req.body.club) w.club = req.body.club.trim().toUpperCase();
+          }
+        });
+      }
+    });
+  }
+
   saveDB();
   res.json({ success: true, candidate: db.candidates[idx] });
 });
@@ -469,14 +751,7 @@ app.post('/api/candidates/sync', (req: Request, res: Response) => {
       assignedChestNo = highestChestNo;
     }
 
-    const candidateRecord = {
-      ...cand,
-      chestNo: assignedChestNo,
-      synced: true,
-      isDirty: false,
-      syncedAt: now,
-      updatedAt: cand.updatedAt || now,
-    };
+    const candidateRecord = toServerCandidateRecord(cand, assignedChestNo, idx >= 0 ? db.candidates[idx] : undefined);
 
     if (idx >= 0) {
       db.candidates[idx] = candidateRecord;
@@ -551,15 +826,126 @@ app.post('/api/settings', (req: Request, res: Response) => {
 });
 
 // ----------------------------------------------------
-// AUTH & PIN MANAGEMENT ENDPOINTS
+// AUTH & PIN MANAGEMENT ENDPOINTS (Single Server Device Restriction)
 // ----------------------------------------------------
+// Verify PIN and enforce single active server login across devices
 app.post('/api/auth/verify-pin', (req: Request, res: Response) => {
-  const { pin } = req.body;
+  const { pin, deviceId, deviceLabel, forceTakeover } = req.body;
   const currentPin = db.settings?.serverPin || '1234';
-  if (pin === currentPin) {
-    return res.json({ success: true, message: 'PIN verified successfully' });
+  
+  if (pin !== currentPin) {
+    return res.status(401).json({ success: false, error: 'Incorrect PIN. Please try again.' });
   }
-  return res.status(401).json({ success: false, error: 'Incorrect PIN. Please try again.' });
+
+  const currentActive = getValidActiveSession();
+  const incomingDeviceId = deviceId || `dev_${Date.now()}`;
+  const incomingDeviceLabel = deviceLabel || (req.headers['user-agent']?.includes('Mobi') ? 'Mobile Device' : 'Desktop Browser');
+
+  if (currentActive) {
+    // If the active session is from the exact same device, allow reconnect/renew
+    if (currentActive.deviceId === incomingDeviceId) {
+      currentActive.lastActiveAt = new Date().toISOString();
+      currentActive.deviceLabel = incomingDeviceLabel;
+      return res.json({
+        success: true,
+        sessionId: currentActive.sessionId,
+        deviceId: currentActive.deviceId,
+        message: 'PIN verified. Resumed active server session.',
+      });
+    }
+
+    // Different device is trying to log in while an active session exists
+    if (!forceTakeover) {
+      return res.status(409).json({
+        success: false,
+        isAlreadyLoggedIn: true,
+        error: `Server is currently logged in on another device (${currentActive.deviceLabel}). Multiple concurrent server logins are restricted.`,
+        activeDevice: {
+          label: currentActive.deviceLabel,
+          loggedInAt: currentActive.loggedInAt,
+          lastActiveAt: currentActive.lastActiveAt,
+        },
+      });
+    }
+
+    // forceTakeover is true: Terminate previous session and establish new one
+    console.log(`[AUTH] Server session taken over by device: ${incomingDeviceLabel} (${incomingDeviceId}) from previous: ${currentActive.deviceLabel}`);
+  }
+
+  // Create new active session
+  activeServerSession = {
+    sessionId: `sess_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
+    deviceId: incomingDeviceId,
+    deviceLabel: incomingDeviceLabel,
+    ip: (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress,
+    loggedInAt: new Date().toISOString(),
+    lastActiveAt: new Date().toISOString(),
+  };
+
+  return res.json({
+    success: true,
+    sessionId: activeServerSession.sessionId,
+    deviceId: activeServerSession.deviceId,
+    deviceLabel: activeServerSession.deviceLabel,
+    message: currentActive ? 'Previous session disconnected. Server control unlocked on this device.' : 'PIN verified. Server control unlocked.',
+  });
+});
+
+// Check if server is currently logged in on any device
+app.get('/api/auth/session-status', (req: Request, res: Response) => {
+  const deviceId = req.query.deviceId as string;
+  const currentActive = getValidActiveSession();
+  
+  if (!currentActive) {
+    return res.json({
+      isServerLoggedIn: false,
+    });
+  }
+
+  return res.json({
+    isServerLoggedIn: true,
+    isCurrentDevice: Boolean(deviceId && currentActive.deviceId === deviceId),
+    activeDevice: {
+      label: currentActive.deviceLabel,
+      loggedInAt: currentActive.loggedInAt,
+      lastActiveAt: currentActive.lastActiveAt,
+    },
+  });
+});
+
+// Server session heartbeat check
+app.post('/api/auth/heartbeat', (req: Request, res: Response) => {
+  const { sessionId, deviceId } = req.body;
+  const currentActive = getValidActiveSession();
+
+  if (!currentActive) {
+    return res.json({ valid: false, reason: 'No active server session. Server was locked or session timed out.' });
+  }
+
+  if (currentActive.sessionId !== sessionId || (deviceId && currentActive.deviceId !== deviceId)) {
+    return res.json({
+      valid: false,
+      reason: `Server control was taken over by another device (${currentActive.deviceLabel}).`,
+    });
+  }
+
+  currentActive.lastActiveAt = new Date().toISOString();
+  return res.json({ valid: true });
+});
+
+// Server logout / lock endpoint
+app.post('/api/auth/logout', (req: Request, res: Response) => {
+  const { sessionId, deviceId } = req.body;
+  const currentActive = getValidActiveSession();
+
+  if (currentActive) {
+    if (!sessionId || currentActive.sessionId === sessionId || (deviceId && currentActive.deviceId === deviceId)) {
+      console.log(`[AUTH] Server logged out from device: ${currentActive.deviceLabel}`);
+      activeServerSession = null;
+    }
+  }
+
+  return res.json({ success: true, message: 'Server session terminated' });
 });
 
 app.post('/api/auth/reset-pin', (req: Request, res: Response) => {
@@ -638,6 +1024,7 @@ app.post('/api/uploads', (req: Request, res: Response) => {
       }
     });
 
+    existingBatch.status = 'pending';
     existingBatch.uploadedAt = now;
     if (clientName) existingBatch.clientName = clientName;
     if (notes) existingBatch.notes = notes;
@@ -647,6 +1034,7 @@ app.post('/api/uploads', (req: Request, res: Response) => {
     );
 
     saveDB();
+    console.log(`[APPROVAL REQUEST] Updated pending batch for club "${targetClub}" (+${processedCandidates.length} athletes). Server lastUpdated: ${db.lastUpdated}`);
 
     return res.json({
       success: true,
@@ -670,6 +1058,7 @@ app.post('/api/uploads', (req: Request, res: Response) => {
 
     db.clientUploads.unshift(newUpload);
     saveDB();
+    console.log(`[APPROVAL REQUEST] Created new pending batch "${uploadId}" for club "${targetClub}" with ${processedCandidates.length} athletes. Server lastUpdated: ${db.lastUpdated}`);
 
     return res.json({
       success: true,
@@ -715,16 +1104,11 @@ app.post('/api/uploads/:id/merge', (req: Request, res: Response) => {
       assignedChestNo = highestChestNo;
     }
 
-    const officialCandidate = {
-      ...(existingIdx >= 0 ? db.candidates[existingIdx] : {}),
-      ...cand,
-      chestNo: assignedChestNo,
-      club: cand.club || upload.club,
-      synced: true,
-      isDirty: false,
-      syncedAt: now,
-      updatedAt: now,
-    };
+    const officialCandidate = toServerCandidateRecord(
+      { ...cand, club: cand.club || upload.club },
+      assignedChestNo,
+      existingIdx >= 0 ? db.candidates[existingIdx] : undefined
+    );
 
     if (existingIdx >= 0) {
       db.candidates[existingIdx] = officialCandidate;
@@ -734,6 +1118,8 @@ app.post('/api/uploads/:id/merge', (req: Request, res: Response) => {
     cand.merged = true;
     cand.status = 'merged';
     cand.chestNo = assignedChestNo;
+    delete cand.localRecordNo;
+    delete cand.provisionalChestNo;
     mergedList.push(officialCandidate);
   });
 
@@ -834,16 +1220,11 @@ app.post('/api/uploads/:id/merge-single/:candId', (req: Request, res: Response) 
   }
 
   const now = new Date().toISOString();
-  const officialCandidate = {
-    ...(existingIdx >= 0 ? db.candidates[existingIdx] : {}),
-    ...cand,
-    chestNo: assignedChestNo,
-    club: cand.club || upload.club,
-    synced: true,
-    isDirty: false,
-    syncedAt: now,
-    updatedAt: now,
-  };
+  const officialCandidate = toServerCandidateRecord(
+    { ...cand, club: cand.club || upload.club },
+    assignedChestNo,
+    existingIdx >= 0 ? db.candidates[existingIdx] : undefined
+  );
 
   if (existingIdx >= 0) {
     db.candidates[existingIdx] = officialCandidate;
@@ -854,6 +1235,8 @@ app.post('/api/uploads/:id/merge-single/:candId', (req: Request, res: Response) 
   cand.merged = true;
   cand.status = 'merged';
   cand.chestNo = assignedChestNo;
+  delete cand.localRecordNo;
+  delete cand.provisionalChestNo;
 
   // Check if all candidates are merged or rejected
   const allProcessed = upload.candidates.every((c: any) => c.merged || c.status === 'rejected');
@@ -1024,11 +1407,33 @@ app.post('/api/db/raw/:table', (req: Request, res: Response) => {
   }
   const row = req.body;
   if (!row.id && table !== 'events') {
-    row.id = `row_${Date.now()}`;
+    row.id = table === 'candidates' && row.chestNo ? `cand_${row.chestNo}` : `${table}_${Date.now()}`;
+  }
+  if (table === 'events' && row.Evt_No !== undefined) {
+    row.Evt_No = Number(row.Evt_No);
   }
   (db[table] as any[]).push(row);
   saveDB();
   res.json({ success: true, row });
+});
+
+// Update entire table or settings directly from DB Explorer
+app.put('/api/db/raw/:table', (req: Request, res: Response) => {
+  const table = req.params.table as keyof DBData;
+  if (db[table] === undefined) {
+    return res.status(404).json({ error: `Table '${table}' not found` });
+  }
+  if (table === 'settings') {
+    db.settings = { ...db.settings, ...req.body };
+  } else if (Array.isArray(req.body)) {
+    (db as any)[table] = req.body;
+  } else if (Array.isArray(req.body.records)) {
+    (db as any)[table] = req.body.records;
+  } else {
+    return res.status(400).json({ error: 'Expected array of records or settings object' });
+  }
+  saveDB();
+  res.json({ success: true, table: db[table] });
 });
 
 app.put('/api/db/raw/:table/:id', (req: Request, res: Response) => {
@@ -1038,7 +1443,12 @@ app.put('/api/db/raw/:table/:id', (req: Request, res: Response) => {
     return res.status(400).json({ error: `Table '${table}' is not a collection` });
   }
   const arr = db[table] as any[];
-  const idx = arr.findIndex((item) => (table === 'events' ? String(item.Evt_No) === id : item.id === id));
+  const idx = arr.findIndex((item) => {
+    if (table === 'events') return String(item.Evt_No) === id || item.id === id;
+    if (table === 'results') return item.id === id || String(item.eventNo) === id;
+    if (table === 'candidates') return item.id === id || String(item.chestNo) === id;
+    return item.id === id;
+  });
   if (idx < 0) {
     return res.status(404).json({ error: 'Record not found' });
   }
@@ -1054,7 +1464,11 @@ app.delete('/api/db/raw/:table/:id', (req: Request, res: Response) => {
     return res.status(400).json({ error: `Table '${table}' is not a collection` });
   }
   if (table === 'events') {
-    db.events = db.events.filter((e) => String(e.Evt_No) !== id);
+    db.events = db.events.filter((e) => String(e.Evt_No) !== id && e.id !== id);
+  } else if (table === 'results') {
+    db.results = db.results.filter((r) => r.id !== id && String(r.eventNo) !== id);
+  } else if (table === 'candidates') {
+    db.candidates = db.candidates.filter((c) => c.id !== id && String(c.chestNo) !== id);
   } else {
     (db as any)[table] = (db as any)[table].filter((item: any) => item.id !== id);
   }
@@ -1419,12 +1833,27 @@ app.post('/api/db/sample-data', (req: Request, res: Response) => {
   });
 });
 
+app.post('/api/db/purge-except-events', (req: Request, res: Response) => {
+  db.candidates = [];
+  db.results = [];
+  db.heats = [];
+  db.clientUploads = [];
+  // Preserve events list master data
+  saveDB();
+  res.json({
+    success: true,
+    message: 'All candidates, uploads, heats, and results deleted from database. Event list master data preserved.',
+    preservedEventsCount: db.events.length,
+  });
+});
+
 app.post('/api/db/clear', (req: Request, res: Response) => {
   db.candidates = [];
   db.results = [];
   db.heats = [];
+  db.clientUploads = [];
   saveDB();
-  res.json({ success: true, message: 'Cleared candidates, heats, and results' });
+  res.json({ success: true, message: 'Cleared candidates, heats, results, and uploads' });
 });
 
 // ----------------------------------------------------

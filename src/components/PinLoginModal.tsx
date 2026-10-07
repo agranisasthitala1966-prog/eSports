@@ -1,10 +1,10 @@
-import React, { useState } from 'react';
-import { Lock, Eye, EyeOff, ShieldCheck, X, AlertCircle } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Lock, X, AlertCircle, Loader2, Smartphone, ShieldAlert, ArrowRight } from 'lucide-react';
 import { api } from '../services/api';
 
 interface PinLoginModalProps {
   isOpen: boolean;
-  onSuccess: () => void;
+  onSuccess: (sessionData?: any) => void;
   onCancel: () => void;
 }
 
@@ -14,148 +14,261 @@ export const PinLoginModal: React.FC<PinLoginModalProps> = ({
   onCancel,
 }) => {
   const [pin, setPin] = useState('');
-  const [showPin, setShowPin] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [sessionConflict, setSessionConflict] = useState<{
+    deviceLabel: string;
+    loggedInAt?: string;
+  } | null>(null);
+  const [activeSessionNotice, setActiveSessionNotice] = useState<{
+    label: string;
+    since?: string;
+  } | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Check active server session status on open
+  useEffect(() => {
+    if (isOpen) {
+      setPin('');
+      setError(null);
+      setLoading(false);
+      setSessionConflict(null);
+      setActiveSessionNotice(null);
+
+      api.getSessionStatus().then((status) => {
+        if (status.isServerLoggedIn && !status.isCurrentDevice && status.activeDevice) {
+          setActiveSessionNotice({
+            label: status.activeDevice.label,
+            since: status.activeDevice.loggedInAt,
+          });
+        }
+      }).catch(() => {});
+
+      setTimeout(() => {
+        inputRef.current?.focus();
+      }, 50);
+    }
+  }, [isOpen]);
+
+  // Handle ESC key to exit
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isOpen) {
+        onCancel();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onCancel]);
 
   if (!isOpen) return null;
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!pin.trim()) {
-      setError('Please enter your PIN');
-      return;
-    }
+  const handleVerify = async (pinToVerify: string, forceTakeover = false) => {
+    if (!pinToVerify.trim() || loading) return;
 
     setLoading(true);
     setError(null);
+    setSessionConflict(null);
+
     try {
-      await api.verifyPin(pin.trim());
-      // Remember in session
+      const res = await api.verifyPin(pinToVerify.trim(), forceTakeover);
       sessionStorage.setItem('esports_server_auth', 'true');
+      if (res.sessionId) {
+        sessionStorage.setItem('esports_server_session_id', res.sessionId);
+      }
       setPin('');
-      onSuccess();
+      onSuccess(res);
     } catch (err: any) {
-      setError(err.message || 'Incorrect PIN. Default is 1234.');
+      if (err.isAlreadyLoggedIn) {
+        setSessionConflict({
+          deviceLabel: err.activeDevice?.label || 'Another Device',
+          loggedInAt: err.activeDevice?.loggedInAt,
+        });
+        setError(`Server is active on ${err.activeDevice?.label || 'another device'}. Concurrent logins restricted.`);
+      } else {
+        setError(err.message || 'Incorrect PIN. Default is 1234.');
+        setPin('');
+        setTimeout(() => {
+          inputRef.current?.focus();
+        }, 50);
+      }
     } finally {
       setLoading(false);
     }
   };
 
-  const handleKeypadPress = (val: string) => {
-    if (val === 'backspace') {
-      setPin((prev) => prev.slice(0, -1));
-    } else if (val === 'clear') {
-      setPin('');
-    } else if (pin.length < 8) {
-      setPin((prev) => prev + val);
-    }
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const rawVal = e.target.value.replace(/\D/g, '').slice(0, 4);
+    setPin(rawVal);
     setError(null);
+    setSessionConflict(null);
+
+    // Auto-verify as soon as 4 digits are entered
+    if (rawVal.length === 4) {
+      handleVerify(rawVal, false);
+    }
+  };
+
+  const handleFormSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (pin.length > 0) {
+      handleVerify(pin, false);
+    }
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs animate-in fade-in">
-      <div className="bg-[#0b1120] border-2 border-slate-700 rounded-3xl max-w-sm w-full p-6 shadow-2xl text-slate-100 relative">
-        
-        {/* Close Button */}
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs animate-in fade-in"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onCancel();
+      }}
+    >
+      <div className="bg-[#0b1120] border-2 border-slate-700/80 rounded-3xl max-w-sm w-full p-7 shadow-2xl text-slate-100 relative">
+        {/* Dismiss Icon */}
         <button
           onClick={onCancel}
-          className="absolute top-4 right-4 p-2 text-slate-400 hover:text-white rounded-xl hover:bg-slate-800 transition-colors"
-          title="Back to Client Portal"
+          type="button"
+          className="absolute top-4 right-4 p-2 text-slate-400 hover:text-white rounded-xl hover:bg-slate-800 transition-colors cursor-pointer"
+          title="Close"
         >
           <X className="w-5 h-5" />
         </button>
 
         {/* Header */}
-        <div className="text-center space-y-2 mb-6">
-          <div className="w-14 h-14 mx-auto rounded-2xl bg-gradient-to-tr from-amber-500 to-blue-600 flex items-center justify-center shadow-lg shadow-blue-500/20">
-            <Lock className="w-7 h-7 text-white" />
+        <div className="text-center space-y-2 mb-5">
+          <div className="w-13 h-13 mx-auto rounded-2xl bg-gradient-to-tr from-amber-500 to-blue-600 flex items-center justify-center shadow-lg shadow-blue-500/20">
+            {loading ? (
+              <Loader2 className="w-6 h-6 text-white animate-spin" />
+            ) : (
+              <Lock className="w-6 h-6 text-white" />
+            )}
           </div>
-          <h2 className="text-xl font-extrabold text-white tracking-wide">
-            Server Access PIN
+          <h2 className="text-xl font-black text-white tracking-wide">
+            Server Access
           </h2>
           <p className="text-xs text-slate-400">
-            Enter the 4-digit security PIN to access Server Control from any browser or device.
+            Enter 4-digit PIN to access Server Control
           </p>
-          <div className="inline-block px-2.5 py-0.5 rounded-full bg-slate-800 border border-slate-700 text-[11px] font-semibold text-amber-400">
-            Default PIN: 1234
-          </div>
         </div>
 
+        {/* Notice if another device currently holds active server session */}
+        {activeSessionNotice && !sessionConflict && (
+          <div className="mb-4 p-3 rounded-2xl bg-amber-950/50 border border-amber-600/40 text-amber-200 text-xs flex items-start gap-2.5">
+            <Smartphone className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+            <div>
+              <p className="font-bold text-amber-300">Single Server Device Rule</p>
+              <p className="text-[11px] text-amber-200/80 mt-0.5 leading-relaxed">
+                Server is active on <strong className="text-white">{activeSessionNotice.label}</strong>. Logging in here will restrict concurrent server access.
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Error message */}
-        {error && (
-          <div className="mb-4 p-3 rounded-xl bg-rose-950/80 border border-rose-700/60 text-rose-200 text-xs font-semibold flex items-center gap-2">
+        {error && !sessionConflict && (
+          <div className="mb-4 p-2.5 rounded-xl bg-rose-950/80 border border-rose-700/60 text-rose-200 text-xs font-semibold flex items-center justify-center gap-2 animate-in fade-in">
             <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
             <span>{error}</span>
           </div>
         )}
 
-        {/* PIN Input form */}
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="relative">
+        {/* Session Conflict Takeover Dialog */}
+        {sessionConflict && (
+          <div className="mb-5 p-3.5 rounded-2xl bg-rose-950/80 border border-rose-600/70 text-rose-100 text-xs space-y-3 animate-in fade-in">
+            <div className="flex items-start gap-2">
+              <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+              <div>
+                <p className="font-bold text-rose-300">Concurrent Login Restricted</p>
+                <p className="text-[11px] text-rose-200/90 mt-1 leading-normal">
+                  Server is currently logged in on <strong className="text-white">{sessionConflict.deviceLabel}</strong>. To protect database integrity, only one server device is permitted at a time.
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => handleVerify(pin, true)}
+              disabled={loading}
+              className="w-full py-2.5 px-3 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded-xl text-xs flex items-center justify-center gap-2 transition-all shadow-md active:scale-98 cursor-pointer"
+            >
+              {loading ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <>
+                  <span>Take Over &amp; Login on this Device</span>
+                  <ArrowRight className="w-4 h-4" />
+                </>
+              )}
+            </button>
+          </div>
+        )}
+
+        {/* PIN Input */}
+        <form onSubmit={handleFormSubmit} className="space-y-5">
+          <div
+            className="relative cursor-text"
+            onClick={() => inputRef.current?.focus()}
+          >
+            {/* Real hidden/covered numeric input */}
             <input
-              type={showPin ? 'text' : 'password'}
-              maxLength={8}
-              autoFocus
+              ref={inputRef}
+              type="password"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              autoComplete="one-time-code"
+              maxLength={4}
+              disabled={loading}
               value={pin}
-              onChange={(e) => {
-                setPin(e.target.value.replace(/\D/g, ''));
-                setError(null);
-              }}
-              placeholder="••••"
-              className="w-full text-center text-3xl font-mono tracking-widest py-3 px-4 rounded-2xl bg-[#070b14] border-2 border-slate-700 focus:border-amber-400 text-amber-400 focus:outline-hidden transition-all shadow-inner"
+              onChange={handleInputChange}
+              className="absolute inset-0 w-full h-full opacity-0 cursor-text z-10"
+              aria-label="Server PIN"
             />
-            <button
-              type="button"
-              onClick={() => setShowPin(!showPin)}
-              className="absolute right-3.5 top-1/2 -translate-y-1/2 p-1.5 text-slate-400 hover:text-slate-200"
-            >
-              {showPin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-            </button>
+
+            {/* 4 Visual Digit Slots */}
+            <div className="flex items-center justify-center gap-3">
+              {[0, 1, 2, 3].map((idx) => {
+                const isFilled = pin.length > idx;
+                const isCurrent = pin.length === idx;
+                return (
+                  <div
+                    key={idx}
+                    className={`w-13 h-14 sm:w-14 sm:h-15 rounded-2xl flex items-center justify-center text-2xl font-mono font-black transition-all border-2 ${
+                      error
+                        ? 'border-rose-500 bg-rose-950/30 text-rose-400'
+                        : isCurrent
+                        ? 'border-amber-400 bg-amber-400/10 text-amber-400 ring-2 ring-amber-400/40 shadow-lg shadow-amber-400/10 scale-105'
+                        : isFilled
+                        ? 'border-slate-600 bg-slate-900 text-white shadow-inner'
+                        : 'border-slate-800 bg-[#070b14] text-slate-600'
+                    }`}
+                  >
+                    {isFilled ? (
+                      <span className="w-3.5 h-3.5 rounded-full bg-amber-400 shadow-sm" />
+                    ) : isCurrent ? (
+                      <span className="w-2 h-0.5 bg-amber-400/80 animate-pulse" />
+                    ) : (
+                      <span className="text-slate-700 text-sm">•</span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
 
-          {/* Numeric Keypad for fast touchscreen or mouse access */}
-          <div className="grid grid-cols-3 gap-2 py-2">
-            {['1', '2', '3', '4', '5', '6', '7', '8', '9', 'C', '0', '⌫'].map((k) => (
-              <button
-                key={k}
-                type="button"
-                onClick={() => {
-                  if (k === 'C') handleKeypadPress('clear');
-                  else if (k === '⌫') handleKeypadPress('backspace');
-                  else handleKeypadPress(k);
-                }}
-                className={`py-3 rounded-xl text-base font-extrabold transition-all active:scale-95 shadow-xs ${
-                  k === 'C' || k === '⌫'
-                    ? 'bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-slate-700'
-                    : 'bg-[#121c33] hover:bg-[#1a2848] text-white border border-slate-700/60'
-                }`}
-              >
-                {k}
-              </button>
-            ))}
-          </div>
-
-          {/* Action Buttons */}
-          <div className="grid grid-cols-2 gap-2 pt-2">
-            <button
-              type="button"
-              onClick={onCancel}
-              className="py-3 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs transition-colors cursor-pointer"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={loading || !pin}
-              className="py-3 px-4 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black text-xs transition-all shadow-lg shadow-amber-500/20 disabled:opacity-50 flex items-center justify-center gap-1.5 cursor-pointer"
-            >
-              <ShieldCheck className="w-4 h-4" />
-              <span>{loading ? 'Verifying...' : 'Unlock Server'}</span>
-            </button>
+          {/* Loading status or hint */}
+          <div className="text-center pt-1">
+            {loading ? (
+              <div className="flex items-center justify-center gap-2 text-xs font-semibold text-amber-400">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                <span>Verifying PIN...</span>
+              </div>
+            ) : (
+              <span className="text-[11px] text-slate-500 font-medium">
+                Default PIN: <strong className="text-slate-400 font-mono">1234</strong>
+              </span>
+            )}
           </div>
         </form>
-
       </div>
     </div>
   );

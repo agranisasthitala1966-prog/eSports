@@ -56,6 +56,7 @@ export const ClubUploadsReview: React.FC<ClubUploadsReviewProps> = ({
   const [expandedUploads, setExpandedUploads] = useState<Record<string, boolean>>({});
   const [processingId, setProcessingId] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   // Edit Candidate Modal state
   const [editingCandidate, setEditingCandidate] = useState<{
@@ -84,6 +85,27 @@ export const ClubUploadsReview: React.FC<ClubUploadsReviewProps> = ({
     }));
   };
 
+  // Auto-refresh periodically to catch remote entries live
+  React.useEffect(() => {
+    const timer = setInterval(() => {
+      onRefresh();
+    }, 3500);
+    return () => clearInterval(timer);
+  }, [onRefresh]);
+
+  // Automatically expand pending upload batches so admin immediately sees new incoming requests
+  React.useEffect(() => {
+    const pendingMap: Record<string, boolean> = {};
+    uploads.forEach((u) => {
+      if (u.status === 'pending') {
+        pendingMap[u.id] = true;
+      }
+    });
+    if (Object.keys(pendingMap).length > 0) {
+      setExpandedUploads((prev) => ({ ...pendingMap, ...prev }));
+    }
+  }, [uploads]);
+
   // Filtered uploads
   const filteredUploads = useMemo(() => {
     return uploads.filter((u) => {
@@ -98,10 +120,10 @@ export const ClubUploadsReview: React.FC<ClubUploadsReviewProps> = ({
       // Search term
       if (searchTerm.trim()) {
         const term = searchTerm.toLowerCase();
-        const matchesClub = u.club.toLowerCase().includes(term);
+        const matchesClub = (u.club || '').toLowerCase().includes(term);
         const matchesClient = (u.clientName || '').toLowerCase().includes(term);
-        const matchesId = u.id.toLowerCase().includes(term);
-        const matchesCandidate = u.candidates.some((c) =>
+        const matchesId = (u.id || '').toLowerCase().includes(term);
+        const matchesCandidate = (u.candidates || []).some((c) =>
           (c.name || '').toLowerCase().includes(term)
         );
         return matchesClub || matchesClient || matchesId || matchesCandidate;
@@ -141,7 +163,7 @@ export const ClubUploadsReview: React.FC<ClubUploadsReviewProps> = ({
         `Merged ${res.mergedCandidates.length} athlete(s) from "${upload.club}" into official server data! Official chest numbers assigned.`
       );
     } catch (err: any) {
-      alert(`Merge failed: ${err.message || 'Error occurred'}`);
+      setActionError(`Merge failed: ${err.message || 'Error occurred'}`);
     } finally {
       setProcessingId(null);
     }
@@ -149,16 +171,14 @@ export const ClubUploadsReview: React.FC<ClubUploadsReviewProps> = ({
 
   // Action: Reject Upload Batch
   const handleRejectUpload = async (upload: ClientUpload) => {
-    const reason = window.prompt(`Enter reason for rejecting upload from "${upload.club}":`, 'Duplicate or incorrect details');
-    if (reason === null) return;
-
+    const reason = 'Rejected by server admin';
     setProcessingId(upload.id);
     try {
       await api.rejectUpload(upload.id, reason);
       await onRefresh();
       onMergeSuccess(`Batch from "${upload.club}" marked as rejected.`);
     } catch (err: any) {
-      alert(`Failed to reject: ${err.message}`);
+      setActionError(`Failed to reject: ${err.message}`);
     } finally {
       setProcessingId(null);
     }
@@ -166,15 +186,13 @@ export const ClubUploadsReview: React.FC<ClubUploadsReviewProps> = ({
 
   // Action: Delete Upload Batch
   const handleDeleteUpload = async (uploadId: string, club: string) => {
-    if (!window.confirm(`Are you sure you want to delete this upload batch from "${club}"?`)) return;
-
     setProcessingId(uploadId);
     try {
       await api.deleteUpload(uploadId);
       await onRefresh();
       onMergeSuccess(`Upload batch deleted successfully.`);
     } catch (err: any) {
-      alert(`Failed to delete: ${err.message}`);
+      setActionError(`Failed to delete: ${err.message}`);
     } finally {
       setProcessingId(null);
     }
@@ -188,7 +206,7 @@ export const ClubUploadsReview: React.FC<ClubUploadsReviewProps> = ({
       await onRefresh();
       onMergeSuccess(`Athlete "${candName}" approved and merged with Chest #${res.candidate.chestNo}!`);
     } catch (err: any) {
-      alert(`Approval failed: ${err.message}`);
+      setActionError(`Approval failed: ${err.message}`);
     } finally {
       setProcessingId(null);
     }
@@ -196,15 +214,14 @@ export const ClubUploadsReview: React.FC<ClubUploadsReviewProps> = ({
 
   // Action: Reject Single Candidate from upload
   const handleRejectSingle = async (uploadId: string, candId: string, candName: string) => {
-    const reason = window.prompt(`Enter rejection reason for "${candName}":`, 'Not eligible or duplicate entry');
-    if (reason === null) return;
+    const reason = 'Not eligible or duplicate entry';
     setProcessingId(candId);
     try {
       await api.rejectSingleUploadCandidate(uploadId, candId, reason);
       await onRefresh();
       onMergeSuccess(`Candidate "${candName}" marked as rejected.`);
     } catch (err: any) {
-      alert(`Reject failed: ${err.message}`);
+      setActionError(`Reject failed: ${err.message}`);
     } finally {
       setProcessingId(null);
     }
@@ -237,7 +254,7 @@ export const ClubUploadsReview: React.FC<ClubUploadsReviewProps> = ({
       setEditingCandidate(null);
       onMergeSuccess('Candidate updated in upload batch.');
     } catch (err: any) {
-      alert(`Update failed: ${err.message}`);
+      setActionError(`Update failed: ${err.message}`);
     }
   };
 
@@ -252,7 +269,7 @@ export const ClubUploadsReview: React.FC<ClubUploadsReviewProps> = ({
       {/* Header Bar (Blue thumbnail banner removed as requested) */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-200">
         <div>
-          <h1 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight">
+          <h1 className="text-base sm:text-lg font-black text-slate-900 tracking-tight">
             Club Submissions & Review
           </h1>
           <p className="text-xs text-slate-500 mt-0.5">
@@ -264,6 +281,37 @@ export const ClubUploadsReview: React.FC<ClubUploadsReviewProps> = ({
           <span className="font-extrabold text-blue-700 font-mono">{serverCandidates.length} Athletes</span>
         </div>
       </div>
+
+      {/* Action Error Notification */}
+      {actionError && (
+        <div className="p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-800 text-xs sm:text-sm font-semibold flex items-center justify-between gap-3">
+          <span>{actionError}</span>
+          <button
+            onClick={() => setActionError(null)}
+            className="text-xs bg-rose-200 hover:bg-rose-300 text-rose-900 px-2 py-0.5 rounded-md cursor-pointer"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {/* Live Incoming Requests Alert Banner */}
+      {stats.pendingAthletes > 0 && (
+        <div className="p-3.5 rounded-2xl bg-amber-500/15 border-2 border-amber-500 text-amber-950 flex items-center justify-between gap-3 shadow-md animate-pulse">
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-3 w-3 relative">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-3 w-3 bg-amber-500"></span>
+            </span>
+            <span className="text-xs sm:text-sm font-black text-amber-950">
+              {stats.pendingAthletes} athlete(s) awaiting your approval from remote client submission!
+            </span>
+          </div>
+          <span className="text-xs font-bold text-amber-800 hidden sm:inline">
+            Click "Approve & Merge" to allot official server chest numbers.
+          </span>
+        </div>
+      )}
 
       {/* Filter and Search Bar */}
       <div className="bg-white rounded-2xl p-3.5 shadow-xs border border-slate-200 flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
@@ -427,7 +475,7 @@ export const ClubUploadsReview: React.FC<ClubUploadsReviewProps> = ({
                   <div className="flex items-center justify-between md:justify-end gap-3 shrink-0 pt-2 md:pt-0 border-t md:border-t-0 border-slate-200">
                     <div className="text-right">
                       <div className="text-xs font-bold text-slate-700">
-                        {upload.candidates.length} Athlete{upload.candidates.length === 1 ? '' : 's'}
+                        {(upload.candidates || []).length} Athlete{(upload.candidates || []).length === 1 ? '' : 's'}
                       </div>
                       <div className="text-xs font-semibold text-emerald-600">
                         Total Fees: {settings.currencySymbol}{upload.totalFees}
@@ -510,13 +558,13 @@ export const ClubUploadsReview: React.FC<ClubUploadsReviewProps> = ({
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100">
-                        {upload.candidates.map((cand, idx) => {
+                        {(upload.candidates || []).map((cand, idx) => {
                           const candNameUpper = (cand.name || '').trim().toUpperCase();
                           const isDuplicate = existingServerNames.has(candNameUpper);
                           
                           // Official server match for chest number lookup
                           const officialServerCand = serverCandidates.find(
-                            (sc) => sc.id === cand.id || (sc.name && cand.name && sc.name.trim().toUpperCase() === candNameUpper && sc.club === upload.club)
+                            (sc) => sc.id === cand.id || (sc.name && cand.name && sc.name.trim().toUpperCase() === candNameUpper && (sc.club || '').trim().toUpperCase() === (upload.club || '').trim().toUpperCase())
                           );
                           const hasOfficialServerChest = (officialServerCand && Number(officialServerCand.chestNo) >= 101) || (Number(cand.chestNo) >= 101);
                           const officialAllottedChest = (officialServerCand && Number(officialServerCand.chestNo) >= 101) 

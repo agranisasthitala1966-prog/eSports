@@ -4,6 +4,8 @@ export interface SportEvent {
   Height: string;
   Gender: 'CHILDRENS' | 'BOYS' | 'GIRLS' | 'ALL' | string;
   Fees: number;
+  requiredHit?: boolean;   // default: true
+  requiredFinal?: boolean; // default: true
 }
 
 export interface Candidate {
@@ -33,7 +35,7 @@ export interface Club {
   id: string;
   name: string;
   shortCode: string;
-  logoUrl: string;
+  logoUrl?: string;
   contactPerson?: string;
   phone?: string;
   address?: string;
@@ -65,7 +67,19 @@ export interface FinalParticipant {
   lane: number;
   position?: number;
   resultValue?: string;
+  jumpRecord?: string;
   points?: number;
+}
+
+export interface BroadJumpRecordInfo {
+  eventNo: number;
+  eventName: string;
+  gender: string;
+  height: string;
+  recordHolderName: string;
+  recordHolderClub: string;
+  recordYear: string;
+  recordValue: string; // e.g. "14' 8\""
 }
 
 export interface EventResult {
@@ -75,10 +89,23 @@ export interface EventResult {
   winners?: FinalParticipant[];
   completed: boolean;
   recordedAt?: string;
+  highestRecord?: {
+    candidateName: string;
+    chestNo: number;
+    club: string;
+    recordValue: string;
+    isRecordBroken: boolean;
+    previousRecordValue?: string;
+    previousRecordHolder?: string;
+    previousRecordYear?: string;
+  };
 }
 
 export interface SportsMeetSettings {
   ordinalTitle: string; // e.g. "47th Annual Sports Meet 2027"
+  registeredClubName?: string;
+  registeredClubLogo?: string;
+  registeredClubPhone?: string; // Digits only mobile no of registered club
   organizer: string;
   venue: string;
   dates: string;
@@ -87,6 +114,7 @@ export interface SportsMeetSettings {
   currencySymbol: string;
   autoChestStart: number;
   serverPin?: string;
+  broadJumpPreviousRecords?: Record<number, BroadJumpRecordInfo>;
 }
 
 export interface ClientUpload {
