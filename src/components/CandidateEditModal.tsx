@@ -49,10 +49,10 @@ export const CandidateEditModal: React.FC<CandidateEditModalProps> = ({
   // Normalize initial fee status
   const initialFeeStatus = useMemo(() => {
     const fs = (candidate.feeStatus || '').toUpperCase();
-    if (fs.includes('PAID')) return 'Paid [P]';
-    if (fs.includes('FREE') || fs.includes('EXEMPT')) return 'Free [F]';
-    return 'Due [D]';
-  }, [candidate.feeStatus]);
+    if (fs.includes('PAID')) return 'Paid';
+    if (mode !== 'client' && (fs.includes('FREE') || fs.includes('EXEMPT'))) return 'Free';
+    return 'Due';
+  }, [candidate.feeStatus, mode]);
 
   const [editName, setEditName] = useState(candidate.name || '');
   const [editClub, setEditClub] = useState(candidate.club || '');
@@ -130,6 +130,22 @@ export const CandidateEditModal: React.FC<CandidateEditModalProps> = ({
 
     const targetGender = criteriaGenderDisplay; // 'BOYS' | 'GIRLS' | 'CHILDRENS' | 'ALL'
     const candidateInches = parseHeightToInches(editHeight);
+
+    // Rule: if selected height & gender does not match any event in master list under the same gender,
+    // only Event #15 is eligible for selection
+    const isHeightSet = editHeight && editHeight !== 'ALL';
+    const isGenderSet = targetGender && targetGender !== 'ALL';
+    if (isHeightSet && isGenderSet) {
+      const hasMatchingEventInMaster = events.some(e => {
+        const eGenderUpper = (e.Gender || '').toUpperCase();
+        if (eGenderUpper !== targetGender) return false;
+        if (e.Height === 'ALL') return false;
+        return parseHeightToInches(e.Height) === candidateInches;
+      });
+      if (!hasMatchingEventInMaster) {
+        return events.filter(e => Number(e.Evt_No) === 15);
+      }
+    }
 
     return events.filter(evt => {
       const evtNo = Number(evt.Evt_No);
@@ -253,15 +269,19 @@ export const CandidateEditModal: React.FC<CandidateEditModalProps> = ({
     setIsSaving(true);
     try {
       let totalFees = 0;
-      for (const evtNo of editSelectedEvents) {
-        const ev = events.find(e => Number(e.Evt_No) === Number(evtNo));
-        totalFees += Number(ev?.Fees || 10);
+      if (editFeeStatus !== 'Free' && editFeeStatus !== 'Exempted [E]') {
+        for (const evtNo of editSelectedEvents) {
+          const ev = events.find(e => Number(e.Evt_No) === Number(evtNo));
+          totalFees += ev && ev.Fees !== undefined ? Number(ev.Fees) : 0;
+        }
       }
+
+      const targetClub = editClub.trim().toUpperCase() || (mode === 'server' ? 'SELF' : (candidate.club || 'Independent'));
 
       const updated: Candidate = {
         ...candidate,
         name: trimmedName,
-        club: editClub.trim().toUpperCase() || candidate.club,
+        club: targetClub,
         gender: criteriaGenderDisplay,
         height: editHeight || 'ALL',
         feeStatus: editFeeStatus,
@@ -427,9 +447,11 @@ export const CandidateEditModal: React.FC<CandidateEditModalProps> = ({
                 onChange={(e) => setEditFeeStatus(e.target.value)}
                 className="w-full bg-transparent text-white font-bold text-sm sm:text-base focus:outline-hidden cursor-pointer"
               >
-                <option value="Due [D]" className="bg-[#0d1628] text-white">Due [D]</option>
-                <option value="Paid [P]" className="bg-[#0d1628] text-white">Paid [P]</option>
-                <option value="Free [F]" className="bg-[#0d1628] text-white">Free [F]</option>
+                <option value="Due" className="bg-[#0d1628] text-white">Due</option>
+                <option value="Paid" className="bg-[#0d1628] text-white">Paid</option>
+                {mode !== 'client' && (
+                  <option value="Free" className="bg-[#0d1628] text-white">Free</option>
+                )}
               </select>
             </div>
 
@@ -568,7 +590,7 @@ export const CandidateEditModal: React.FC<CandidateEditModalProps> = ({
                           )}
                         </div>
                         <div className="text-[11px] text-slate-400 font-semibold truncate">
-                          {evt.Gender} • {evt.Height} • ₹{Number(evt.Fees || 10).toFixed(2)}
+                          {evt.Gender} • {evt.Height} • ₹{Number(evt.Fees ?? 0).toFixed(2)}
                         </div>
                       </div>
                     </div>

@@ -72,13 +72,19 @@
     },
     "Club": {
       "title": "Club",
-      "description": "Registered sports club or institution",
+      "description": "Registered sports club extracted from candidate registry",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
-        "name": { "type": "string" }
+        "Sl": { "type": "number" },
+        "Reg_Club": { "type": "string" },
+        "Mob": { "type": "string" },
+        "Count_1stPlace": { "type": "number" },
+        "Count_2ndPlace": { "type": "number" },
+        "Count_3rdPlace": { "type": "number" },
+        "TotPoints": { "type": "number" }
       },
-      "required": ["id", "name"]
+      "required": ["id", "Reg_Club"]
     },
     "SportsMeetSettings": {
       "title": "SportsMeetSettings",

@@ -4,11 +4,21 @@ import { QrCode, X, Copy, Check, ExternalLink } from 'lucide-react';
 interface QrLinkModalProps {
   isOpen: boolean;
   onClose: () => void;
+  mode?: 'client' | 'server';
 }
 
-export const QrLinkModal: React.FC<QrLinkModalProps> = ({ isOpen, onClose }) => {
-  const [qrTargetMode, setQrTargetMode] = useState<'desktop' | 'dev' | 'shared'>('desktop');
+export const QrLinkModal: React.FC<QrLinkModalProps> = ({ isOpen, onClose, mode = 'server' }) => {
+  const [qrTargetMode, setQrTargetMode] = useState<'desktop' | 'shared'>('shared');
   const [copiedLink, setCopiedLink] = useState(false);
+
+  const isClientOnly = mode === 'client';
+
+  // Reset target mode when opened
+  React.useEffect(() => {
+    if (isOpen) {
+      setQrTargetMode('shared');
+    }
+  }, [isOpen]);
 
   const clientClubName = typeof window !== 'undefined' 
     ? localStorage.getItem('esports_client_club_name') || '' 
@@ -19,27 +29,19 @@ export const QrLinkModal: React.FC<QrLinkModalProps> = ({ isOpen, onClose }) => 
     const origin = window.location.origin || '';
     const pathname = window.location.pathname || '/';
 
-    if (qrTargetMode === 'desktop') {
-      return `${origin}${pathname}?mode=server`;
-    }
-
-    if (qrTargetMode === 'shared') {
-      const sharedOrigin = origin.includes('ais-dev-')
-        ? origin.replace('ais-dev-', 'ais-pre-')
-        : origin.includes('ais-dev.')
-        ? origin.replace('ais-dev.', 'ais-pre.')
-        : origin;
-      return `${sharedOrigin}${pathname}?mode=client`;
-    }
-
-    // Default: Mobile dev
-    const clientOrigin = origin.includes('ais-dev-')
+    const sharedOrigin = origin.includes('ais-dev-')
       ? origin.replace('ais-dev-', 'ais-pre-')
       : origin.includes('ais-dev.')
       ? origin.replace('ais-dev.', 'ais-pre.')
       : origin;
-    return `${clientOrigin}${pathname}?mode=client`;
-  }, [qrTargetMode]);
+
+    // For client enroll page QR code, strictly link to client mode
+    if (isClientOnly || qrTargetMode === 'shared') {
+      return `${sharedOrigin}${pathname}?mode=client`;
+    }
+
+    return `${origin}${pathname}?mode=server`;
+  }, [qrTargetMode, isClientOnly]);
 
   const handleCopyLink = () => {
     if (navigator.clipboard) {
@@ -59,9 +61,16 @@ export const QrLinkModal: React.FC<QrLinkModalProps> = ({ isOpen, onClose }) => 
         <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-4">
           <div className="flex items-center gap-2">
             <QrCode className="w-5 h-5 text-amber-400" />
-            <h3 className="font-bold text-base text-amber-400">
-              QR Link & Access
-            </h3>
+            <div>
+              <h3 className="font-bold text-base text-amber-400 leading-tight">
+                {isClientOnly ? 'Client Enroll QR Code' : 'QR Link & Access'}
+              </h3>
+              {isClientOnly && (
+                <p className="text-[11px] text-slate-400">
+                  Client Candidate Enrollment Portal
+                </p>
+              )}
+            </div>
           </div>
           <button
             onClick={onClose}
@@ -71,45 +80,35 @@ export const QrLinkModal: React.FC<QrLinkModalProps> = ({ isOpen, onClose }) => 
           </button>
         </div>
 
-        {/* Mode Switcher Tabs */}
-        <div className="grid grid-cols-3 gap-1 p-1 bg-[#070b15] rounded-xl border border-slate-800 mb-3 text-xs font-bold">
-          <button
-            type="button"
-            onClick={() => setQrTargetMode('desktop')}
-            className={`py-1.5 px-1.5 rounded-lg transition-all cursor-pointer text-center truncate ${
-              qrTargetMode === 'desktop'
-                ? 'bg-blue-600 text-white shadow'
-                : 'text-slate-400 hover:text-white'
-            }`}
-            title="Desktop Browser URL for Server Operations"
-          >
-            🖥️ Desktop Site
-          </button>
-          <button
-            type="button"
-            onClick={() => setQrTargetMode('dev')}
-            className={`py-1.5 px-1.5 rounded-lg transition-all cursor-pointer text-center truncate ${
-              qrTargetMode === 'dev'
-                ? 'bg-amber-400 text-slate-950 shadow'
-                : 'text-slate-400 hover:text-white'
-            }`}
-            title="Mobile Live Dev Link"
-          >
-            📱 Mobile Dev
-          </button>
-          <button
-            type="button"
-            onClick={() => setQrTargetMode('shared')}
-            className={`py-1.5 px-1.5 rounded-lg transition-all cursor-pointer text-center truncate ${
-              qrTargetMode === 'shared'
-                ? 'bg-emerald-400 text-slate-950 shadow'
-                : 'text-slate-400 hover:text-white'
-            }`}
-            title="Mobile Public Shared Link (No login required)"
-          >
-            🌐 Mobile Public
-          </button>
-        </div>
+        {/* Mode Switcher Tabs: Shown only in server mode, hidden for client enroll page */}
+        {!isClientOnly && (
+          <div className="grid grid-cols-2 gap-1 p-1 bg-[#070b15] rounded-xl border border-slate-800 mb-3 text-xs font-bold">
+            <button
+              type="button"
+              onClick={() => setQrTargetMode('shared')}
+              className={`py-1.5 px-2 rounded-lg transition-all cursor-pointer text-center truncate ${
+                qrTargetMode === 'shared'
+                  ? 'bg-emerald-400 text-slate-950 shadow'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+              title="Mobile Public Shared Link (No login required)"
+            >
+              🌐 Mobile Public
+            </button>
+            <button
+              type="button"
+              onClick={() => setQrTargetMode('desktop')}
+              className={`py-1.5 px-2 rounded-lg transition-all cursor-pointer text-center truncate ${
+                qrTargetMode === 'desktop'
+                  ? 'bg-blue-600 text-white shadow'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+              title="Desktop Browser URL for Server Operations"
+            >
+              🖥️ Desktop Site
+            </button>
+          </div>
+        )}
 
         <div className="flex flex-col items-center text-center space-y-3">
           {/* Scalable High Contrast QR Code Display */}
@@ -122,19 +121,21 @@ export const QrLinkModal: React.FC<QrLinkModalProps> = ({ isOpen, onClose }) => 
             />
           </div>
 
-          {/* Simple subtitle for mobile/public scan if applicable */}
-          {qrTargetMode !== 'desktop' && (
-            <div className="space-y-0.5 text-center">
-              <p className="text-xs font-semibold text-slate-300">
-                Scan this QR code with any smartphone camera to open the Public portal.
+          {/* Subtitle for scan */}
+          <div className="space-y-0.5 text-center">
+            <p className="text-xs font-semibold text-slate-300">
+              {isClientOnly
+                ? 'Scan this QR code with any smartphone camera to open the Client Candidate Enrollment portal.'
+                : qrTargetMode !== 'desktop'
+                ? 'Scan this QR code with any smartphone camera to open the Public portal.'
+                : 'Use this QR code / link to open Server Operations on a desktop browser.'}
+            </p>
+            {clientClubName && (
+              <p className="text-[11px] text-amber-400 font-bold">
+                Club: {clientClubName}
               </p>
-              {clientClubName && (
-                <p className="text-[11px] text-amber-400 font-bold">
-                  Club: {clientClubName}
-                </p>
-              )}
-            </div>
-          )}
+            )}
+          </div>
 
           {/* URL Box + Copy Button */}
           <div className="w-full flex items-center gap-2 bg-[#0b1326] p-2 rounded-xl border border-slate-800">

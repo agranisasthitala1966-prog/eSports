@@ -1,0 +1,32 @@
+{
+  "id": "/",
+  "name": "eSports - Sports Management System",
+  "short_name": "eSports",
+  "description": "Comprehensive Sports Management System with offline-first candidate enrollment, incremental server sync, event heats, rankings, club-wise reports, and database explorer.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#020617",
+  "theme_color": "#020617",
+  "icons": [
+    {
+      "src": "/icon.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

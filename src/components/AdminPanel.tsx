@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Club, SportsMeetSettings, SportEvent } from '../types';
+import { Club, SportsMeetSettings, SportEvent, Candidate, EventHeat, EventResult } from '../types';
 import { api } from '../services/api';
+import { downloadSportsMeetExcel } from '../services/excelExport';
 import { EventMaster } from './EventMaster';
 import { resizeImageToMax50KB } from '../utils/imageResize';
 import { 
@@ -16,13 +17,19 @@ import {
   ChevronUp, 
   Calendar, 
   Shield, 
-  Phone 
+  Phone,
+  FileSpreadsheet,
+  Database,
+  Download
 } from 'lucide-react';
 
 interface AdminPanelProps {
   settings: SportsMeetSettings;
   clubs: Club[];
   events?: SportEvent[];
+  candidates?: Candidate[];
+  heats?: EventHeat[];
+  results?: EventResult[];
   onSaveSettings: (settings: SportsMeetSettings) => Promise<void>;
   onSaveClub: (club: Partial<Club>) => Promise<void>;
   onDeleteClub: (clubId: string) => Promise<void>;
@@ -30,6 +37,7 @@ interface AdminPanelProps {
   onDeleteEvent?: (evtNo: number) => Promise<void>;
   onResetEvents?: () => Promise<void>;
   onDownloadBackup: () => void;
+  onDownloadExcel?: () => void;
   onRestoreBackup: (jsonData: any) => Promise<void>;
   onResetAllData: () => Promise<void>;
   onPurgeExceptEvents?: () => Promise<void>;
@@ -40,6 +48,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   settings,
   clubs,
   events = [],
+  candidates = [],
+  heats = [],
+  results = [],
   onSaveSettings,
   onSaveClub,
   onDeleteClub,
@@ -47,6 +58,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   onDeleteEvent,
   onResetEvents,
   onDownloadBackup,
+  onDownloadExcel,
   onRestoreBackup,
   onResetAllData,
   onPurgeExceptEvents,
@@ -128,9 +140,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   // Sections start in minimized form with option to expand
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
     meetDetails: false,
-    clubs: false,
     eventMaster: false,
+    clubs: false,
     securityPin: false,
+    databaseBackup: false,
   });
 
   const toggleSection = (sectionKey: string) => {
@@ -143,19 +156,49 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const expandAll = () => {
     setExpandedSections({
       meetDetails: true,
-      clubs: true,
       eventMaster: true,
+      clubs: true,
       securityPin: true,
+      databaseBackup: true,
     });
   };
 
   const minimizeAll = () => {
     setExpandedSections({
       meetDetails: false,
-      clubs: false,
       eventMaster: false,
+      clubs: false,
       securityPin: false,
+      databaseBackup: false,
     });
+  };
+
+  // Download Database & Data as Excel Workbook (.xlsx) with 'General Entry' & 'Event Allocation'
+  const handleDownloadExcel = () => {
+    if (onDownloadExcel) {
+      onDownloadExcel();
+      return;
+    }
+    try {
+      downloadSportsMeetExcel({
+        candidates: candidates || [],
+        events: events || [],
+        clubs: clubs || [],
+        heats: heats || [],
+        results: results || [],
+        settings: localSettings,
+      });
+      setStatusMsg({
+        type: 'success',
+        text: "Excel workbook (.xlsx) with 'General Entry' & 'Event Allocation' downloaded successfully!",
+      });
+      setTimeout(() => setStatusMsg(null), 3500);
+    } catch (err: any) {
+      setStatusMsg({
+        type: 'error',
+        text: 'Failed to generate Excel file: ' + err.message,
+      });
+    }
   };
 
   // Handle settings update
@@ -416,14 +459,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         type="tel"
                         required
                         inputMode="numeric"
-                        pattern="[0-9]+"
+                        pattern="[0-9]{10}"
+                        maxLength={10}
                         value={localSettings.registeredClubPhone || ''}
                         onChange={(e) => {
-                          const digits = e.target.value.replace(/\D/g, '');
+                          const digits = e.target.value.replace(/\D/g, '').slice(0, 10);
                           setIsDirty(true);
                           setLocalSettings({ ...localSettings, registeredClubPhone: digits });
                         }}
-                        placeholder="e.g. 9830123456"
                         className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-slate-900 text-sm font-mono font-bold focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
                       />
                     </div>
@@ -583,7 +626,72 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       </div>
 
       {/* ========================================================================= */}
-      {/* 2. REGISTERED CLUBS (MINIMIZED WITH OPTION TO EXPAND, ALL LOGOS REMOVED)   */}
+      {/* 2. EVENT MASTER ENTRY (MINIMIZED WITH OPTION TO EXPAND)                    */}
+      {/* ========================================================================= */}
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden transition-all">
+        <div
+          onClick={() => toggleSection('eventMaster')}
+          className="p-5 sm:p-6 flex items-center justify-between gap-4 cursor-pointer hover:bg-slate-50/70 transition-colors select-none"
+        >
+          <div className="flex items-center gap-3 min-w-0">
+            <span className="w-7 h-7 rounded-lg bg-blue-600 text-white flex items-center justify-center text-xs font-bold shrink-0">
+              2
+            </span>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h2 className="text-base font-bold text-slate-900">Event Master Entry</h2>
+                <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
+                  {events?.length || 0} Events Registered
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                {expandedSections.eventMaster
+                  ? 'Configure athletic meet disciplines, standard height brackets, categories, and fees.'
+                  : 'Click to expand and view or manage athletic events master list.'}
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              toggleSection('eventMaster');
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 transition-colors shrink-0 cursor-pointer"
+          >
+            {expandedSections.eventMaster ? (
+              <>
+                <ChevronUp className="w-4 h-4" />
+                <span>Minimize</span>
+              </>
+            ) : (
+              <>
+                <ChevronDown className="w-4 h-4" />
+                <span>Expand</span>
+              </>
+            )}
+          </button>
+        </div>
+
+        {expandedSections.eventMaster && (
+          <div className="p-6 pt-0 border-t border-slate-100 mt-2 space-y-4 animate-in fade-in duration-150">
+            <div className="pt-3">
+              <EventMaster
+                events={events || []}
+                settings={localSettings}
+                onSaveEvent={onSaveEvent || (async () => {})}
+                onDeleteEvent={onDeleteEvent || (async () => {})}
+                onResetEvents={onResetEvents || (async () => {})}
+                isEmbedded={true}
+              />
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ========================================================================= */}
+      {/* 3. REGISTERED CLUBS (MINIMIZED WITH OPTION TO EXPAND, ALL LOGOS REMOVED)   */}
       {/* ========================================================================= */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden transition-all">
         <div
@@ -592,7 +700,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         >
           <div className="flex items-center gap-3 min-w-0">
             <span className="w-7 h-7 rounded-lg bg-blue-600 text-white flex items-center justify-center text-xs font-bold shrink-0">
-              2
+              3
             </span>
             <div className="min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
@@ -666,7 +774,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   </button>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                   <div>
                     <label className="block text-xs font-bold text-slate-700 mb-1">
                       Club Name <span className="text-rose-500">*</span>
@@ -689,6 +797,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       onChange={(e) => setEditingClub({ ...editingClub, shortCode: e.target.value.toUpperCase() })}
                       placeholder="e.g. PAC"
                       className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm font-mono font-bold uppercase bg-white focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Club Mobile</label>
+                    <input
+                      type="tel"
+                      inputMode="numeric"
+                      maxLength={10}
+                      value={editingClub.mobile || ''}
+                      onChange={(e) => {
+                        const val = e.target.value.replace(/\D/g, '').slice(0, 10);
+                        setEditingClub({ ...editingClub, mobile: val, phone: val });
+                      }}
+                      className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm font-medium bg-white focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
                     />
                   </div>
 
@@ -736,7 +859,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     <div className="min-w-0">
                       <h4 className="text-sm font-bold text-slate-900 leading-tight truncate">{c.name}</h4>
                       <p className="text-xs text-slate-500 mt-0.5 truncate">
-                        {c.shortCode ? `Code: ${c.shortCode}` : ''} {c.address ? `• ${c.address}` : ''}
+                        {c.shortCode ? `Code: ${c.shortCode}` : ''} {c.mobile || c.phone ? `• Mobile: ${c.mobile || c.phone}` : ''} {c.address ? `• ${c.address}` : ''}
                       </p>
                     </div>
                   </div>
@@ -765,71 +888,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   </div>
                 </div>
               ))}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* ========================================================================= */}
-      {/* 3. EVENT MASTER LIST REGISTRY (MINIMIZED WITH OPTION TO EXPAND)           */}
-      {/* ========================================================================= */}
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden transition-all">
-        <div
-          onClick={() => toggleSection('eventMaster')}
-          className="p-5 sm:p-6 flex items-center justify-between gap-4 cursor-pointer hover:bg-slate-50/70 transition-colors select-none"
-        >
-          <div className="flex items-center gap-3 min-w-0">
-            <span className="w-7 h-7 rounded-lg bg-blue-600 text-white flex items-center justify-center text-xs font-bold shrink-0">
-              3
-            </span>
-            <div className="min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <h2 className="text-base font-bold text-slate-900">Event Master List Registry</h2>
-                <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
-                  {events?.length || 0} Events Registered
-                </span>
-              </div>
-              <p className="text-xs text-slate-500 mt-0.5">
-                {expandedSections.eventMaster
-                  ? 'Configure athletic meet disciplines, standard height brackets, categories, and fees.'
-                  : 'Click to expand and view or manage athletic events master list.'}
-              </p>
-            </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              toggleSection('eventMaster');
-            }}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 transition-colors shrink-0 cursor-pointer"
-          >
-            {expandedSections.eventMaster ? (
-              <>
-                <ChevronUp className="w-4 h-4" />
-                <span>Minimize</span>
-              </>
-            ) : (
-              <>
-                <ChevronDown className="w-4 h-4" />
-                <span>Expand</span>
-              </>
-            )}
-          </button>
-        </div>
-
-        {expandedSections.eventMaster && (
-          <div className="p-6 pt-0 border-t border-slate-100 mt-2 space-y-4 animate-in fade-in duration-150">
-            <div className="pt-3">
-              <EventMaster
-                events={events || []}
-                settings={localSettings}
-                onSaveEvent={onSaveEvent || (async () => {})}
-                onDeleteEvent={onDeleteEvent || (async () => {})}
-                onResetEvents={onResetEvents || (async () => {})}
-                isEmbedded={true}
-              />
             </div>
           </div>
         )}
@@ -909,6 +967,166 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   <span>Reset / Change PIN</span>
                 </button>
               )}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ========================================================================= */}
+      {/* 5. DATABASE BACKUP, EXPORT & MAINTENANCE (MINIMIZED WITH OPTION TO EXPAND) */}
+      {/* ========================================================================= */}
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden transition-all">
+        <div
+          onClick={() => toggleSection('databaseBackup')}
+          className="p-5 sm:p-6 flex items-center justify-between gap-4 cursor-pointer hover:bg-slate-50/70 transition-colors select-none"
+        >
+          <div className="flex items-center gap-3 min-w-0">
+            <span className="w-7 h-7 rounded-lg bg-emerald-600 text-white flex items-center justify-center text-xs font-bold shrink-0">
+              5
+            </span>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h2 className="text-base font-bold text-slate-900">Database &amp; Data Export / Backup</h2>
+                <span className="px-2 py-0.5 rounded-full text-[11px] font-extrabold bg-emerald-100 text-emerald-800">
+                  Excel (.xlsx) Ready
+                </span>
+                <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-slate-100 text-slate-700">
+                  JSON Backup
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                {expandedSections.databaseBackup
+                  ? "Download full database & data in .xlsx format ('General Entry' & 'Event Allocation' sheets), create JSON backups, or restore."
+                  : "Click to expand options to download database & data in .xlsx format, backup, and restore."}
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              toggleSection('databaseBackup');
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 transition-colors shrink-0 cursor-pointer"
+          >
+            {expandedSections.databaseBackup ? (
+              <>
+                <ChevronUp className="w-4 h-4" />
+                <span>Minimize</span>
+              </>
+            ) : (
+              <>
+                <ChevronDown className="w-4 h-4" />
+                <span>Expand</span>
+              </>
+            )}
+          </button>
+        </div>
+
+        {expandedSections.databaseBackup && (
+          <div className="p-6 pt-0 border-t border-slate-100 mt-2 space-y-4 animate-in fade-in duration-150">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-3">
+              
+              {/* Option A: Excel Workbook (.xlsx) */}
+              <div className="p-4 rounded-xl border border-emerald-200 bg-emerald-50/40 flex flex-col justify-between gap-3 shadow-2xs">
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-lg bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-2xs">
+                      <FileSpreadsheet className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-bold text-slate-900 leading-tight">
+                        Download Database &amp; Data (.xlsx)
+                      </h4>
+                      <span className="text-[10px] font-bold text-emerald-700 uppercase tracking-wider">
+                        Two Formatted Sheets
+                      </span>
+                    </div>
+                  </div>
+                  <p className="text-xs text-slate-600 leading-relaxed">
+                    Downloads an Excel workbook (.xlsx) formatted with:
+                  </p>
+                  <ul className="text-xs text-slate-700 space-y-1 list-disc list-inside bg-white/70 p-2.5 rounded-lg border border-emerald-100 font-mono text-[11px]">
+                    <li><strong>'General Entry':</strong> Sl_No, Chest_No, Name_, Club_Name, Height, Gndr, Fees, Evt, _Amt</li>
+                    <li><strong>'Event Allocation':</strong> Sl_No, Chest_No, Evt_No, Hit_Flag, Final_Flag, Awd, Prize_1st to Prize_6th &amp; Jump_1st to Jump_6th</li>
+                  </ul>
+                </div>
+
+                <button
+                  type="button"
+                  id="admin-download-excel-btn"
+                  onClick={handleDownloadExcel}
+                  className="w-full py-2.5 px-4 bg-emerald-700 hover:bg-emerald-800 active:scale-98 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer shadow-xs"
+                  title="Download database & data in .xlsx format"
+                >
+                  <FileSpreadsheet className="w-4 h-4 text-emerald-200" />
+                  <span>Download Database (.xlsx)</span>
+                </button>
+              </div>
+
+              {/* Option B: Full JSON Backup */}
+              <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/70 flex flex-col justify-between gap-3 shadow-2xs">
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-lg bg-slate-800 text-white flex items-center justify-center shrink-0 shadow-2xs">
+                      <Download className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-bold text-slate-900 leading-tight">
+                        Full Database Backup (.json)
+                      </h4>
+                      <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">
+                        Raw JSON Dump
+                      </span>
+                    </div>
+                  </div>
+                  <p className="text-xs text-slate-600 leading-relaxed">
+                    Downloads complete raw database snapshot (candidates, events, clubs, heats, results, and system settings) for full backup and restoration.
+                  </p>
+                </div>
+
+                <div className="flex flex-col sm:flex-row items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={onDownloadBackup}
+                    className="w-full sm:flex-1 py-2.5 px-3 bg-slate-900 hover:bg-slate-800 active:scale-98 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer shadow-xs"
+                    title="Download JSON database backup"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>Download JSON</span>
+                  </button>
+
+                  <label className="w-full sm:flex-1 py-2.5 px-3 bg-blue-600 hover:bg-blue-700 active:scale-98 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 cursor-pointer transition-all shadow-xs text-center">
+                    <Upload className="w-4 h-4" />
+                    <span>Restore File</span>
+                    <input
+                      type="file"
+                      accept=".json"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        const reader = new FileReader();
+                        reader.onload = async () => {
+                          try {
+                            const json = JSON.parse(reader.result as string);
+                            if (window.confirm('Are you sure you want to restore the database from this file? This will replace existing data.')) {
+                              await onRestoreBackup(json);
+                              setStatusMsg({ type: 'success', text: 'Database successfully restored!' });
+                            }
+                          } catch (err: any) {
+                            setStatusMsg({ type: 'error', text: 'Invalid JSON backup file: ' + err.message });
+                          }
+                        };
+                        reader.readAsText(file);
+                        e.target.value = '';
+                      }}
+                      className="hidden"
+                    />
+                  </label>
+                </div>
+              </div>
+
             </div>
           </div>
         )}

@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { SportEvent, Candidate, EventHeat, HeatParticipant, EventResult, FinalParticipant, SportsMeetSettings, Club } from '../types';
 import { 
   Flame, 
@@ -14,8 +14,15 @@ import {
   ArrowRight,
   ChevronDown,
   Medal,
-  Lock
+  Lock,
+  Sliders
 } from 'lucide-react';
+import { ThermalPageSetupModal } from './ThermalPageSetupModal';
+import { 
+  ThermalPrintSettings, 
+  getThermalSettings, 
+  generateThermalPrintCSS 
+} from '../utils/thermalSettings';
 
 interface HitListProps {
   events: SportEvent[];
@@ -51,6 +58,29 @@ export const HitList: React.FC<HitListProps> = ({
   // Print Preview Modals
   const [printModalType, setPrintModalType] = useState<'hit' | 'final' | 'results' | null>(null);
   const [modalFormat, setModalFormat] = useState<'a4' | 'thermal'>('a4');
+  const [thermalConfig, setThermalConfig] = useState<ThermalPrintSettings>(getThermalSettings());
+  const [showThermalSetup, setShowThermalSetup] = useState<boolean>(false);
+
+  useEffect(() => {
+    const handleSettingsChange = (e: any) => {
+      if (e.detail) {
+        setThermalConfig(e.detail);
+      }
+    };
+    window.addEventListener('thermal-settings-changed', handleSettingsChange);
+    return () => window.removeEventListener('thermal-settings-changed', handleSettingsChange);
+  }, []);
+
+  // Handle ESC key to exit print preview modal
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && printModalType !== null) {
+        setPrintModalType(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [printModalType]);
 
   const currentTimestamp = useMemo(() => {
     return new Date().toLocaleString('en-GB', {
@@ -377,49 +407,47 @@ export const HitList: React.FC<HitListProps> = ({
     return settings.registeredClubName || settings.organizer || 'Agrani Sasthitala Sangha';
   };
 
-  // Thermal header: Place club logo at left of two lines (registered club name, next line meet ordinal number)
+  // Thermal header: Same as Candidate List thermal report (inline logo beside club name, ordinal below centered)
   const renderThermalHeader = (specificClubName?: string) => {
     const clubDisplayName = getThermalClubName(specificClubName);
     const clubLogo = getThermalClubLogo(specificClubName);
 
     return (
-      <div className="text-center pb-0.5 mb-1 border-b border-dashed border-black">
-        <div className="flex items-center justify-center gap-2 leading-tight">
+      <div className="pb-1 mb-1 border-b border-dashed border-black pt-1">
+        <div className="flex items-center justify-center gap-1.5 leading-tight">
           <img
             src={clubLogo}
             alt="Club Logo"
             className="w-5 h-5 shrink-0 object-contain filter grayscale contrast-200"
             style={{ filter: 'grayscale(100%) contrast(200%)' }}
           />
-          <div className="text-left leading-tight">
-            <div className="font-bold text-[10px] uppercase tracking-tight text-black truncate max-w-[42mm]">
-              {clubDisplayName}
-            </div>
-            <div className="text-[8.5px] font-semibold text-black leading-tight mt-0.5">
-              {settings.ordinalTitle || '47th Annual Sports Meet 2027'}
-            </div>
-          </div>
+          <span className="font-bold text-[10.5px] uppercase tracking-tight text-black truncate max-w-[36mm]">
+            {clubDisplayName}
+          </span>
+        </div>
+        <div className="text-[8.5px] font-semibold text-black leading-tight mt-0.5 whitespace-nowrap overflow-hidden text-ellipsis max-w-[46mm] mx-auto text-center">
+          {settings.ordinalTitle || '47th Annual Sports Meet 2027'}
         </div>
       </div>
     );
   };
 
-  // Thermal footer: Place app logo and app name in ONE line, date & time stamp (minimal height)
+  // Thermal footer: Same as Candidate List thermal report
   const renderThermalFooter = () => {
     return (
-      <div className="text-center pt-0.5 mt-1 border-t border-dashed border-black text-black">
-        <div className="flex items-center justify-center gap-1 leading-none">
+      <div className="text-center pt-1 mt-1 border-t border-dashed border-black text-black">
+        <div className="flex items-center justify-center gap-1 leading-none max-w-[46mm] mx-auto whitespace-nowrap overflow-hidden">
           <img
             src="/icon.png"
             alt="eSports Logo"
             className="w-3.5 h-3.5 shrink-0 object-contain filter grayscale contrast-200"
             style={{ filter: 'grayscale(100%) contrast(200%)' }}
           />
-          <span className="font-bold text-[8.5px] uppercase tracking-tight text-black">
-            eSports (A Sports Management System)
+          <span className="font-semibold text-[8px] tracking-tight text-black whitespace-nowrap truncate">
+            eSports (Sport Management System)
           </span>
         </div>
-        <div className="text-[7.5px] text-black leading-tight mt-0.5 font-mono">
+        <div className="text-[7.5px] text-black leading-none mt-0.5 font-mono whitespace-nowrap">
           {currentTimestamp}
         </div>
       </div>
@@ -429,52 +457,14 @@ export const HitList: React.FC<HitListProps> = ({
   return (
     <div className="relative">
       {/* Scoped Dynamic Print Stylesheet: Ensures complete isolation and precise formatting */}
-      <style>{`
-        @media print {
-          ${
-            modalFormat === 'thermal'
-              ? `
-            @page {
-              size: 58mm auto !important;
-              margin: 0 !important;
-            }
-            html, body {
-              width: 58mm !important;
-              min-width: 58mm !important;
-              max-width: 58mm !important;
-              margin: 0 !important;
-              padding: 0 !important;
-              background: #ffffff !important;
-              color: #000000 !important;
-              font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace !important;
-              -webkit-print-color-adjust: exact !important;
-              print-color-adjust: exact !important;
-            }
-            .thermal-printable-sheet {
-              width: 48mm !important;
-              max-width: 48mm !important;
-              margin: 0 auto !important;
-              padding: 1mm 0 4mm 0 !important;
-              background: #ffffff !important;
-              color: #000000 !important;
-              font-size: 9.5px !important;
-              line-height: 1.2 !important;
-            }
-            .thermal-printable-sheet * {
-              color: #000000 !important;
-              border-color: #000000 !important;
-              background: transparent !important;
-              box-shadow: none !important;
-            }
-            .thermal-printable-sheet img {
-              filter: grayscale(100%) contrast(200%) !important;
-              -webkit-filter: grayscale(100%) contrast(200%) !important;
-            }
-            .a4-printable-sheet {
+      {modalFormat === 'thermal' ? (
+        <style>{generateThermalPrintCSS(thermalConfig)}</style>
+      ) : (
+        <style>{`
+          @media print {
+            header, nav, footer, .print-hidden-element {
               display: none !important;
             }
-          `
-              : `
             @page {
               size: A4 portrait !important;
               margin: 8mm 8mm !important;
@@ -499,17 +489,18 @@ export const HitList: React.FC<HitListProps> = ({
               outline: none !important;
               box-shadow: none !important;
             }
+            .receipt,
+            .thermal-printable-wrapper,
             .thermal-printable-sheet {
               display: none !important;
             }
-          `
+            .avoid-break {
+              page-break-inside: avoid !important;
+              break-inside: avoid !important;
+            }
           }
-          .avoid-break {
-            page-break-inside: avoid !important;
-            break-inside: avoid !important;
-          }
-        }
-      `}</style>
+        `}</style>
+      )}
 
       {/* WRAPPER FOR ALL INTERACTIVE HITLIST UI: Completely hidden on print so web page NEVER appears */}
       <div className={`space-y-4 ${printModalType !== null ? 'print:hidden' : ''}`}>
@@ -1179,131 +1170,173 @@ export const HitList: React.FC<HitListProps> = ({
       {/* 4. MODAL: PRINT HIT LIST (Full A4 Page Preview & Printing)               */}
       {/* ========================================================================= */}
       {printModalType === 'hit' && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-1 sm:p-4 bg-black/85 backdrop-blur-2xs overflow-y-auto print:static print:inset-auto print:p-0 print:bg-white print:overflow-visible print:block print:w-full print:h-auto">
-          <div className="bg-slate-900 border border-slate-700 rounded-xl sm:rounded-2xl w-full max-w-5xl max-h-[96vh] flex flex-col shadow-2xl overflow-hidden text-slate-900 print:bg-white print:border-none print:shadow-none print:max-h-none print:w-full print:rounded-none print:overflow-visible print:p-0">
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center p-1 sm:p-4 bg-black/85 backdrop-blur-2xs overflow-y-auto print:static print:inset-auto print:p-0 print:bg-white print:overflow-visible print:block print:w-full print:h-auto"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setPrintModalType(null);
+          }}
+        >
+          <div className="relative bg-slate-900 border border-slate-700 rounded-xl sm:rounded-2xl w-full max-w-5xl max-h-[96vh] flex flex-col shadow-2xl overflow-hidden text-slate-900 print:bg-white print:border-none print:shadow-none print:max-h-none print:w-full print:rounded-none print:overflow-visible print:p-0">
             
             {/* Modal Actions Bar (Hidden on print) */}
-            <div className="px-3 sm:px-6 py-2.5 sm:py-3.5 bg-slate-900 text-white flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 print:hidden">
-              <div className="flex items-center gap-2">
-                <Printer className="w-4 h-4 text-amber-400" />
-                <div>
-                  <h3 className="font-bold text-xs sm:text-base">Field Working Copy Preview (Hit List)</h3>
-                  <p className="text-[10px] sm:text-[11px] text-slate-400">
-                    Event #{currentEvent?.Evt_No}: {currentEvent?.Evt_Name} • {enrolledCandidates.length} Athlete(s)
-                  </p>
+            <div className="sticky top-0 z-30 px-3 sm:px-6 py-2.5 sm:py-3.5 bg-slate-900 text-white flex flex-col gap-2.5 border-b border-slate-800 print:hidden shrink-0">
+              {/* Row 1: Title and Prominent Top-Right Highlighted 'X' Close Button */}
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Printer className="w-4 h-4 text-amber-400 shrink-0" />
+                  <div className="min-w-0">
+                    <h3 className="font-bold text-xs sm:text-base truncate">Field Working Copy Preview (Hit List)</h3>
+                    <p className="text-[10px] sm:text-[11px] text-slate-400 truncate">
+                      Event #{currentEvent?.Evt_No}: {currentEvent?.Evt_Name} • {enrolledCandidates.length} Athlete(s)
+                    </p>
+                  </div>
                 </div>
+
+                {/* Highlighted 'X' Close Button situated at top right corner */}
+                <button
+                  type="button"
+                  id="btn-close-hit-preview"
+                  onClick={() => setPrintModalType(null)}
+                  className="flex items-center justify-center p-1.5 sm:p-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white border border-rose-400 shadow-md transition-all cursor-pointer active:scale-95 shrink-0"
+                  title="Close Preview (X)"
+                  aria-label="Close Print Preview"
+                >
+                  <X className="w-5 h-5 stroke-[2.5]" />
+                </button>
               </div>
 
-              <div className="flex items-center gap-2">
-                {/* Format Switcher */}
-                <div className="flex items-center bg-slate-800 p-0.5 rounded-lg border border-slate-700">
+              {/* Row 2: Left-aligned (Normal, Thermal, Print) | Right-aligned (58mm Thermal Page Setup) */}
+              <div className="flex items-center justify-between gap-2 w-full">
+                {/* Left Aligned: Normal, Thermal, Print */}
+                <div className="flex items-center gap-1.5 sm:gap-2">
+                  {/* Format Switcher */}
+                  <div className="flex items-center bg-slate-800 p-0.5 rounded-lg border border-slate-700">
+                    <button
+                      type="button"
+                      onClick={() => setModalFormat('a4')}
+                      className={`flex items-center gap-1 px-2 sm:px-2.5 py-1 rounded-md text-xs font-bold transition-all ${
+                        modalFormat === 'a4'
+                          ? 'bg-blue-600 text-white shadow-xs'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                      title="Normal"
+                    >
+                      <FileText className="w-3.5 h-3.5" />
+                      <span>Normal</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setModalFormat('thermal')}
+                      className={`flex items-center gap-1 px-2 sm:px-2.5 py-1 rounded-md text-xs font-bold transition-all ${
+                        modalFormat === 'thermal'
+                          ? 'bg-amber-500 text-slate-950 font-black shadow-xs'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                      title="Thermal"
+                    >
+                      <Receipt className="w-3.5 h-3.5" />
+                      <span>Thermal</span>
+                    </button>
+                  </div>
+
+                  {/* Print Trigger */}
                   <button
                     type="button"
-                    onClick={() => setModalFormat('a4')}
-                    className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-bold transition-all ${
-                      modalFormat === 'a4'
-                        ? 'bg-blue-600 text-white shadow-xs'
-                        : 'text-slate-400 hover:text-white'
-                    }`}
-                    title="Print on Plain A4 Paper without outlines, borders, or background graphics"
-                  >
-                    <FileText className="w-3.5 h-3.5" />
-                    <span>Plain A4</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setModalFormat('thermal')}
-                    className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-bold transition-all ${
+                    onClick={handleExecutePrint}
+                    className={`px-2.5 sm:px-4 py-1.5 rounded-lg font-bold text-xs sm:text-sm flex items-center gap-1.5 transition-all shadow-md cursor-pointer ${
                       modalFormat === 'thermal'
-                        ? 'bg-amber-500 text-slate-950 font-black shadow-xs'
-                        : 'text-slate-400 hover:text-white'
+                        ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 font-black'
+                        : 'bg-blue-600 hover:bg-blue-500 text-white'
                     }`}
-                    title="Print on 2-inch roll thermal printer"
+                    title="Print"
                   >
-                    <Receipt className="w-3.5 h-3.5" />
-                    <span>2" Thermal</span>
+                    <Printer className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                    <span>Print</span>
                   </button>
                 </div>
 
-                {/* Print Trigger */}
+                {/* Right Aligned: 58mm Thermal Page Setup Button */}
                 <button
                   type="button"
-                  onClick={handleExecutePrint}
-                  className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg font-bold text-xs sm:text-sm flex items-center gap-1.5 transition-all shadow-md cursor-pointer ${
-                    modalFormat === 'thermal'
-                      ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 font-black'
-                      : 'bg-blue-600 hover:bg-blue-500 text-white'
+                  disabled={modalFormat === 'a4'}
+                  onClick={() => setShowThermalSetup(true)}
+                  className={`px-2 sm:px-2.5 py-1.5 rounded-lg border border-slate-700 transition-all flex items-center gap-1.5 text-xs font-bold ${
+                    modalFormat === 'a4'
+                      ? 'opacity-40 cursor-not-allowed bg-slate-800/60 text-slate-500'
+                      : 'text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 active:scale-98 cursor-pointer'
                   }`}
+                  title={modalFormat === 'a4' ? "Thermal setup only available in Thermal mode" : "58mm Thermal Printer Page Setup"}
                 >
-                  <Printer className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-                  <span>{modalFormat === 'thermal' ? 'Print 2" Thermal Receipt' : 'Print Plain A4 Paper'}</span>
-                </button>
-
-                {/* Close Button */}
-                <button
-                  type="button"
-                  onClick={() => setPrintModalType(null)}
-                  className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
-                >
-                  <X className="w-4 h-4 sm:w-5 sm:h-5" />
+                  <Sliders className={`w-3.5 h-3.5 ${modalFormat === 'a4' ? 'text-slate-500' : 'text-amber-400'}`} />
+                  <span className="hidden sm:inline">58mm Setup</span>
                 </button>
               </div>
             </div>
 
             {/* Scrollable Preview Canvas */}
             {modalFormat === 'thermal' ? (
-              /* ================= 2-INCH THERMAL ROLL RECEIPT PREVIEW ================= */
-              <div className="p-4 sm:p-8 bg-[#cbd5e1] overflow-y-auto flex-1 flex justify-center print:p-0 print:bg-white print:overflow-visible">
+              /* ================= 58MM THERMAL ROLL RECEIPT PREVIEW (EXACT MATCHING) ================= */
+              <div className="p-4 sm:p-8 bg-slate-300 overflow-y-auto flex-1 flex flex-col items-center print:p-0 print:bg-white print:overflow-visible">
+                <div className="text-[11px] font-bold text-slate-700 mb-2 flex items-center gap-1.5 print:hidden">
+                  <Receipt className="w-3.5 h-3.5 text-amber-600" />
+                  <span>58mm Roll Preview ({thermalConfig.printableWidth}mm net printable)</span>
+                </div>
                 <div
-                  className="thermal-printable-sheet w-full max-w-[320px] bg-white text-black p-4 shadow-[0_10px_35px_rgba(0,0,0,0.22)] rounded-xs font-mono text-[9.5px] leading-tight print:shadow-none print:p-0 print:max-w-[48mm] print:w-[48mm]"
+                  className="receipt thermal-printable-sheet bg-white text-black p-3 shadow-2xl rounded-xs select-none print:shadow-none print:p-0"
                   style={{
-                    fontFamily:
-                      'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+                    width: `${thermalConfig.printableWidth}mm`,
+                    maxWidth: `${thermalConfig.printableWidth}mm`,
+                    paddingLeft: `${thermalConfig.marginHorizontal}mm`,
+                    paddingRight: `${thermalConfig.marginHorizontal}mm`,
+                    paddingTop: `${thermalConfig.topMargin || 5}mm`,
+                    paddingBottom: `${thermalConfig.feedBeforeCut}mm`,
+                    fontSize: `${thermalConfig.fontSize}px`,
+                    lineHeight: thermalConfig.lineSpacing,
+                    fontFamily: 'Consolas, "Courier New", monospace',
                   }}
                 >
+                  {/* Header: same as Candidate list */}
                   {renderThermalHeader()}
 
-                  <div className="text-center mb-1 leading-tight">
-                    <div className="font-bold text-[10px] uppercase">
-                      HIT LIST • WORKING COPY
-                    </div>
-                    <div className="font-bold text-[9.5px]">
-                      EVT #{currentEvent?.Evt_No}: {currentEvent?.Evt_Name}
-                    </div>
-                    <div className="text-[8.5px]">
-                      {getFormattedHeightGender(currentEvent)} • {enrolledCandidates.length} ATHLETES
+                  {/* Dashed Line */}
+                  <div className="border-b border-dashed border-black my-1"></div>
+
+                  {/* Event Title Line: broken into two lines */}
+                  <div className="text-center py-0.5 tracking-tight text-black leading-tight">
+                    <div className="font-bold text-[10px] uppercase">HIT LIST</div>
+                    <div className="text-[8.5px] font-semibold mt-0.5 uppercase break-words">
+                      EVT #{currentEvent?.Evt_No}: {currentEvent?.Evt_Name} ({(currentEvent?.Height || '').toUpperCase() === 'ALL' ? 'ALL' : (currentEvent?.Height || '').replace(/[`']/g, "'").replace(/''|``|"/g, "''")} • {currentEvent?.Gender?.trim().toUpperCase().startsWith('BOY') ? 'B' : currentEvent?.Gender?.trim().toUpperCase().startsWith('GIRL') ? 'G' : currentEvent?.Gender?.trim().toUpperCase().startsWith('CHILD') ? 'C' : 'ALL'})
                     </div>
                   </div>
 
-                  <div className="border-b border-black pb-0.5 mb-1 font-bold flex justify-between text-[8.5px] leading-tight">
-                    <span className="w-5 text-center">SL</span>
-                    <span className="w-7 text-center">CH#</span>
-                    <span className="flex-1 text-left">ATHLETE (CLUB)</span>
-                    <span className="w-10 text-center">POS/SC</span>
-                  </div>
+                  {/* Dashed Line */}
+                  <div className="border-b border-dashed border-black my-1"></div>
 
-                  <div className="space-y-1">
+                  {/* Table Column Headers */}
+                  <div className="flex items-center text-[9px] font-bold text-black uppercase pt-1">
+                    <span className="w-6 text-center">SL</span>
+                    <span className="w-8 text-center">CH#</span>
+                    <span className="flex-1 text-left pl-2">ATHLETE (CLUB)</span>
+                  </div>
+                  <div className="border-b-2 border-black mb-1 mt-0.5"></div>
+
+                  {/* Athletes List with dotted separators */}
+                  <div className="space-y-0 text-black">
                     {enrolledCandidates.map((cand, idx) => (
-                      <div
-                        key={cand.id || cand.chestNo}
-                        className="flex justify-between items-center text-[9px] leading-tight border-b border-dotted border-slate-300 pb-0.5"
-                      >
-                        <span className="w-5 text-center font-bold">{idx + 1}</span>
-                        <span className="w-7 text-center font-mono font-bold">#{cand.chestNo}</span>
-                        <span className="flex-1 text-left truncate pr-1">
-                          {cand.name} <span className="text-[7.5px]">({cand.club || 'Ind'})</span>
-                        </span>
-                        <span className="w-10 text-center font-mono text-[8px] border border-black px-1 py-0.5">
-                          [ &nbsp; ]
-                        </span>
+                      <div key={cand.id || cand.chestNo}>
+                        <div className="flex items-center text-[9.5px] py-1 text-black leading-tight">
+                          <span className="w-6 text-center font-normal shrink-0">{idx + 1}</span>
+                          <span className="w-8 text-center font-bold shrink-0">{cand.chestNo}</span>
+                          <span className="flex-1 text-left font-normal uppercase truncate pl-2">
+                            {cand.name} ({cand.club || 'BANDIPUR'})
+                          </span>
+                        </div>
+                        <div className="border-b border-dotted border-black/80"></div>
                       </div>
                     ))}
                   </div>
 
-                  <div className="pt-2 text-center text-[8px]">
-                    Track / Field Official Sign: __________________
-                  </div>
-
+                  {/* Footer: same as Candidate list */}
                   {renderThermalFooter()}
                 </div>
               </div>
@@ -1315,89 +1348,96 @@ export const HitList: React.FC<HitListProps> = ({
                   id="printable-hit-content"
                 >
                   <div>
-                    {/* Official Meet Header */}
-                    <div className="text-center border-b-2 border-black pb-3 mb-4">
-                      <div className="flex items-center justify-center gap-3.5 mb-1">
-                        <img src={settings.registeredClubLogo || '/icon.png'} alt="Club Logo" className="w-10 h-10 object-contain shrink-0" />
-                        <div className="text-left">
-                          <h1 className="text-lg sm:text-xl font-bold uppercase tracking-tight text-black leading-tight">
-                            {settings.registeredClubName || settings.organizer || 'Agrani Sasthitala Sangha'}
-                          </h1>
-                          <p className="text-xs sm:text-sm font-semibold text-black uppercase tracking-wide leading-tight mt-0.5">
-                            {settings.ordinalTitle || '47th Annual Sports Meet 2027'}
-                          </p>
-                        </div>
+                    {/* Top Header: Logo on Left + Centered Club Name & Meet Title */}
+                    <div className="relative mb-2">
+                      <div className="absolute left-0 top-0">
+                        <img 
+                          src={settings.registeredClubLogo || '/icon.png'} 
+                          alt="Club Logo" 
+                          className="w-14 h-14 object-contain"
+                        />
                       </div>
-                      <div className="mt-1.5 inline-block px-3 py-1">
-                        <h2 className="text-xs sm:text-base font-black uppercase text-black">
-                          {getDynamicEventHeading(currentEvent)}
+                      <div className="text-center pt-0.5 pb-2">
+                        <h1 className="text-xl sm:text-2xl font-black text-black uppercase tracking-wide leading-tight">
+                          {(settings.registeredClubName || settings.organizer || 'SASHTITALA AGRANI').toUpperCase()}
+                        </h1>
+                        <h2 className="text-xs sm:text-sm font-bold text-black uppercase tracking-wide leading-tight mt-1">
+                          {(settings.ordinalTitle || '47TH ANNUAL SPORTS MEET 2027').toUpperCase()}
                         </h2>
                       </div>
-                      <p className="text-[10px] text-black font-bold uppercase tracking-wider mt-1">
-                        OFFICIAL FIELD WORKING COPY • RECORDING SHEET • ALL PARTICIPANTS
-                      </p>
                     </div>
 
-                    {/* All Participants Hit List Table: Pure white, clean black borders, no background graphics */}
-                    <table className="w-full text-left text-xs border border-black border-collapse bg-white">
+                    {/* Horizontal Divider Line */}
+                    <div className="border-b border-black mb-3"></div>
+
+                    {/* Event Header Bar (Thick border above and below) */}
+                    <div className="border-t-2 border-b-2 border-black py-1.5 px-0.5 mb-3 flex items-center justify-between">
+                      <div className="font-bold text-sm sm:text-base text-black uppercase tracking-wide">
+                        EVENT #{currentEvent?.Evt_No} : {currentEvent?.Evt_Name} / {(currentEvent?.Height || '').toUpperCase() === 'ALL' ? 'ALL' : (currentEvent?.Height || '').replace(/[`']/g, "'").replace(/''|``|"/g, '"')} / {currentEvent?.Gender}
+                      </div>
+                      <div className="font-bold text-sm sm:text-base text-black uppercase tracking-wider">
+                        HIT LIST
+                      </div>
+                    </div>
+
+                    {/* All Participants Hit List Table: Matches HitListA4Reports.jpg exactly */}
+                    <table className="w-full text-left border border-black border-collapse bg-white">
                       <thead>
-                        <tr className="bg-white text-black font-black uppercase border-b-2 border-black">
-                          <th className="py-2 px-2 w-10 text-center border-r border-black">Sl.</th>
-                          <th className="py-2 px-3 w-28 text-center border-r border-black">Chest no.</th>
-                          <th className="py-2 px-3 border-r border-black">Name (Club name)</th>
-                          <th className="py-1 px-1 text-center w-48" colSpan={4}>
-                            <div className="text-[9px] uppercase tracking-wider font-black">Position / Score</div>
-                            <div className="grid grid-cols-4 border-t border-black pt-0.5 font-bold">
-                              <span>1</span>
-                              <span className="border-l border-black">2</span>
-                              <span className="border-l border-black">3</span>
-                              <span className="border-l border-black">4</span>
-                            </div>
+                        <tr className="bg-white text-black font-bold">
+                          <th rowSpan={2} className="border border-black py-2 px-1 text-center text-xs uppercase" style={{ width: '40px' }}>
+                            SL.
+                          </th>
+                          <th rowSpan={2} className="border border-black py-2 px-1 text-center text-xs uppercase font-bold" style={{ width: '60px', minWidth: '60px' }}>
+                            CHEST NO.
+                          </th>
+                          <th rowSpan={2} className="border border-black py-2 px-3 text-left text-xs uppercase font-bold">
+                            NAME (CLUB NAME)
+                          </th>
+                          <th colSpan={4} className="border border-black py-1 px-1 text-center text-xs uppercase font-bold">
+                            POSITION / CHANCE
                           </th>
                         </tr>
+                        <tr className="bg-white text-black font-bold">
+                          <th className="border border-black py-1 px-1 text-center text-xs font-bold" style={{ width: '85px', minWidth: '85px' }}>1</th>
+                          <th className="border border-black py-1 px-1 text-center text-xs font-bold" style={{ width: '85px', minWidth: '85px' }}>2</th>
+                          <th className="border border-black py-1 px-1 text-center text-xs font-bold" style={{ width: '85px', minWidth: '85px' }}>3</th>
+                          <th className="border border-black py-1 px-1 text-center text-xs font-bold" style={{ width: '85px', minWidth: '85px' }}>4</th>
+                        </tr>
                       </thead>
-                      <tbody className="divide-y divide-black">
+                      <tbody>
                         {enrolledCandidates.map((cand, idx) => (
                           <tr key={cand.id || cand.chestNo} className="bg-white">
-                            <td className="py-2 px-2 text-center font-bold border-r border-black text-black">{idx + 1}</td>
-                            <td className="py-2 px-3 text-center font-mono font-bold text-sm border-r border-black text-black">
-                              #{cand.chestNo}
+                            <td className="border border-black py-2.5 px-1 text-center text-sm font-normal text-black" style={{ width: '40px' }}>
+                              {idx + 1}
                             </td>
-                            <td className="py-2 px-3 font-bold border-r border-black uppercase text-black">
-                              {cand.name} <span className="text-[11px] font-semibold text-black">({cand.club || 'Independent'})</span>
+                            <td className="border border-black py-2.5 px-1 text-center text-sm font-bold text-black" style={{ width: '60px', minWidth: '60px' }}>
+                              {cand.chestNo}
                             </td>
-                            <td className="py-2 px-1 text-center w-12 border-r border-black">
-                              <div className="w-6 h-6 border-2 border-black rounded-xs mx-auto bg-white"></div>
+                            <td className="border border-black py-2.5 px-3 text-left text-sm font-normal text-black uppercase">
+                              {cand.name} ({cand.club || 'BANDIPUR'})
                             </td>
-                            <td className="py-2 px-1 text-center w-12 border-r border-black">
-                              <div className="w-6 h-6 border-2 border-black rounded-xs mx-auto bg-white"></div>
-                            </td>
-                            <td className="py-2 px-1 text-center w-12 border-r border-black">
-                              <div className="w-6 h-6 border-2 border-black rounded-xs mx-auto bg-white"></div>
-                            </td>
-                            <td className="py-2 px-1 text-center w-12">
-                              <div className="w-6 h-6 border-2 border-black rounded-xs mx-auto bg-white"></div>
-                            </td>
+                            <td className="border border-black py-2.5 px-1 text-center" style={{ width: '85px', minWidth: '85px' }}></td>
+                            <td className="border border-black py-2.5 px-1 text-center" style={{ width: '85px', minWidth: '85px' }}></td>
+                            <td className="border border-black py-2.5 px-1 text-center" style={{ width: '85px', minWidth: '85px' }}></td>
+                            <td className="border border-black py-2.5 px-1 text-center" style={{ width: '85px', minWidth: '85px' }}></td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
-                  </div>
 
-                  {/* Signatures Footer */}
-                  <div className="mt-8 pt-3 border-t border-black grid grid-cols-3 gap-2 text-center text-[11px] font-bold text-black avoid-break">
-                    <div>
-                      <div className="h-8"></div>
-                      <div className="border-t border-black pt-1">Track Judge Signature</div>
+                    {/* Footer as per HitListA4Reports.jpg */}
+                    <div className="flex items-center justify-between mt-2.5 pt-1 text-black">
+                      <div className="flex items-center gap-1.5 text-xs text-black font-medium">
+                        <img src="/icon.png" alt="eSports" className="w-4 h-4 object-contain" />
+                        <span>eSports (Sport Management System)</span>
+                      </div>
+                      <div className="text-[11px] text-black font-normal">
+                        {currentTimestamp}
+                      </div>
                     </div>
-                    <div>
-                      <div className="h-8"></div>
-                      <div className="border-t border-black pt-1">Field Referee</div>
-                    </div>
-                    <div>
-                      <div className="h-8"></div>
-                      <div className="border-t border-black pt-1">Meet Secretary</div>
-                    </div>
+
+                    {/* Bottom dashed line separator */}
+                    <div className="border-b border-dashed border-slate-300 mt-2"></div>
                   </div>
                 </div>
               </div>
@@ -1412,218 +1452,302 @@ export const HitList: React.FC<HitListProps> = ({
       {/* STRICT REQUIREMENT: Only checked marked & promoted candidates appear here */}
       {/* ========================================================================= */}
       {printModalType === 'final' && canPrintFinalList && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-1 sm:p-4 bg-black/85 backdrop-blur-2xs overflow-y-auto print:static print:inset-auto print:p-0 print:bg-white print:overflow-visible print:block print:w-full print:h-auto">
-          <div className="bg-slate-900 border border-slate-700 rounded-xl sm:rounded-2xl w-full max-w-5xl max-h-[96vh] flex flex-col shadow-2xl overflow-hidden text-slate-900 print:bg-white print:border-none print:shadow-none print:max-h-none print:w-full print:rounded-none print:overflow-visible print:p-0">
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center p-1 sm:p-4 bg-black/85 backdrop-blur-2xs overflow-y-auto print:static print:inset-auto print:p-0 print:bg-white print:overflow-visible print:block print:w-full print:h-auto"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setPrintModalType(null);
+          }}
+        >
+          <div className="relative bg-slate-900 border border-slate-700 rounded-xl sm:rounded-2xl w-full max-w-5xl max-h-[96vh] flex flex-col shadow-2xl overflow-hidden text-slate-900 print:bg-white print:border-none print:shadow-none print:max-h-none print:w-full print:rounded-none print:overflow-visible print:p-0">
             
             {/* Modal Actions Bar (Hidden on print) */}
-            <div className="px-3 sm:px-6 py-2.5 sm:py-3.5 bg-slate-900 text-white flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 print:hidden">
-              <div className="flex items-center gap-2">
-                <Award className="w-4 h-4 text-blue-400" />
-                <div>
-                  <h3 className="font-bold text-xs sm:text-base">Official Final List Preview (Championship Round)</h3>
-                  <p className="text-[10px] sm:text-[11px] text-slate-400">
-                    Event #{currentEvent?.Evt_No}: {currentEvent?.Evt_Name} • {effectiveFinalists.length} Finalist(s)
-                  </p>
+            <div className="sticky top-0 z-30 px-3 sm:px-6 py-2.5 sm:py-3.5 bg-slate-900 text-white flex flex-col gap-2.5 border-b border-slate-800 print:hidden shrink-0">
+              {/* Row 1: Title and Prominent Top-Right Highlighted 'X' Close Button */}
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Award className="w-4 h-4 text-blue-400 shrink-0" />
+                  <div className="min-w-0">
+                    <h3 className="font-bold text-xs sm:text-base truncate">Official Final List Preview (Championship Round)</h3>
+                    <p className="text-[10px] sm:text-[11px] text-slate-400 truncate">
+                      Event #{currentEvent?.Evt_No}: {currentEvent?.Evt_Name} • {effectiveFinalists.length} Finalist(s)
+                    </p>
+                  </div>
                 </div>
+
+                {/* Highlighted 'X' Close Button situated at top right corner */}
+                <button
+                  type="button"
+                  id="btn-close-final-preview"
+                  onClick={() => setPrintModalType(null)}
+                  className="flex items-center justify-center p-1.5 sm:p-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white border border-rose-400 shadow-md transition-all cursor-pointer active:scale-95 shrink-0"
+                  title="Close Preview (X)"
+                  aria-label="Close Print Preview"
+                >
+                  <X className="w-5 h-5 stroke-[2.5]" />
+                </button>
               </div>
 
-              <div className="flex items-center gap-2">
-                {/* Format Switcher */}
-                <div className="flex items-center bg-slate-800 p-0.5 rounded-lg border border-slate-700">
+              {/* Row 2: Left-aligned (Normal, Thermal, Print) | Right-aligned (58mm Thermal Page Setup) */}
+              <div className="flex items-center justify-between gap-2 w-full">
+                {/* Left Aligned: Normal, Thermal, Print */}
+                <div className="flex items-center gap-1.5 sm:gap-2">
+                  {/* Format Switcher */}
+                  <div className="flex items-center bg-slate-800 p-0.5 rounded-lg border border-slate-700">
+                    <button
+                      type="button"
+                      onClick={() => setModalFormat('a4')}
+                      className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-bold transition-all ${
+                        modalFormat === 'a4'
+                          ? 'bg-blue-600 text-white shadow-xs'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                      title="Normal"
+                    >
+                      <FileText className="w-3.5 h-3.5" />
+                      <span>Normal</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setModalFormat('thermal')}
+                      className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-bold transition-all ${
+                        modalFormat === 'thermal'
+                          ? 'bg-amber-500 text-slate-950 font-black shadow-xs'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                      title="Thermal"
+                    >
+                      <Receipt className="w-3.5 h-3.5" />
+                      <span>Thermal</span>
+                    </button>
+                  </div>
+
+                  {/* Print Action */}
                   <button
                     type="button"
-                    onClick={() => setModalFormat('a4')}
-                    className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-bold transition-all ${
-                      modalFormat === 'a4'
-                        ? 'bg-blue-600 text-white shadow-xs'
-                        : 'text-slate-400 hover:text-white'
-                    }`}
-                    title="Print on Plain A4 Paper without outlines, borders, or background graphics"
-                  >
-                    <FileText className="w-3.5 h-3.5" />
-                    <span>Plain A4</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setModalFormat('thermal')}
-                    className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-bold transition-all ${
+                    onClick={handleExecutePrint}
+                    className={`px-2.5 sm:px-4 py-1.5 rounded-lg font-bold text-xs sm:text-sm flex items-center gap-1.5 transition-all shadow-md cursor-pointer ${
                       modalFormat === 'thermal'
-                        ? 'bg-amber-500 text-slate-950 font-black shadow-xs'
-                        : 'text-slate-400 hover:text-white'
+                        ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 font-black'
+                        : 'bg-blue-600 hover:bg-blue-500 text-white'
                     }`}
-                    title="Print on 2-inch roll thermal printer"
+                    title="Print"
                   >
-                    <Receipt className="w-3.5 h-3.5" />
-                    <span>2" Thermal</span>
+                    <Printer className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                    <span>Print</span>
                   </button>
                 </div>
 
-                {/* Print Action */}
+                {/* Right Aligned: 58mm Thermal Page Setup Button */}
                 <button
                   type="button"
-                  onClick={handleExecutePrint}
-                  className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg font-bold text-xs sm:text-sm flex items-center gap-1.5 transition-all shadow-md cursor-pointer ${
-                    modalFormat === 'thermal'
-                      ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 font-black'
-                      : 'bg-blue-600 hover:bg-blue-500 text-white'
+                  disabled={modalFormat === 'a4'}
+                  onClick={() => setShowThermalSetup(true)}
+                  className={`px-2 sm:px-2.5 py-1.5 rounded-lg border border-slate-700 transition-all flex items-center gap-1.5 text-xs font-bold ${
+                    modalFormat === 'a4'
+                      ? 'opacity-40 cursor-not-allowed bg-slate-800/60 text-slate-500'
+                      : 'text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 active:scale-98 cursor-pointer'
                   }`}
+                  title={modalFormat === 'a4' ? "Thermal setup only available in Thermal mode" : "58mm Thermal Printer Page Setup"}
                 >
-                  <Printer className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-                  <span>{modalFormat === 'thermal' ? 'Print 2" Thermal Receipt' : 'Print Plain A4 Paper'}</span>
-                </button>
-
-                {/* Close Button */}
-                <button
-                  type="button"
-                  onClick={() => setPrintModalType(null)}
-                  className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
-                >
-                  <X className="w-4 h-4 sm:w-5 sm:h-5" />
+                  <Sliders className={`w-3.5 h-3.5 ${modalFormat === 'a4' ? 'text-slate-500' : 'text-amber-400'}`} />
+                  <span className="hidden sm:inline">58mm Setup</span>
                 </button>
               </div>
             </div>
 
             {/* Scrollable Preview Canvas */}
             {modalFormat === 'thermal' ? (
-              /* ================= 2-INCH THERMAL ROLL RECEIPT PREVIEW ================= */
-              <div className="p-4 sm:p-8 bg-[#cbd5e1] overflow-y-auto flex-1 flex justify-center print:p-0 print:bg-white print:overflow-visible">
+              /* ================= 58MM THERMAL ROLL RECEIPT PREVIEW (EXACT MATCHING) ================= */
+              <div className="p-4 sm:p-8 bg-slate-300 overflow-y-auto flex-1 flex flex-col items-center print:p-0 print:bg-white print:overflow-visible">
+                <div className="text-[11px] font-bold text-slate-700 mb-2 flex items-center gap-1.5 print:hidden">
+                  <Receipt className="w-3.5 h-3.5 text-amber-600" />
+                  <span>58mm Roll Preview ({thermalConfig.printableWidth}mm net printable)</span>
+                </div>
                 <div
-                  className="thermal-printable-sheet w-full max-w-[320px] bg-white text-black p-4 shadow-[0_10px_35px_rgba(0,0,0,0.22)] rounded-xs font-mono text-[9.5px] leading-tight print:shadow-none print:p-0 print:max-w-[48mm] print:w-[48mm]"
+                  className="receipt thermal-printable-sheet bg-white text-black p-3 shadow-2xl rounded-xs select-none print:shadow-none print:p-0"
                   style={{
-                    fontFamily:
-                      'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+                    width: `${thermalConfig.printableWidth}mm`,
+                    maxWidth: `${thermalConfig.printableWidth}mm`,
+                    paddingLeft: `${thermalConfig.marginHorizontal}mm`,
+                    paddingRight: `${thermalConfig.marginHorizontal}mm`,
+                    paddingTop: `${thermalConfig.topMargin || 5}mm`,
+                    paddingBottom: `${thermalConfig.feedBeforeCut}mm`,
+                    fontSize: `${thermalConfig.fontSize}px`,
+                    lineHeight: thermalConfig.lineSpacing,
+                    fontFamily: 'Consolas, "Courier New", monospace',
                   }}
                 >
+                  {/* Header: same as Candidate list */}
                   {renderThermalHeader()}
 
-                  <div className="text-center mb-1 leading-tight">
-                    <div className="font-bold text-[10px] uppercase">
-                      FINAL ROUND START LIST
-                    </div>
-                    <div className="font-bold text-[9.5px]">
-                      EVT #{currentEvent?.Evt_No}: {currentEvent?.Evt_Name}
-                    </div>
-                    <div className="text-[8.5px]">
-                      {getFormattedHeightGender(currentEvent)} • {effectiveFinalists.length} FINALISTS
+                  {/* Dashed Line */}
+                  <div className="border-b border-dashed border-black my-1"></div>
+
+                  {/* Event Title Line: broken into two lines */}
+                  <div className="text-center py-0.5 tracking-tight text-black leading-tight">
+                    <div className="font-bold text-[10px] uppercase">FINAL LIST</div>
+                    <div className="text-[8.5px] font-semibold mt-0.5 uppercase break-words">
+                      EVT #{currentEvent?.Evt_No}: {currentEvent?.Evt_Name} ({(currentEvent?.Height || '').toUpperCase() === 'ALL' ? 'ALL' : (currentEvent?.Height || '').replace(/[`']/g, "'").replace(/''|``|"/g, "''")} • {currentEvent?.Gender?.trim().toUpperCase().startsWith('BOY') ? 'B' : currentEvent?.Gender?.trim().toUpperCase().startsWith('GIRL') ? 'G' : currentEvent?.Gender?.trim().toUpperCase().startsWith('CHILD') ? 'C' : 'ALL'})
                     </div>
                   </div>
 
-                  <div className="border-b border-black pb-0.5 mb-1 font-bold flex justify-between text-[8.5px] leading-tight">
-                    <span className="w-5 text-center">LN</span>
-                    <span className="w-7 text-center">CH#</span>
-                    <span className="flex-1 text-left">ATHLETE (CLUB)</span>
-                    <span className="w-10 text-center">POS/MARK</span>
-                  </div>
+                  {/* Dashed Line */}
+                  <div className="border-b border-dashed border-black my-1"></div>
 
-                  <div className="space-y-1">
+                  {/* Table Column Headers */}
+                  <div className="flex items-center text-[9px] font-bold text-black uppercase pt-1">
+                    <span className="w-6 text-center">SL</span>
+                    <span className="w-8 text-center">CH#</span>
+                    <span className="flex-1 text-left pl-2">ATHLETE (CLUB)</span>
+                  </div>
+                  <div className="border-b-2 border-black mb-1 mt-0.5"></div>
+
+                  {/* Finalists List with dotted separators */}
+                  <div className="space-y-0 text-black">
                     {effectiveFinalists.map((cand, idx) => (
-                      <div
-                        key={cand.chestNo}
-                        className="flex justify-between items-center text-[9px] leading-tight border-b border-dotted border-slate-300 pb-0.5"
-                      >
-                        <span className="w-5 text-center font-bold">L{cand.lane || idx + 1}</span>
-                        <span className="w-7 text-center font-mono font-bold">#{cand.chestNo}</span>
-                        <span className="flex-1 text-left truncate pr-1">
-                          {cand.candidateName} <span className="text-[7.5px]">({cand.club || 'Ind'})</span>
-                        </span>
-                        <span className="w-10 text-center font-mono text-[8px] border border-black px-1 py-0.5">
-                          {cand.position ? `${cand.position}` : '[   ]'}
-                        </span>
+                      <div key={cand.chestNo}>
+                        <div className="flex items-center text-[9.5px] py-1 text-black leading-tight">
+                          <span className="w-6 text-center font-normal shrink-0">{idx + 1}</span>
+                          <span className="w-8 text-center font-bold shrink-0">{cand.chestNo}</span>
+                          <span className="flex-1 text-left font-normal uppercase truncate pl-2">
+                            {cand.candidateName} ({cand.club || 'BANDIPUR'})
+                          </span>
+                        </div>
+                        <div className="border-b border-dotted border-black/80"></div>
                       </div>
                     ))}
                   </div>
 
-                  <div className="pt-2 text-center text-[8px]">
-                    Chief Referee Sign: __________________
-                  </div>
-
+                  {/* Footer: same as Candidate list */}
                   {renderThermalFooter()}
                 </div>
               </div>
             ) : (
-              /* ================= PLAIN A4 PAPER SHEET (NO OUTLINES/BORDERS/GRAPHICS) ================= */
+              /* ================= PLAIN A4 PAPER SHEET (REDESIGNED AS PER HitListA4Reports.jpg) ================= */
               <div className="p-2 sm:p-6 overflow-y-auto flex-1 bg-slate-200/80 flex justify-center print:p-0 print:bg-white print:overflow-visible">
                 <div
                   className="a4-printable-sheet bg-white w-full max-w-[210mm] min-h-[297mm] p-6 sm:p-10 shadow-md border-0 outline-none flex flex-col justify-between text-black font-sans print:p-0 print:m-0 print:border-none print:shadow-none print:outline-none print:bg-white print:max-w-none print:min-h-0"
                   id="printable-final-content"
                 >
                   <div>
-                    {/* Official Meet Header */}
-                    <div className="text-center border-b-2 border-black pb-3 mb-4">
-                      <div className="flex items-center justify-center gap-3.5 mb-1">
-                        <img src={settings.registeredClubLogo || '/icon.png'} alt="Club Logo" className="w-10 h-10 object-contain shrink-0" />
-                        <div className="text-left">
-                          <h1 className="text-lg sm:text-xl font-bold uppercase tracking-tight text-black leading-tight">
-                            {settings.registeredClubName || settings.organizer || 'Agrani Sasthitala Sangha'}
-                          </h1>
-                          <p className="text-xs sm:text-sm font-semibold text-black uppercase tracking-wide leading-tight mt-0.5">
-                            {settings.ordinalTitle || '47th Annual Sports Meet 2027'}
-                          </p>
-                        </div>
+                    {/* Top Header: Logo on Left + Centered Club Name & Meet Title */}
+                    <div className="relative mb-2">
+                      <div className="absolute left-0 top-0">
+                        <img 
+                          src={settings.registeredClubLogo || '/icon.png'} 
+                          alt="Club Logo" 
+                          className="w-14 h-14 object-contain"
+                        />
                       </div>
-                      <div className="mt-1.5 inline-block px-3 py-1">
-                        <h2 className="text-xs sm:text-base font-black uppercase text-black">
-                          OFFICIAL FINALIST START LIST • {getDynamicEventHeading(currentEvent)}
+                      <div className="text-center pt-0.5 pb-2">
+                        <h1 className="text-xl sm:text-2xl font-black text-black uppercase tracking-wide leading-tight">
+                          {(settings.registeredClubName || settings.organizer || 'SASHTITALA AGRANI').toUpperCase()}
+                        </h1>
+                        <h2 className="text-xs sm:text-sm font-bold text-black uppercase tracking-wide leading-tight mt-1">
+                          {(settings.ordinalTitle || '47TH ANNUAL SPORTS MEET 2027').toUpperCase()}
                         </h2>
                       </div>
-                      <p className="text-[10px] text-black font-bold uppercase tracking-wider mt-1">
-                        CHAMPIONSHIP ROUND FINALISTS
-                      </p>
                     </div>
 
-                    {/* Finalists Table: Pure white, clean black borders, no background graphics */}
-                    <table className="w-full text-left text-xs border border-black border-collapse bg-white">
+                    {/* Horizontal Divider Line */}
+                    <div className="border-b-2 border-black mb-1"></div>
+
+                    {/* Event Header Bar */}
+                    <div className="py-1 px-0.5 mb-2 flex items-center justify-between text-black font-bold uppercase text-sm sm:text-base">
+                      <div>
+                        EVENT #{currentEvent?.Evt_No} : {currentEvent?.Evt_Name} / {(currentEvent?.Height || '').toUpperCase() === 'ALL' ? 'ALL' : (currentEvent?.Height || '').replace(/[`']/g, "'").replace(/''|``|"/g, '"')} / {currentEvent?.Gender}
+                      </div>
+                      <div className="tracking-wider">
+                        FINAL LIST
+                      </div>
+                    </div>
+
+                    {/* Finalists Table: Matches FinalListA4Reports.JPG exactly */}
+                    <table className="w-full text-left border-collapse border border-black bg-white">
                       <thead>
-                        <tr className="bg-white text-black font-black uppercase border-b-2 border-black">
-                          <th className="py-2 px-2 w-12 text-center border-r border-black">Lane</th>
-                          <th className="py-2 px-3 w-28 text-center border-r border-black">Chest no.</th>
-                          <th className="py-2 px-3 border-r border-black">Finalist Athlete Name</th>
-                          <th className="py-2 px-3 border-r border-black">Club Name</th>
-                          <th className="py-2 px-3 text-center w-28 border-r border-black">Official Position</th>
-                          <th className="py-2 px-3 text-center w-24">Remarks</th>
+                        <tr className="bg-white text-black font-bold">
+                          <th 
+                            rowSpan={2} 
+                            className="border border-black py-2 px-1 text-center text-xs uppercase font-bold"
+                            style={{ width: '48px' }}
+                          >
+                            SL.
+                          </th>
+                          <th 
+                            rowSpan={2} 
+                            className="border border-black py-2 px-1 text-center text-xs uppercase font-bold"
+                            style={{ width: '70px', minWidth: '70px' }}
+                          >
+                            CHEST NO.
+                          </th>
+                          <th 
+                            rowSpan={2} 
+                            className="border border-black py-2 px-3 text-left text-xs uppercase font-bold"
+                          >
+                            NAME (CLUB NAME)
+                          </th>
+                          <th 
+                            colSpan={4} 
+                            className="border border-black py-1 px-1 text-center text-xs uppercase font-bold"
+                          >
+                            POSITION / CHANCE
+                          </th>
+                        </tr>
+                        <tr className="bg-white text-black font-bold">
+                          <th className="border border-black py-1 px-1 text-center text-xs font-bold" style={{ width: '85px', minWidth: '85px' }}>1</th>
+                          <th className="border border-black py-1 px-1 text-center text-xs font-bold" style={{ width: '85px', minWidth: '85px' }}>2</th>
+                          <th className="border border-black py-1 px-1 text-center text-xs font-bold" style={{ width: '85px', minWidth: '85px' }}>3</th>
+                          <th className="border border-black py-1 px-1 text-center text-xs font-bold" style={{ width: '85px', minWidth: '85px' }}>4</th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-black">
+                      <tbody>
                         {effectiveFinalists.map((cand, idx) => (
                           <tr key={cand.chestNo} className="bg-white">
-                            <td className="py-2 px-2 text-center font-mono font-black text-sm border-r border-black text-black">
-                              {cand.lane || idx + 1}
+                            <td 
+                              className="border border-black py-3 px-1 text-center text-sm font-normal text-black"
+                              style={{ width: '48px' }}
+                            >
+                              {idx + 1}
                             </td>
-                            <td className="py-2 px-3 text-center font-mono font-bold text-sm border-r border-black text-black">
-                              #{cand.chestNo}
+                            <td 
+                              className="border border-black py-3 px-1 text-center text-sm font-bold text-black"
+                              style={{ width: '70px', minWidth: '70px' }}
+                            >
+                              {cand.chestNo}
                             </td>
-                            <td className="py-2 px-3 font-bold border-r border-black uppercase text-black">
-                              {cand.candidateName}
+                            <td className="border border-black py-3 px-3 text-left text-sm font-normal text-black uppercase">
+                              {cand.candidateName} ({cand.club || 'INDEPENDENT'})
                             </td>
-                            <td className="py-2 px-3 uppercase font-semibold text-black border-r border-black">
-                              {cand.club || 'Independent'}
+                            <td className="border border-black py-3 px-1 text-center font-bold text-sm" style={{ width: '85px', minWidth: '85px' }}>
+                              {cand.position === 1 ? '1' : ''}
                             </td>
-                            <td className="py-2 px-3 text-center border-r border-black">
-                              <div className="w-14 sm:w-16 h-6 sm:h-7 border-2 border-black rounded-xs mx-auto flex items-center justify-center font-bold bg-white text-black">
-                                {cand.position ? `${cand.position}` : ''}
-                              </div>
+                            <td className="border border-black py-3 px-1 text-center font-bold text-sm" style={{ width: '85px', minWidth: '85px' }}>
+                              {cand.position === 2 ? '2' : ''}
                             </td>
-                            <td className="py-2 px-3 text-black"></td>
+                            <td className="border border-black py-3 px-1 text-center font-bold text-sm" style={{ width: '85px', minWidth: '85px' }}>
+                              {cand.position === 3 ? '3' : ''}
+                            </td>
+                            <td className="border border-black py-3 px-1 text-center font-bold text-sm" style={{ width: '85px', minWidth: '85px' }}>
+                              {cand.position === 4 ? '4' : ''}
+                            </td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
-                  </div>
 
-                  {/* Final Signatures */}
-                  <div className="mt-8 pt-3 border-t border-black grid grid-cols-3 gap-2 text-center text-[11px] font-bold text-black avoid-break">
-                    <div>
-                      <div className="h-8"></div>
-                      <div className="border-t border-black pt-1">Chief Judge Signature</div>
+                    {/* Footer as per FinalListA4Reports.JPG without signatures */}
+                    <div className="flex items-center justify-between mt-3 pt-1 text-black">
+                      <div className="flex items-center gap-1.5 text-xs text-black font-medium">
+                        <img src="/icon.png" alt="eSports" className="w-4 h-4 object-contain" />
+                        <span>eSports (Sports Management System)</span>
+                      </div>
+                      <div className="text-[11px] text-black font-normal">
+                        {currentTimestamp}
+                      </div>
                     </div>
-                    <div>
-                      <div className="h-8"></div>
-                      <div className="border-t border-black pt-1">President of Meet</div>
-                    </div>
-                    <div>
-                      <div className="h-8"></div>
-                      <div className="border-t border-black pt-1">General Secretary</div>
-                    </div>
+
+                    {/* Bottom dotted separator */}
+                    <div className="border-b border-dotted border-black/80 mt-1"></div>
                   </div>
                 </div>
               </div>
@@ -1637,306 +1761,378 @@ export const HitList: React.FC<HitListProps> = ({
       {/* 6. MODAL: PRINT OFFICIAL RESULTS (Plain A4 & 2" Thermal Roll)             */}
       {/* ========================================================================= */}
       {printModalType === 'results' && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-1 sm:p-4 bg-black/85 backdrop-blur-2xs overflow-y-auto print:static print:inset-auto print:p-0 print:bg-white print:overflow-visible print:block print:w-full print:h-auto">
-          <div className="bg-slate-900 border border-slate-700 rounded-xl sm:rounded-2xl w-full max-w-5xl max-h-[96vh] flex flex-col shadow-2xl overflow-hidden text-slate-900 print:bg-white print:border-none print:shadow-none print:max-h-none print:w-full print:rounded-none print:overflow-visible print:p-0">
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center p-1 sm:p-4 bg-black/85 backdrop-blur-2xs overflow-y-auto print:static print:inset-auto print:p-0 print:bg-white print:overflow-visible print:block print:w-full print:h-auto"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setPrintModalType(null);
+          }}
+        >
+          <div className="relative bg-slate-900 border border-slate-700 rounded-xl sm:rounded-2xl w-full max-w-5xl max-h-[96vh] flex flex-col shadow-2xl overflow-hidden text-slate-900 print:bg-white print:border-none print:shadow-none print:max-h-none print:w-full print:rounded-none print:overflow-visible print:p-0">
             
             {/* Modal Actions Bar (Hidden on print) */}
-            <div className="px-3 sm:px-6 py-2.5 sm:py-3.5 bg-slate-900 text-white flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 print:hidden">
-              <div className="flex items-center gap-2">
-                <Trophy className="w-4 h-4 text-emerald-400" />
-                <div>
-                  <h3 className="font-bold text-xs sm:text-base">Official Event Results &amp; Rankings Report</h3>
-                  <p className="text-[10px] sm:text-[11px] text-slate-400">
-                    Event #{currentEvent?.Evt_No}: {currentEvent?.Evt_Name} • {rankedWinners.length} Ranked Winner(s)
-                  </p>
+            <div className="sticky top-0 z-30 px-3 sm:px-6 py-2.5 sm:py-3.5 bg-slate-900 text-white flex flex-col gap-2.5 border-b border-slate-800 print:hidden shrink-0">
+              {/* Row 1: Title and Prominent Top-Right Highlighted 'X' Close Button */}
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Trophy className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <div className="min-w-0">
+                    <h3 className="font-bold text-xs sm:text-base truncate">Official Event Results &amp; Rankings Report</h3>
+                    <p className="text-[10px] sm:text-[11px] text-slate-400 truncate">
+                      Event #{currentEvent?.Evt_No}: {currentEvent?.Evt_Name} • {rankedWinners.length} Ranked Winner(s)
+                    </p>
+                  </div>
                 </div>
+
+                {/* Highlighted 'X' Close Button situated at top right corner */}
+                <button
+                  type="button"
+                  id="btn-close-results-preview"
+                  onClick={() => setPrintModalType(null)}
+                  className="flex items-center justify-center p-1.5 sm:p-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white border border-rose-400 shadow-md transition-all cursor-pointer active:scale-95 shrink-0"
+                  title="Close Preview (X)"
+                  aria-label="Close Print Preview"
+                >
+                  <X className="w-5 h-5 stroke-[2.5]" />
+                </button>
               </div>
 
-              <div className="flex items-center gap-2">
-                {/* Format Switcher */}
-                <div className="flex items-center bg-slate-800 p-0.5 rounded-lg border border-slate-700">
+              {/* Row 2: Left-aligned (Normal, Thermal, Print) | Right-aligned (58mm Thermal Page Setup) */}
+              <div className="flex items-center justify-between gap-2 w-full">
+                {/* Left Aligned: Normal, Thermal, Print */}
+                <div className="flex items-center gap-1.5 sm:gap-2">
+                  {/* Format Switcher */}
+                  <div className="flex items-center bg-slate-800 p-0.5 rounded-lg border border-slate-700">
+                    <button
+                      type="button"
+                      onClick={() => setModalFormat('a4')}
+                      className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-bold transition-all ${
+                        modalFormat === 'a4'
+                          ? 'bg-blue-600 text-white shadow-xs'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                      title="Normal"
+                    >
+                      <FileText className="w-3.5 h-3.5" />
+                      <span>Normal</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setModalFormat('thermal')}
+                      className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-bold transition-all ${
+                        modalFormat === 'thermal'
+                          ? 'bg-amber-500 text-slate-950 font-black shadow-xs'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                      title="Thermal"
+                    >
+                      <Receipt className="w-3.5 h-3.5" />
+                      <span>Thermal</span>
+                    </button>
+                  </div>
+
+                  {/* Print Trigger */}
                   <button
                     type="button"
-                    onClick={() => setModalFormat('a4')}
-                    className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-bold transition-all ${
-                      modalFormat === 'a4'
-                        ? 'bg-blue-600 text-white shadow-xs'
-                        : 'text-slate-400 hover:text-white'
-                    }`}
-                    title="Print on Plain A4 Paper without outlines, borders, or background graphics"
-                  >
-                    <FileText className="w-3.5 h-3.5" />
-                    <span>Plain A4</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setModalFormat('thermal')}
-                    className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-bold transition-all ${
+                    onClick={handleExecutePrint}
+                    className={`px-2.5 sm:px-4 py-1.5 rounded-lg font-bold text-xs sm:text-sm flex items-center gap-1.5 transition-all shadow-md cursor-pointer ${
                       modalFormat === 'thermal'
-                        ? 'bg-amber-500 text-slate-950 font-black shadow-xs'
-                        : 'text-slate-400 hover:text-white'
+                        ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 font-black'
+                        : 'bg-emerald-600 hover:bg-emerald-500 text-white'
                     }`}
-                    title="Print on 2-inch roll thermal printer"
+                    title="Print"
                   >
-                    <Receipt className="w-3.5 h-3.5" />
-                    <span>2" Thermal</span>
+                    <Printer className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                    <span>Print</span>
                   </button>
                 </div>
 
-                {/* Print Trigger */}
+                {/* Right Aligned: 58mm Thermal Page Setup Button */}
                 <button
                   type="button"
-                  onClick={handleExecutePrint}
-                  className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg font-bold text-xs sm:text-sm flex items-center gap-1.5 transition-all shadow-md cursor-pointer ${
-                    modalFormat === 'thermal'
-                      ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 font-black'
-                      : 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                  disabled={modalFormat === 'a4'}
+                  onClick={() => setShowThermalSetup(true)}
+                  className={`px-2 sm:px-2.5 py-1.5 rounded-lg border border-slate-700 transition-all flex items-center gap-1.5 text-xs font-bold ${
+                    modalFormat === 'a4'
+                      ? 'opacity-40 cursor-not-allowed bg-slate-800/60 text-slate-500'
+                      : 'text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 active:scale-98 cursor-pointer'
                   }`}
+                  title={modalFormat === 'a4' ? "Thermal setup only available in Thermal mode" : "58mm Thermal Printer Page Setup"}
                 >
-                  <Printer className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-                  <span>{modalFormat === 'thermal' ? 'Print 2" Thermal Receipt' : 'Print Plain A4 Paper'}</span>
-                </button>
-
-                {/* Close Button */}
-                <button
-                  type="button"
-                  onClick={() => setPrintModalType(null)}
-                  className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
-                >
-                  <X className="w-4 h-4 sm:w-5 sm:h-5" />
+                  <Sliders className={`w-3.5 h-3.5 ${modalFormat === 'a4' ? 'text-slate-500' : 'text-amber-400'}`} />
+                  <span className="hidden sm:inline">58mm Setup</span>
                 </button>
               </div>
             </div>
 
             {/* Scrollable Preview Canvas */}
             {modalFormat === 'thermal' ? (
-              /* ================= 2-INCH THERMAL ROLL RECEIPT PREVIEW ================= */
-              <div className="p-4 sm:p-8 bg-[#cbd5e1] overflow-y-auto flex-1 flex justify-center print:p-0 print:bg-white print:overflow-visible">
+              /* ================= 58MM THERMAL ROLL RECEIPT PREVIEW (EXACT MATCHING) ================= */
+              <div className="p-4 sm:p-8 bg-slate-300 overflow-y-auto flex-1 flex flex-col items-center print:p-0 print:bg-white print:overflow-visible">
+                <div className="text-[11px] font-bold text-slate-700 mb-2 flex items-center gap-1.5 print:hidden">
+                  <Receipt className="w-3.5 h-3.5 text-amber-600" />
+                  <span>58mm Roll Preview ({thermalConfig.printableWidth}mm net printable)</span>
+                </div>
                 <div
-                  className="thermal-printable-sheet w-full max-w-[320px] bg-white text-black p-4 shadow-[0_10px_35px_rgba(0,0,0,0.22)] rounded-xs font-mono text-[9.5px] leading-tight print:shadow-none print:p-0 print:max-w-[48mm] print:w-[48mm]"
+                  className="receipt thermal-printable-sheet bg-white text-black p-3 shadow-2xl rounded-xs select-none print:shadow-none print:p-0"
                   style={{
-                    fontFamily:
-                      'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+                    width: `${thermalConfig.printableWidth}mm`,
+                    maxWidth: `${thermalConfig.printableWidth}mm`,
+                    paddingLeft: `${thermalConfig.marginHorizontal}mm`,
+                    paddingRight: `${thermalConfig.marginHorizontal}mm`,
+                    paddingTop: `${thermalConfig.topMargin || 5}mm`,
+                    paddingBottom: `${thermalConfig.feedBeforeCut}mm`,
+                    fontSize: `${thermalConfig.fontSize}px`,
+                    lineHeight: thermalConfig.lineSpacing,
+                    fontFamily: 'Consolas, "Courier New", monospace',
                   }}
                 >
+                  {/* Header: same as Candidate list */}
                   {renderThermalHeader()}
 
-                  <div className="text-center mb-1 leading-tight">
-                    <div className="font-bold text-[10px] uppercase">
-                      OFFICIAL EVENT RESULTS
-                    </div>
-                    <div className="font-bold text-[9.5px]">
-                      EVT #{currentEvent?.Evt_No}: {currentEvent?.Evt_Name}
-                    </div>
-                    <div className="text-[8.5px]">
-                      {getFormattedHeightGender(currentEvent)}
+                  {/* Dashed Line */}
+                  <div className="border-b border-dashed border-black my-1"></div>
+
+                  {/* Event Title Line: broken into two lines */}
+                  <div className="text-center py-0.5 tracking-tight text-black leading-tight">
+                    <div className="font-bold text-[10px] uppercase">RANKING LIST</div>
+                    <div className="text-[8.5px] font-semibold mt-0.5 uppercase break-words">
+                      EVT #{currentEvent?.Evt_No}: {currentEvent?.Evt_Name} ({(currentEvent?.Height || '').toUpperCase() === 'ALL' ? 'ALL' : (currentEvent?.Height || '').replace(/[`']/g, "'").replace(/''|``|"/g, "''")} • {currentEvent?.Gender?.trim().toUpperCase().startsWith('BOY') ? 'B' : currentEvent?.Gender?.trim().toUpperCase().startsWith('GIRL') ? 'G' : currentEvent?.Gender?.trim().toUpperCase().startsWith('CHILD') ? 'C' : 'ALL'})
                     </div>
                   </div>
 
-                  <div className="border-b border-black pb-0.5 mb-1 font-bold flex justify-between text-[8.5px] leading-tight">
-                    <span className="w-6 font-bold text-center">POS</span>
-                    <span className="w-7 text-center">CH#</span>
-                    <span className="flex-1 text-left">ATHLETE (CLUB)</span>
-                    <span className="w-6 text-center">PTS</span>
-                    <span className="w-8 text-right">PERF</span>
-                  </div>
+                  {/* Dashed Line */}
+                  <div className="border-b border-dashed border-black my-1"></div>
 
-                  <div className="space-y-0.5">
-                    {rankedWinners.map((w) => {
-                      const posLabel =
-                        w.position === 1
-                          ? '1ST'
-                          : w.position === 2
-                          ? '2ND'
-                          : w.position === 3
-                          ? '3RD'
-                          : `${w.position}TH`;
-                      const pts = getPointsForPosition(w.position);
-                      return (
-                        <div key={w.chestNo} className="flex justify-between items-center text-[9px] leading-tight">
-                          <span className="w-6 font-bold text-center">{posLabel}</span>
-                          <span className="w-7 text-center font-mono">#{w.chestNo}</span>
-                          <span className="flex-1 text-left truncate pr-1">
-                            {w.candidateName} <span className="text-[7.5px]">({w.club || 'Ind'})</span>
-                          </span>
-                          <span className="w-6 text-center font-bold">{pts}</span>
-                          <span className="w-8 text-right font-mono text-[8px]">
-                            {w.jumpRecord || w.resultValue || '—'}
-                          </span>
+                  {(() => {
+                    const isBroadJump = (currentEvent?.Evt_Name || '').toUpperCase().includes('BROAD JUMP');
+                    return (
+                      <>
+                        {/* Table Column Headers */}
+                        <div className="flex items-center text-[9px] font-bold text-black uppercase pt-1">
+                          <span className={isBroadJump ? "w-7 text-center shrink-0" : "w-8 text-center shrink-0"}>Rank</span>
+                          <span className={isBroadJump ? "w-7 text-center shrink-0" : "w-8 text-center shrink-0"}>CH#</span>
+                          <span className={isBroadJump ? "flex-1 text-left pl-1" : "flex-1 text-left pl-2"}>ATHLETE (CLUB)</span>
+                          {isBroadJump && (
+                            <span className="w-14 text-right pr-0.5 shrink-0">Jump</span>
+                          )}
                         </div>
-                      );
-                    })}
-                  </div>
+                        <div className="border-b-2 border-black mb-1 mt-0.5"></div>
 
-                  {currentResult?.highestRecord?.isRecordBroken && (
-                    <div className="mt-1 pt-0.5 border-t border-dashed border-black text-[8px] font-bold text-center leading-tight">
-                      * NEW RECORD: {currentResult.highestRecord.recordValue} ({currentResult.highestRecord.candidateName}) *
-                    </div>
-                  )}
+                        {/* Ranked Athletes List with dotted separators */}
+                        <div className="space-y-0 text-black">
+                          {rankedWinners.length === 0 ? (
+                            <div className="text-[8px] italic text-center py-2 text-slate-600">
+                              No rankings declared yet for this event.
+                            </div>
+                          ) : (
+                            rankedWinners.map((w, idx) => {
+                              const p = (w.position && w.position > 0) ? w.position : (idx + 1);
+                              const rankLabel = p === 1 ? '1st' : p === 2 ? '2nd' : p === 3 ? '3rd' : `${p}th`;
+                              return (
+                                <div key={w.chestNo}>
+                                  <div className="flex items-center text-[9.5px] py-1 text-black leading-tight">
+                                    <span className={isBroadJump ? "w-7 text-center font-normal shrink-0" : "w-8 text-center font-normal shrink-0"}>{rankLabel}</span>
+                                    <span className={isBroadJump ? "w-7 text-center font-bold shrink-0" : "w-8 text-center font-bold shrink-0"}>{w.chestNo}</span>
+                                    <span className={isBroadJump ? "flex-1 text-left font-normal uppercase truncate pl-1" : "flex-1 text-left font-normal uppercase truncate pl-2"}>
+                                      {w.candidateName} ({w.club || 'BANDIPUR'})
+                                    </span>
+                                    {isBroadJump && (
+                                      <span className="w-14 text-right font-mono text-[8.5px] font-normal shrink-0">
+                                        {w.jumpRecord || w.resultValue || '—'}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="border-b border-dotted border-black/80"></div>
+                                </div>
+                              );
+                            })
+                          )}
+                        </div>
+                      </>
+                    );
+                  })()}
 
-                  <div className="pt-2 text-center text-[8px]">
-                    Chief Referee Sign: __________________
-                  </div>
-
+                  {/* Footer: same as Candidate list */}
                   {renderThermalFooter()}
                 </div>
               </div>
             ) : (
-              /* ================= PLAIN A4 PAPER SHEET (NO OUTLINES/BORDERS/GRAPHICS) ================= */
+              /* ================= PLAIN A4 PAPER SHEET (REDESIGNED AS PER HitListA4Reports.jpg) ================= */
               <div className="p-2 sm:p-6 overflow-y-auto flex-1 bg-slate-200/80 flex justify-center print:p-0 print:bg-white print:overflow-visible">
                 <div
                   className="a4-printable-sheet bg-white w-full max-w-[210mm] min-h-[297mm] p-6 sm:p-10 shadow-md border-0 outline-none flex flex-col justify-between text-black font-sans print:p-0 print:m-0 print:border-none print:shadow-none print:outline-none print:bg-white print:w-full print:min-h-0"
                   id="printable-results-content"
                 >
                   <div>
-                    {/* Official Meet Header */}
-                    <div className="text-center border-b-2 border-black pb-3 mb-4">
-                      <div className="flex items-center justify-center gap-3.5 mb-1">
-                        <img src={settings.registeredClubLogo || '/icon.png'} alt="Club Logo" className="w-10 h-10 object-contain shrink-0" />
-                        <div className="text-left">
-                          <h1 className="text-lg sm:text-xl font-bold uppercase tracking-tight text-black leading-tight">
-                            {settings.registeredClubName || settings.organizer || 'Agrani Sasthitala Sangha'}
-                          </h1>
-                          <p className="text-xs sm:text-sm font-semibold text-black uppercase tracking-wide leading-tight mt-0.5">
-                            {settings.ordinalTitle || '47th Annual Sports Meet 2027'}
-                          </p>
-                        </div>
+                    {/* Top Header: Logo on Left + Centered Club Name & Meet Title */}
+                    <div className="relative mb-2">
+                      <div className="absolute left-0 top-0">
+                        <img 
+                          src={settings.registeredClubLogo || '/icon.png'} 
+                          alt="Club Logo" 
+                          className="w-14 h-14 object-contain"
+                        />
                       </div>
-                      <div className="mt-1.5 inline-block px-3 py-1">
-                        <h2 className="text-xs sm:text-base font-black uppercase text-black">
-                          OFFICIAL RESULTS &amp; PODIUM RANKINGS • {getDynamicEventHeading(currentEvent)}
+                      <div className="text-center pt-0.5 pb-2">
+                        <h1 className="text-xl sm:text-2xl font-black text-black uppercase tracking-wide leading-tight">
+                          {(settings.registeredClubName || settings.organizer || 'SASHTITALA AGRANI').toUpperCase()}
+                        </h1>
+                        <h2 className="text-xs sm:text-sm font-bold text-black uppercase tracking-wide leading-tight mt-1">
+                          {(settings.ordinalTitle || '47TH ANNUAL SPORTS MEET 2027').toUpperCase()}
                         </h2>
                       </div>
-                      <p className="text-[10px] text-black font-bold uppercase tracking-wider mt-1">
-                        AUTHORIZED BY MEET COMMITTEE • OFFICIAL MEDAL &amp; POINTS TALLY
-                      </p>
                     </div>
 
-                    {/* Winners Table: Pure white, clean black borders, no background graphics */}
-                    <table className="w-full text-left text-xs border border-black border-collapse mb-6 bg-white">
-                      <thead>
-                        <tr className="bg-white text-black font-black uppercase border-b-2 border-black">
-                          <th className="py-2.5 px-2 w-14 text-center border-r border-black">Pos</th>
-                          <th className="py-2.5 px-2 w-20 text-center border-r border-black">Medal</th>
-                          <th className="py-2.5 px-3 w-28 text-center border-r border-black">Chest #</th>
-                          <th className="py-2.5 px-3 border-r border-black">Athlete Name</th>
-                          <th className="py-2.5 px-3 border-r border-black">Club Name</th>
-                          <th className="py-2.5 px-3 text-center border-r border-black w-24">Performance</th>
-                          <th className="py-2.5 px-3 text-center w-20">Points</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-black font-bold">
-                        {rankedWinners.length === 0 ? (
-                          <tr>
-                            <td colSpan={7} className="py-8 text-center text-black italic bg-white">
-                              No rankings have been recorded yet for this event.
-                            </td>
-                          </tr>
-                        ) : (
-                          rankedWinners.map((winner) => {
-                            const pts = getPointsForPosition(winner.position);
-                            const posLabel =
-                              winner.position === 1
-                                ? '1st'
-                                : winner.position === 2
-                                ? '2nd'
-                                : winner.position === 3
-                                ? '3rd'
-                                : `${winner.position}th`;
+                    {/* Horizontal Divider Line */}
+                    <div className="border-b border-black mb-3"></div>
 
-                            return (
-                              <tr key={winner.chestNo} className="bg-white text-black">
-                                <td className="py-2 px-2 text-center font-black border-r border-black">{posLabel}</td>
-                                <td className="py-2 px-2 text-center border-r border-black font-black">
-                                  {winner.position === 1 ? 'GOLD' : winner.position === 2 ? 'SILVER' : winner.position === 3 ? 'BRONZE' : '—'}
-                                </td>
-                                <td className="py-2 px-3 text-center font-mono font-black text-sm border-r border-black">
-                                  #{winner.chestNo}
-                                </td>
-                                <td className="py-2 px-3 uppercase border-r border-black font-bold">
-                                  {winner.candidateName}
-                                </td>
-                                <td className="py-2 px-3 uppercase border-r border-black text-black">
-                                  {winner.club || 'Independent'}
-                                </td>
-                                <td className="py-2 px-3 text-center font-mono font-bold border-r border-black">
-                                  {winner.jumpRecord || winner.resultValue || '—'}
-                                </td>
-                                <td className="py-2 px-3 text-center font-mono font-black text-sm">
-                                  {pts}
-                                </td>
-                              </tr>
-                            );
-                          })
-                        )}
-                      </tbody>
-                    </table>
-
-                    {/* Broad Jump Record Callout (Clean Plain Paper Style) */}
-                    {currentEvent?.Evt_Name?.toUpperCase().includes('BROAD JUMP') && currentResult?.highestRecord && (
-                      <div className="mb-6 p-3 border-2 border-black text-xs flex items-center justify-between bg-white text-black">
-                        <div>
-                          <span className="font-black uppercase">🏅 Meet Broad Jump Record: </span>
-                          <span className="font-bold">
-                            Highest Jump: <strong className="font-mono">{currentResult.highestRecord.recordValue}</strong> by {currentResult.highestRecord.candidateName} (#{currentResult.highestRecord.chestNo}, {currentResult.highestRecord.club})
-                          </span>
-                          {currentResult.highestRecord.previousRecordValue && (
-                            <span className="text-black ml-1">
-                              (Previous: {currentResult.highestRecord.previousRecordValue}{currentResult.highestRecord.previousRecordHolder ? ` by ${currentResult.highestRecord.previousRecordHolder}` : ''} {currentResult.highestRecord.previousRecordYear ? `[${currentResult.highestRecord.previousRecordYear}]` : ''})
-                            </span>
-                          )}
-                        </div>
-                        <span className="px-2 py-0.5 border border-black text-xs font-black uppercase">
-                          {currentResult.highestRecord.isRecordBroken ? 'Record Broken' : 'Record Stands'}
-                        </span>
+                    {/* Event Header Bar (Thick border above and below) */}
+                    <div className="border-t-2 border-b-2 border-black py-1.5 px-0.5 mb-3 flex items-center justify-between">
+                      <div className="font-bold text-sm sm:text-base text-black uppercase tracking-wide">
+                        EVENT #{currentEvent?.Evt_No} : {currentEvent?.Evt_Name} / {(currentEvent?.Height || '').toUpperCase() === 'ALL' ? 'ALL' : (currentEvent?.Height || '').replace(/[`']/g, "'").replace(/''|``|"/g, '"')} / {currentEvent?.Gender}
                       </div>
-                    )}
+                      <div className="font-bold text-sm sm:text-base text-black uppercase tracking-wider">
+                        RANKING LIST
+                      </div>
+                    </div>
 
-                    {/* Other Finalists section */}
-                    {savedFinalists.filter((f) => !f.position || f.position < 1 || f.position > 6).length > 0 && (
-                      <div className="mt-4 mb-6">
-                        <h4 className="text-[11px] font-black uppercase tracking-wider text-black mb-1.5">
-                          Other Finalist Competitors
-                        </h4>
-                        <table className="w-full text-left text-[11px] border border-black border-collapse bg-white">
+                    {/* Rankings Table: Matches HitListA4Reports.jpg with minimum chest no width & chest no in bold */}
+                    {(() => {
+                      const isBroadJump = (currentEvent?.Evt_Name || '').toUpperCase().includes('BROAD JUMP');
+                      const getRankPosLabel = (pos?: number, fallbackIdx?: number) => {
+                        const p = (pos && pos > 0) ? pos : ((fallbackIdx !== undefined) ? fallbackIdx + 1 : 1);
+                        const j = p % 10, k = p % 100;
+                        if (j === 1 && k !== 11) return `${p}st`;
+                        if (j === 2 && k !== 12) return `${p}nd`;
+                        if (j === 3 && k !== 13) return `${p}rd`;
+                        return `${p}th`;
+                      };
+
+                      return (
+                        <table className="w-full text-left border-collapse border border-black bg-white">
                           <thead>
-                            <tr className="bg-white text-black font-bold uppercase border-b border-black">
-                              <th className="py-1 px-2 w-12 text-center border-r border-black">Lane</th>
-                              <th className="py-1 px-2.5 w-24 text-center border-r border-black">Chest #</th>
-                              <th className="py-1 px-3 border-r border-black">Athlete Name</th>
-                              <th className="py-1 px-3">Club Name</th>
+                            <tr className="bg-white text-black font-bold">
+                              <th 
+                                className="border border-black py-2 px-1 text-center text-xs uppercase"
+                                style={{ width: '45px' }}
+                              >
+                                RANK
+                              </th>
+                              <th 
+                                className="border border-black py-2 px-1 text-center text-xs uppercase font-bold"
+                                style={{ width: '60px', minWidth: '60px' }}
+                              >
+                                CHEST NO.
+                              </th>
+                              <th 
+                                className="border border-black py-2 px-3 text-left text-xs uppercase font-bold"
+                              >
+                                NAME (CLUB NAME)
+                              </th>
+                              {isBroadJump && (
+                                <th 
+                                  className="border border-black py-2 px-2 text-center text-xs uppercase font-bold"
+                                  style={{ width: '80px', minWidth: '80px' }}
+                                >
+                                  JUMP
+                                </th>
+                              )}
+                              <th 
+                                className="border border-black py-2 px-2 text-center text-xs uppercase font-bold"
+                                style={{ width: '65px', minWidth: '65px' }}
+                              >
+                                POINTS
+                              </th>
+                              <th 
+                                className="border border-black py-2 px-2 text-center text-xs uppercase font-bold"
+                                style={{ width: '85px', minWidth: '85px' }}
+                              >
+                                REMARKS
+                              </th>
                             </tr>
                           </thead>
-                          <tbody className="divide-y divide-black">
-                            {savedFinalists
-                              .filter((f) => !f.position || f.position < 1 || f.position > 6)
-                              .map((f, i) => (
-                                <tr key={f.chestNo} className="bg-white text-black">
-                                  <td className="py-1 px-2 text-center font-mono border-r border-black">{f.lane || i + 1}</td>
-                                  <td className="py-1 px-2.5 text-center font-mono font-bold border-r border-black">#{f.chestNo}</td>
-                                  <td className="py-1 px-3 uppercase font-semibold border-r border-black">{f.candidateName}</td>
-                                  <td className="py-1 px-3 uppercase text-black">{f.club || 'Independent'}</td>
-                                </tr>
-                              ))}
+                          <tbody>
+                            {rankedWinners.length === 0 ? (
+                              <tr>
+                                <td colSpan={isBroadJump ? 6 : 5} className="border border-black py-4 text-center font-normal text-slate-500">
+                                  No rankings declared yet for this event.
+                                </td>
+                              </tr>
+                            ) : (
+                              rankedWinners.map((winner, idx) => {
+                                const pts = getPointsForPosition(winner.position);
+                                const defaultRemark = winner.position === 1 ? 'GOLD' : winner.position === 2 ? 'SILVER' : winner.position === 3 ? 'BRONZE' : '';
+
+                                return (
+                                  <tr key={winner.chestNo} className="bg-white">
+                                    <td 
+                                      className="border border-black py-2.5 px-1 text-center text-sm font-normal text-black"
+                                      style={{ width: '45px' }}
+                                    >
+                                      {getRankPosLabel(winner.position, idx)}
+                                    </td>
+                                    <td 
+                                      className="border border-black py-2.5 px-1 text-center text-sm font-bold text-black"
+                                      style={{ width: '60px', minWidth: '60px' }}
+                                    >
+                                      {winner.chestNo}
+                                    </td>
+                                    <td className="border border-black py-2.5 px-3 text-left text-sm font-normal text-black uppercase">
+                                      {winner.candidateName} ({winner.club || 'INDEPENDENT'})
+                                    </td>
+                                    {isBroadJump && (
+                                      <td 
+                                        className="border border-black py-2.5 px-2 text-center text-sm font-mono font-normal text-black"
+                                        style={{ width: '80px', minWidth: '80px' }}
+                                      >
+                                        {winner.jumpRecord || winner.resultValue || '—'}
+                                      </td>
+                                    )}
+                                    <td 
+                                      className="border border-black py-2.5 px-2 text-center text-sm font-bold text-black"
+                                      style={{ width: '65px', minWidth: '65px' }}
+                                    >
+                                      {pts}
+                                    </td>
+                                    <td 
+                                      className="border border-black py-2.5 px-2 text-center text-xs font-normal text-black"
+                                      style={{ width: '85px', minWidth: '85px' }}
+                                    >
+                                      {winner.remarks || defaultRemark}
+                                    </td>
+                                  </tr>
+                                );
+                              })
+                            )}
                           </tbody>
                         </table>
+                      );
+                    })()}
+
+                    {/* Broad Jump Record Callout */}
+                    {currentEvent?.Evt_Name?.toUpperCase().includes('BROAD JUMP') && currentResult?.highestRecord && (
+                      <div className="mt-2.5 p-2 border-2 border-black bg-white text-xs font-bold text-black uppercase flex items-center justify-between avoid-break">
+                        <div>
+                          <span className="font-bold">★ MEET BROAD JUMP RECORD: {currentResult.highestRecord.recordValue} by {currentResult.highestRecord.candidateName} (#{currentResult.highestRecord.chestNo}{currentResult.highestRecord.club ? `, ${currentResult.highestRecord.club}` : ''})</span>
+                        </div>
+                        <span>{currentResult.highestRecord.isRecordBroken ? '🏆 RECORD BROKEN' : 'RECORD STANDS'}</span>
                       </div>
                     )}
                   </div>
 
                   {/* Signatures Footer */}
-                  <div className="mt-8 pt-3 border-t border-black grid grid-cols-3 gap-2 text-center text-[11px] font-bold text-black avoid-break">
-                    <div>
-                      <div className="h-8"></div>
-                      <div className="border-t border-black pt-1">Track / Field Judge</div>
+                  <div className="mt-8 pt-4 flex items-center justify-between text-xs font-bold text-black avoid-break">
+                    <div className="text-center w-48">
+                      <div className="border-b border-black mb-1 h-8" />
+                      <span>Chief Referee Sign</span>
                     </div>
-                    <div>
-                      <div className="h-8"></div>
-                      <div className="border-t border-black pt-1">Chief Referee</div>
+                    <div className="text-center w-48">
+                      <div className="border-b border-black mb-1 h-8" />
+                      <span>Track Referee Sign</span>
                     </div>
-                    <div>
-                      <div className="h-8"></div>
-                      <div className="border-t border-black pt-1">General Secretary</div>
+                    <div className="text-center w-48">
+                      <div className="border-b border-black mb-1 h-8" />
+                      <span>President / Convener Sign</span>
                     </div>
                   </div>
                 </div>
@@ -1946,6 +2142,13 @@ export const HitList: React.FC<HitListProps> = ({
           </div>
         </div>
       )}
+
+      {/* 58mm Thermal Printer Page Setup Modal */}
+      <ThermalPageSetupModal 
+        isOpen={showThermalSetup} 
+        onClose={() => setShowThermalSetup(false)} 
+        settings={settings} 
+      />
 
     </div>
   );

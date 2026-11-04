@@ -73,8 +73,10 @@ export const PinLoginModal: React.FC<PinLoginModalProps> = ({
     try {
       const res = await api.verifyPin(pinToVerify.trim(), forceTakeover);
       sessionStorage.setItem('esports_server_auth', 'true');
+      localStorage.setItem('esports_server_auth', 'true');
       if (res.sessionId) {
         sessionStorage.setItem('esports_server_session_id', res.sessionId);
+        localStorage.setItem('esports_server_session_id', res.sessionId);
       }
       setPin('');
       onSuccess(res);

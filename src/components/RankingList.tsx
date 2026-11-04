@@ -13,8 +13,15 @@ import {
   Flame,
   Sparkles,
   Receipt,
-  FileText
+  FileText,
+  Sliders
 } from 'lucide-react';
+import { ThermalPageSetupModal } from './ThermalPageSetupModal';
+import { 
+  ThermalPrintSettings, 
+  getThermalSettings, 
+  generateThermalPrintCSS 
+} from '../utils/thermalSettings';
 
 // Helper to parse jump measurement strings like "16`-02``", "16'-02\"", "14' 5\"", "14 ft 5 in", "4.45m", "16.5" into numeric inches for accurate comparison
 export function parseJumpToInches(val?: string | null): number {
@@ -63,6 +70,24 @@ export function formatJumpBenchmark(val?: string | number | null): string {
     remInches = 0;
   }
   return `${feet}\`-${String(remInches).padStart(2, '0')}\`\``;
+}
+
+// Convert ranking numeric position to word (e.g. First, Second, Third) as shown in RankingA4.png
+export function getPositionWord(pos?: number, idx?: number): string {
+  const p = (pos && pos > 0) ? pos : ((idx !== undefined) ? idx + 1 : 1);
+  const words: Record<number, string> = {
+    1: 'First',
+    2: 'Second',
+    3: 'Third',
+    4: 'Fourth',
+    5: 'Fifth',
+    6: 'Sixth',
+    7: 'Seventh',
+    8: 'Eighth',
+    9: 'Ninth',
+    10: 'Tenth'
+  };
+  return words[p] || `${p}th`;
 }
 
 interface RankingListProps {
@@ -301,6 +326,40 @@ export const RankingList: React.FC<RankingListProps> = ({
   // Print Modal
   const [showPrintModal, setShowPrintModal] = useState<boolean>(false);
   const [modalFormat, setModalFormat] = useState<'a4' | 'thermal'>('a4');
+  const [thermalConfig, setThermalConfig] = useState<ThermalPrintSettings>(getThermalSettings());
+  const [showThermalSetup, setShowThermalSetup] = useState<boolean>(false);
+
+  const currentTimestamp = useMemo(() => {
+    return new Date().toLocaleString('en-GB', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true
+    });
+  }, [showPrintModal]);
+
+  useEffect(() => {
+    const handleSettingsChange = (e: any) => {
+      if (e.detail) {
+        setThermalConfig(e.detail);
+      }
+    };
+    window.addEventListener('thermal-settings-changed', handleSettingsChange);
+    return () => window.removeEventListener('thermal-settings-changed', handleSettingsChange);
+  }, []);
+
+  // Handle ESC key to exit print preview modal
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && showPrintModal) {
+        setShowPrintModal(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [showPrintModal]);
 
   // Synchronize local rankedMap & jumpRecords when selected event changes or when initial data loads
   useEffect(() => {
@@ -436,7 +495,8 @@ export const RankingList: React.FC<RankingListProps> = ({
         for (let pos = 1; pos <= 6; pos++) {
           if (rankedMap[pos] === f.chestNo) {
             assignedPos = pos;
-            pts = getPointsForPosition(pos);
+            const isSelf = (f.club || '').trim().toUpperCase() === 'SELF';
+            pts = isSelf ? 0 : getPointsForPosition(pos);
             break;
           }
         }
@@ -486,41 +546,48 @@ export const RankingList: React.FC<RankingListProps> = ({
     }
   };
 
-  // Club Championship Standings calculation
+  // Club Championship Standings calculation (excludes SELF and Independent)
   const clubChampionshipTable = useMemo(() => {
     const clubMap: Record<string, { name: string; gold: number; silver: number; bronze: number; points: number }> = {};
 
     clubs.forEach((c) => {
-      clubMap[c.name] = { name: c.name, gold: 0, silver: 0, bronze: 0, points: 0 };
+      if (!c.name) return;
+      const cleanName = c.name.trim();
+      if (!cleanName || cleanName.toUpperCase() === 'SELF' || cleanName === 'Independent' || cleanName === 'Independent / Unattached') return;
+      clubMap[cleanName] = { name: cleanName, gold: 0, silver: 0, bronze: 0, points: 0 };
     });
 
     candidates.forEach((c) => {
-      if (c.club && !clubMap[c.club]) {
-        clubMap[c.club] = { name: c.club, gold: 0, silver: 0, bronze: 0, points: 0 };
+      const cClub = (c.club || '').trim();
+      if (!cClub || cClub.toUpperCase() === 'SELF' || cClub === 'Independent' || cClub === 'Independent / Unattached') return;
+      if (!clubMap[cClub]) {
+        clubMap[cClub] = { name: cClub, gold: 0, silver: 0, bronze: 0, points: 0 };
       }
     });
 
     results.forEach((res) => {
-      (res.finalists || []).forEach((f) => {
-        if (!f.club) return;
-        if (!clubMap[f.club]) {
-          clubMap[f.club] = { name: f.club, gold: 0, silver: 0, bronze: 0, points: 0 };
+      const participants = res.winners && res.winners.length > 0 ? res.winners : (res.finalists || []);
+      participants.forEach((f) => {
+        const fClub = (f.club || '').trim();
+        if (!fClub || fClub.toUpperCase() === 'SELF' || fClub === 'Independent' || fClub === 'Independent / Unattached') return;
+        if (!clubMap[fClub]) {
+          clubMap[fClub] = { name: fClub, gold: 0, silver: 0, bronze: 0, points: 0 };
         }
         if (f.position === 1) {
-          clubMap[f.club].gold += 1;
-          clubMap[f.club].points += 7;
+          clubMap[fClub].gold += 1;
+          clubMap[fClub].points += 7;
         } else if (f.position === 2) {
-          clubMap[f.club].silver += 1;
-          clubMap[f.club].points += 5;
+          clubMap[fClub].silver += 1;
+          clubMap[fClub].points += 5;
         } else if (f.position === 3) {
-          clubMap[f.club].bronze += 1;
-          clubMap[f.club].points += 4;
+          clubMap[fClub].bronze += 1;
+          clubMap[fClub].points += 4;
         } else if (f.position === 4) {
-          clubMap[f.club].points += 3;
+          clubMap[fClub].points += 3;
         } else if (f.position === 5) {
-          clubMap[f.club].points += 2;
+          clubMap[fClub].points += 2;
         } else if (f.position === 6) {
-          clubMap[f.club].points += 1;
+          clubMap[fClub].points += 1;
         }
       });
     });
@@ -586,56 +653,47 @@ export const RankingList: React.FC<RankingListProps> = ({
     return settings.registeredClubName || settings.organizer || 'Agrani Sasthitala Sangha';
   };
 
-  // Thermal header: Place club logo at left of two lines (registered club name, next line meet ordinal number)
+  // Thermal header: Same as Candidate List thermal report (inline logo beside club name, ordinal below centered)
   const renderThermalHeader = (specificClubName?: string) => {
     const clubDisplayName = getThermalClubName(specificClubName);
     const clubLogo = getThermalClubLogo(specificClubName);
 
     return (
-      <div className="text-center pb-0.5 mb-1 border-b border-dashed border-black">
-        <div className="flex items-center justify-center gap-2 leading-tight">
+      <div className="pb-1 mb-1 border-b border-dashed border-black pt-1">
+        <div className="flex items-center justify-center gap-1.5 leading-tight">
           <img
             src={clubLogo}
             alt="Club Logo"
             className="w-5 h-5 shrink-0 object-contain filter grayscale contrast-200"
             style={{ filter: 'grayscale(100%) contrast(200%)' }}
           />
-          <div className="text-left leading-tight">
-            <div className="font-bold text-[10px] uppercase tracking-tight text-black truncate max-w-[42mm]">
-              {clubDisplayName}
-            </div>
-            <div className="text-[8.5px] font-semibold text-black leading-tight mt-0.5">
-              {settings.ordinalTitle || '47th Annual Sports Meet 2027'}
-            </div>
-          </div>
+          <span className="font-bold text-[10.5px] uppercase tracking-tight text-black truncate max-w-[36mm]">
+            {clubDisplayName}
+          </span>
+        </div>
+        <div className="text-[8.5px] font-semibold text-black leading-tight mt-0.5 whitespace-nowrap overflow-hidden text-ellipsis max-w-[46mm] mx-auto text-center">
+          {settings.ordinalTitle || '47th Annual Sports Meet 2027'}
         </div>
       </div>
     );
   };
 
-  // Thermal footer: Place app logo and app name in ONE line, date & time stamp (minimal height)
+  // Thermal footer: Same as Candidate List thermal report
   const renderThermalFooter = () => {
-    const currentTimestamp = new Date().toLocaleString('en-US', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
     return (
-      <div className="text-center pt-0.5 mt-1 border-t border-dashed border-black text-black">
-        <div className="flex items-center justify-center gap-1 leading-none">
+      <div className="text-center pt-1 mt-1 border-t border-dashed border-black text-black">
+        <div className="flex items-center justify-center gap-1 leading-none max-w-[46mm] mx-auto whitespace-nowrap overflow-hidden">
           <img
             src="/icon.png"
             alt="eSports Logo"
             className="w-3.5 h-3.5 shrink-0 object-contain filter grayscale contrast-200"
             style={{ filter: 'grayscale(100%) contrast(200%)' }}
           />
-          <span className="font-bold text-[8.5px] uppercase tracking-tight text-black">
-            eSports (A Sports Management System)
+          <span className="font-semibold text-[8px] tracking-tight text-black whitespace-nowrap truncate">
+            eSports (Sport Management System)
           </span>
         </div>
-        <div className="text-[7.5px] text-black leading-tight mt-0.5 font-mono">
+        <div className="text-[7.5px] text-black leading-none mt-0.5 font-mono whitespace-nowrap">
           {currentTimestamp}
         </div>
       </div>
@@ -700,52 +758,14 @@ export const RankingList: React.FC<RankingListProps> = ({
   return (
     <div className="relative">
       {/* Scoped Dynamic Print Stylesheet: Ensures complete isolation and precise formatting */}
-      <style>{`
-        @media print {
-          ${
-            modalFormat === 'thermal'
-              ? `
-            @page {
-              size: 58mm auto !important;
-              margin: 0 !important;
-            }
-            html, body {
-              width: 58mm !important;
-              min-width: 58mm !important;
-              max-width: 58mm !important;
-              margin: 0 !important;
-              padding: 0 !important;
-              background: #ffffff !important;
-              color: #000000 !important;
-              font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace !important;
-              -webkit-print-color-adjust: exact !important;
-              print-color-adjust: exact !important;
-            }
-            .thermal-printable-sheet {
-              width: 48mm !important;
-              max-width: 48mm !important;
-              margin: 0 auto !important;
-              padding: 1mm 0 4mm 0 !important;
-              background: #ffffff !important;
-              color: #000000 !important;
-              font-size: 9.5px !important;
-              line-height: 1.2 !important;
-            }
-            .thermal-printable-sheet * {
-              color: #000000 !important;
-              border-color: #000000 !important;
-              background: transparent !important;
-              box-shadow: none !important;
-            }
-            .thermal-printable-sheet img {
-              filter: grayscale(100%) contrast(200%) !important;
-              -webkit-filter: grayscale(100%) contrast(200%) !important;
-            }
-            .a4-printable-sheet {
+      {modalFormat === 'thermal' ? (
+        <style>{generateThermalPrintCSS(thermalConfig)}</style>
+      ) : (
+        <style>{`
+          @media print {
+            header, nav, footer, .print-hidden-element, .interactive-ranking-ui {
               display: none !important;
             }
-          `
-              : `
             @page {
               size: A4 portrait !important;
               margin: 8mm 8mm !important;
@@ -770,20 +790,18 @@ export const RankingList: React.FC<RankingListProps> = ({
               outline: none !important;
               box-shadow: none !important;
             }
+            .receipt,
+            .thermal-printable-wrapper,
             .thermal-printable-sheet {
               display: none !important;
             }
-          `
+            .avoid-break {
+              page-break-inside: avoid !important;
+              break-inside: avoid !important;
+            }
           }
-          .interactive-ranking-ui {
-            display: none !important;
-          }
-          .avoid-break {
-            page-break-inside: avoid !important;
-            break-inside: avoid !important;
-          }
-        }
-      `}</style>
+        `}</style>
+      )}
 
       {/* Interactive Ranking UI Wrapper: Hidden when print modal is open */}
       <div className={`max-w-5xl mx-auto space-y-4 px-2 sm:px-0 interactive-ranking-ui ${showPrintModal ? 'print:hidden' : ''}`}>
@@ -1608,332 +1626,398 @@ export const RankingList: React.FC<RankingListProps> = ({
       {/* PRINT PREVIEW MODAL (Plain A4 & 2" Thermal Roll Preview & Printing)       */}
       {/* ========================================================================= */}
       {showPrintModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-1 sm:p-4 bg-black/85 backdrop-blur-2xs overflow-y-auto print:static print:inset-auto print:p-0 print:bg-white print:overflow-visible print:block print:w-full print:h-auto">
-          <div className="bg-slate-900 border border-slate-700 rounded-xl sm:rounded-2xl w-full max-w-5xl max-h-[96vh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 text-slate-900 print:bg-white print:border-none print:shadow-none print:max-h-none print:w-full print:rounded-none print:overflow-visible print:p-0">
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center p-1 sm:p-4 bg-black/85 backdrop-blur-2xs overflow-y-auto print:static print:inset-auto print:p-0 print:bg-white print:overflow-visible print:block print:w-full print:h-auto"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowPrintModal(false);
+          }}
+        >
+          <div className="relative bg-slate-900 border border-slate-700 rounded-xl sm:rounded-2xl w-full max-w-5xl max-h-[96vh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 text-slate-900 print:bg-white print:border-none print:shadow-none print:max-h-none print:w-full print:rounded-none print:overflow-visible print:p-0">
             
             {/* Modal Actions Bar (Hidden on print) */}
-            <div className="px-3 sm:px-6 py-2.5 sm:py-3.5 bg-slate-900 text-white flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 print:hidden">
-              <div className="flex items-center gap-2">
-                <Trophy className="w-4 h-4 text-amber-400" />
-                <div>
-                  <h3 className="font-bold text-xs sm:text-base">Official Event Rankings Preview</h3>
-                  <p className="text-[10px] sm:text-[11px] text-slate-400">
-                    Scope: {printScope === 'single' ? `Event #${singlePrintEvt}` : printScope === 'range' ? `Events #${rangeStart} to #${rangeEnd}` : `Events: ${customCsvInput}`} ({eventsToPrint.length} Event(s))
-                  </p>
+            <div className="sticky top-0 z-30 px-3 sm:px-6 py-2.5 sm:py-3.5 bg-slate-900 text-white flex flex-col gap-2.5 border-b border-slate-800 print:hidden shrink-0">
+              {/* Row 1: Title and Prominent Top-Right Highlighted 'X' Close Button */}
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Trophy className="w-4 h-4 text-amber-400 shrink-0" />
+                  <div className="min-w-0">
+                    <h3 className="font-bold text-xs sm:text-base truncate">Official Event Rankings Preview</h3>
+                    <p className="text-[10px] sm:text-[11px] text-slate-400 truncate">
+                      Scope: {printScope === 'single' ? `Event #${singlePrintEvt}` : printScope === 'range' ? `Events #${rangeStart} to #${rangeEnd}` : `Events: ${customCsvInput}`} ({eventsToPrint.length} Event(s))
+                    </p>
+                  </div>
                 </div>
+
+                {/* Highlighted 'X' Close Button situated at top right corner */}
+                <button
+                  type="button"
+                  id="btn-close-ranking-preview"
+                  onClick={() => setShowPrintModal(false)}
+                  className="flex items-center justify-center p-1.5 sm:p-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white border border-rose-400 shadow-md transition-all cursor-pointer active:scale-95 shrink-0"
+                  title="Close Preview (X)"
+                  aria-label="Close Print Preview"
+                >
+                  <X className="w-5 h-5 stroke-[2.5]" />
+                </button>
               </div>
 
-              <div className="flex items-center gap-2">
-                {/* Format Switcher */}
-                <div className="flex items-center bg-slate-800 p-0.5 rounded-lg border border-slate-700">
+              {/* Row 2: Left-aligned (Normal, Thermal, Print) | Right-aligned (58mm Thermal Page Setup) */}
+              <div className="flex items-center justify-between gap-2 w-full">
+                {/* Left Aligned: Normal, Thermal, Print */}
+                <div className="flex items-center gap-1.5 sm:gap-2">
+                  {/* Format Switcher */}
+                  <div className="flex items-center bg-slate-800 p-0.5 rounded-lg border border-slate-700">
+                    <button
+                      type="button"
+                      onClick={() => setModalFormat('a4')}
+                      className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-bold transition-all ${
+                        modalFormat === 'a4'
+                          ? 'bg-blue-600 text-white shadow-xs'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                      title="Normal"
+                    >
+                      <FileText className="w-3.5 h-3.5" />
+                      <span>Normal</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setModalFormat('thermal')}
+                      className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-bold transition-all ${
+                        modalFormat === 'thermal'
+                          ? 'bg-amber-500 text-slate-950 font-black shadow-xs'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                      title="Thermal"
+                    >
+                      <Receipt className="w-3.5 h-3.5" />
+                      <span>Thermal</span>
+                    </button>
+                  </div>
+
+                  {/* Print Trigger */}
                   <button
                     type="button"
-                    onClick={() => setModalFormat('a4')}
-                    className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-bold transition-all ${
-                      modalFormat === 'a4'
-                        ? 'bg-blue-600 text-white shadow-xs'
-                        : 'text-slate-400 hover:text-white'
-                    }`}
-                    title="Print on Plain A4 Paper without outlines, borders, or background graphics"
-                  >
-                    <FileText className="w-3.5 h-3.5" />
-                    <span>Plain A4</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setModalFormat('thermal')}
-                    className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-bold transition-all ${
+                    onClick={handleExecutePrint}
+                    className={`px-2.5 sm:px-4 py-1.5 rounded-lg font-bold text-xs sm:text-sm flex items-center gap-1.5 transition-all shadow-md cursor-pointer ${
                       modalFormat === 'thermal'
-                        ? 'bg-amber-500 text-slate-950 font-black shadow-xs'
-                        : 'text-slate-400 hover:text-white'
+                        ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 font-black'
+                        : 'bg-blue-600 hover:bg-blue-500 text-white'
                     }`}
-                    title="Print on 2-inch roll thermal printer"
+                    title="Print"
                   >
-                    <Receipt className="w-3.5 h-3.5" />
-                    <span>2" Thermal</span>
+                    <Printer className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                    <span>Print</span>
                   </button>
                 </div>
 
-                {/* Print Trigger */}
+                {/* Right Aligned: 58mm Thermal Page Setup Button */}
                 <button
                   type="button"
-                  onClick={handleExecutePrint}
-                  className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg font-bold text-xs sm:text-sm flex items-center gap-1.5 transition-all shadow-md cursor-pointer ${
-                    modalFormat === 'thermal'
-                      ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 font-black'
-                      : 'bg-blue-600 hover:bg-blue-500 text-white'
+                  disabled={modalFormat === 'a4'}
+                  onClick={() => setShowThermalSetup(true)}
+                  className={`px-2 sm:px-2.5 py-1.5 rounded-lg border border-slate-700 transition-all flex items-center gap-1.5 text-xs font-bold ${
+                    modalFormat === 'a4'
+                      ? 'opacity-40 cursor-not-allowed bg-slate-800/60 text-slate-500'
+                      : 'text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 active:scale-98 cursor-pointer'
                   }`}
+                  title={modalFormat === 'a4' ? "Thermal setup only available in Thermal mode" : "58mm Thermal Printer Page Setup"}
                 >
-                  <Printer className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-                  <span>{modalFormat === 'thermal' ? 'Print 2" Thermal Receipt' : 'Print Plain A4 Paper'}</span>
-                </button>
-
-                {/* Close Button */}
-                <button
-                  type="button"
-                  onClick={() => setShowPrintModal(false)}
-                  className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
-                >
-                  <X className="w-4 h-4 sm:w-5 sm:h-5" />
+                  <Sliders className={`w-3.5 h-3.5 ${modalFormat === 'a4' ? 'text-slate-500' : 'text-amber-400'}`} />
+                  <span className="hidden sm:inline">58mm Setup</span>
                 </button>
               </div>
             </div>
 
             {/* Scrollable Preview Canvas */}
             {modalFormat === 'thermal' ? (
-              /* ================= 2-INCH THERMAL ROLL RECEIPT PREVIEW ================= */
-              <div className="p-4 sm:p-8 bg-[#cbd5e1] overflow-y-auto flex-1 flex justify-center print:p-0 print:bg-white print:overflow-visible">
+              /* ================= 58MM THERMAL ROLL RECEIPT PREVIEW (EXACT MATCHING) ================= */
+              <div className="p-4 sm:p-8 bg-slate-300 overflow-y-auto flex-1 flex flex-col items-center print:p-0 print:bg-white print:overflow-visible">
+                <div className="text-[11px] font-bold text-slate-700 mb-2 flex items-center gap-1.5 print:hidden">
+                  <Receipt className="w-3.5 h-3.5 text-amber-600" />
+                  <span>58mm Roll Preview ({thermalConfig.printableWidth}mm net printable)</span>
+                </div>
                 <div
-                  className="thermal-printable-sheet w-full max-w-[320px] bg-white text-black p-4 shadow-[0_10px_35px_rgba(0,0,0,0.22)] rounded-xs font-mono text-[9.5px] leading-tight print:shadow-none print:p-0 print:max-w-[48mm] print:w-[48mm]"
+                  className="receipt thermal-printable-sheet bg-white text-black p-3 shadow-2xl rounded-xs select-none print:shadow-none print:p-0"
                   style={{
-                    fontFamily:
-                      'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+                    width: `${thermalConfig.printableWidth}mm`,
+                    maxWidth: `${thermalConfig.printableWidth}mm`,
+                    paddingLeft: `${thermalConfig.marginHorizontal}mm`,
+                    paddingRight: `${thermalConfig.marginHorizontal}mm`,
+                    paddingTop: `${thermalConfig.topMargin || 5}mm`,
+                    paddingBottom: `${thermalConfig.feedBeforeCut}mm`,
+                    fontSize: `${thermalConfig.fontSize}px`,
+                    lineHeight: thermalConfig.lineSpacing,
+                    fontFamily: 'Consolas, "Courier New", monospace',
                   }}
                 >
-                  {renderThermalHeader()}
-
-                  <div className="text-center mb-1 leading-tight">
-                    <div className="font-bold text-[10px] uppercase">
-                      OFFICIAL EVENT RANKINGS
-                    </div>
-                    <div className="text-[8.5px]">
-                      {eventsToPrint.length} EVENT(S) SELECTED
-                    </div>
-                  </div>
-
                   {eventsToPrint.length === 0 ? (
-                    <div className="py-2 text-center text-[9px] italic">
+                    <div className="py-4 text-center text-[9px] italic">
                       No events match print scope.
                     </div>
                   ) : (
-                    <div className="space-y-2">
+                    <div className="space-y-4">
                       {eventsToPrint.map((evt) => {
                         const evtRes = results.find((r) => Number(r.eventNo) === Number(evt.Evt_No));
-                        const rankedFinalists = (evtRes?.finalists || [])
-                          .filter((f) => f.position && f.position >= 1 && f.position <= 6)
+                        const rankedFinalists = (evtRes?.winners && evtRes.winners.length > 0 ? evtRes.winners : (evtRes?.finalists || []))
+                          .filter((f) => (f.position || 0) > 0)
                           .sort((a, b) => (a.position || 0) - (b.position || 0));
 
+                        const formatHeightStr = (hStr?: string) => {
+                          if (!hStr) return 'ALL';
+                          const clean = hStr.trim().toUpperCase();
+                          if (clean === 'ALL') return 'ALL';
+                          return clean.replace(/[`']/g, "'").replace(/''|``|"/g, "''");
+                        };
+
+                        const getGenderAbbrStr = (gender?: string) => {
+                          if (!gender) return 'ALL';
+                          const g = gender.trim().toUpperCase();
+                          if (g.startsWith('BOY') || g === 'B') return 'B';
+                          if (g.startsWith('GIRL') || g === 'G') return 'G';
+                          if (g.startsWith('CHILD') || g === 'C') return 'C';
+                          return 'ALL';
+                        };
+
+                        const getRankPosLabel = (pos?: number, fallbackIdx?: number) => {
+                          const p = (pos && pos > 0) ? pos : ((fallbackIdx !== undefined) ? fallbackIdx + 1 : 1);
+                          if (p === 1) return '1st';
+                          if (p === 2) return '2nd';
+                          if (p === 3) return '3rd';
+                          return `${p}th`;
+                        };
+
+                        const heightDisp = formatHeightStr(evt.Height);
+                        const genderAbbr = getGenderAbbrStr(evt.Gender);
+                        const isBroadJump = (evt.Evt_Name || '').toUpperCase().includes('BROAD JUMP');
+
                         return (
-                          <div key={evt.Evt_No} className="border-b border-dotted border-black pb-1.5 mb-1.5 avoid-break">
-                            <div className="font-bold text-[9px] uppercase">
-                              EVT #{evt.Evt_No}: {evt.Evt_Name}
-                            </div>
-                            <div className="text-[8px] text-black">
-                              {evt.Gender} • {evt.Height ? evt.Height.replace(/`/g, "'") : 'ALL'}
-                            </div>
+                          <div key={evt.Evt_No} className="avoid-break pt-4 pb-2 border-b border-dashed border-black last:border-b-0 text-black leading-tight">
+                            {/* Header: same as Candidate list */}
+                            {renderThermalHeader()}
 
-                            {rankedFinalists.length === 0 ? (
-                              <div className="text-[8px] italic text-center py-1">
-                                [Results not finalized]
+                            {/* Dashed Line */}
+                            <div className="border-b border-dashed border-black my-1"></div>
+
+                            {/* Event Title Line: broken into two lines */}
+                            <div className="text-center py-0.5 tracking-tight text-black leading-tight">
+                              <div className="font-bold text-[10px] uppercase">RANKING LIST</div>
+                              <div className="text-[8.5px] font-semibold mt-0.5 uppercase break-words">
+                                EVT #{evt.Evt_No}: {evt.Evt_Name} ({heightDisp} • {genderAbbr})
                               </div>
-                            ) : (
-                              <>
-                                <div className="border-b border-black pb-0.5 mt-1 mb-0.5 font-bold flex justify-between text-[8px] leading-tight">
-                                  <span className="w-5 text-center">POS</span>
-                                  <span className="w-6 text-center">CH#</span>
-                                  <span className="flex-1 text-left">ATHLETE (CLUB)</span>
-                                  <span className="w-5 text-center">PTS</span>
-                                  <span className="w-8 text-right">PERF</span>
-                                </div>
-                                <div className="space-y-0.5">
-                                  {rankedFinalists.map((f) => {
-                                    const posLabel =
-                                      f.position === 1
-                                        ? '1ST'
-                                        : f.position === 2
-                                        ? '2ND'
-                                        : f.position === 3
-                                        ? '3RD'
-                                        : `${f.position}TH`;
-                                    const pts = f.points || getPointsForPosition(f.position || 0);
-                                    return (
-                                      <div key={f.chestNo} className="flex justify-between items-center text-[8.5px] leading-tight">
-                                        <span className="w-5 font-bold text-center">{posLabel}</span>
-                                        <span className="w-6 text-center font-mono">#{f.chestNo}</span>
-                                        <span className="flex-1 text-left truncate pr-1">
-                                          {f.candidateName} <span className="text-[7px]">({f.club || 'Ind'})</span>
-                                        </span>
-                                        <span className="w-5 text-center font-bold">{pts}</span>
-                                        <span className="w-8 text-right font-mono text-[7.5px]">
-                                          {f.jumpRecord || f.resultValue || '—'}
-                                        </span>
-                                      </div>
-                                    );
-                                  })}
-                                </div>
+                            </div>
 
-                                {evtRes?.highestRecord?.isRecordBroken && (
-                                  <div className="mt-1 pt-0.5 border-t border-dashed border-black text-[7.5px] font-bold text-center">
-                                    * RECORD: {evtRes.highestRecord.recordValue} ({evtRes.highestRecord.candidateName}) *
-                                  </div>
-                                )}
-                              </>
-                            )}
+                            {/* Dashed Line */}
+                            <div className="border-b border-dashed border-black my-1"></div>
+
+                            {/* Table Column Headers */}
+                            <div className="flex items-center text-[9px] font-bold text-black uppercase pt-1">
+                              <span className={isBroadJump ? "w-7 text-center shrink-0" : "w-8 text-center shrink-0"}>Rank</span>
+                              <span className={isBroadJump ? "w-7 text-center shrink-0" : "w-8 text-center shrink-0"}>CH#</span>
+                              <span className={isBroadJump ? "flex-1 text-left pl-1" : "flex-1 text-left pl-2"}>ATHLETE (CLUB)</span>
+                              {isBroadJump && (
+                                <span className="w-14 text-right pr-0.5 shrink-0">Jump</span>
+                              )}
+                            </div>
+                            <div className="border-b-2 border-black mb-1 mt-0.5"></div>
+
+                            {/* Ranked Athletes List with dotted separators */}
+                            <div className="space-y-0 text-black">
+                              {rankedFinalists.length === 0 ? (
+                                <div className="text-[8px] italic text-center py-2 text-slate-600">
+                                  No rankings declared yet for this event.
+                                </div>
+                              ) : (
+                                rankedFinalists.map((f, idx) => {
+                                  const club = getClubInfo(f.club || '');
+                                  const isSelf = (f.club || '').trim().toUpperCase() === 'SELF';
+                                  const clubNameStr = isSelf ? '' : (club?.name || f.club || '');
+                                  const athleteDisplay = clubNameStr ? `${f.candidateName} (${clubNameStr})` : f.candidateName;
+                                  return (
+                                    <div key={f.chestNo}>
+                                      <div className="flex items-center text-[9.5px] py-1 text-black leading-tight">
+                                        <span className={isBroadJump ? "w-7 text-center font-normal shrink-0" : "w-8 text-center font-normal shrink-0"}>
+                                          {getRankPosLabel(f.position, idx)}
+                                        </span>
+                                        <span className={isBroadJump ? "w-7 text-center font-bold shrink-0" : "w-8 text-center font-bold shrink-0"}>
+                                          {f.chestNo}
+                                        </span>
+                                        <span className={isBroadJump ? "flex-1 text-left font-normal uppercase truncate pl-1" : "flex-1 text-left font-normal uppercase truncate pl-2"}>
+                                          {athleteDisplay}
+                                        </span>
+                                        {isBroadJump && (
+                                          <span className="w-14 text-right font-mono text-[8.5px] font-normal shrink-0">
+                                            {f.jumpRecord || f.resultValue || '—'}
+                                          </span>
+                                        )}
+                                      </div>
+                                      <div className="border-b border-dotted border-black/80"></div>
+                                    </div>
+                                  );
+                                })
+                              )}
+                            </div>
+
+                            {/* Broad Jump Record Callout for Thermal Print */}
+                            {isBroadJump && (() => {
+                              const prevRecord = settings.broadJumpPreviousRecords?.[Number(evt.Evt_No)] ||
+                                (evtRes?.highestRecord?.previousRecordValue ? {
+                                  recordValue: evtRes.highestRecord.previousRecordValue,
+                                  recordHolderName: evtRes.highestRecord.previousRecordHolder || 'Record Holder',
+                                  recordHolderClub: '',
+                                  recordYear: evtRes.highestRecord.previousRecordYear || '',
+                                } : null);
+
+                              if (!prevRecord) return null;
+
+                              const prevInches = parseJumpToInches(prevRecord.recordValue);
+                              let maxJumpInches = 0;
+                              rankedFinalists.forEach(r => {
+                                const jInches = parseJumpToInches(r.jumpRecord || (r as any).resultValue);
+                                if (jInches > maxJumpInches) maxJumpInches = jInches;
+                              });
+                              if (evtRes?.highestRecord?.recordValue) {
+                                const hrInches = parseJumpToInches(evtRes.highestRecord.recordValue);
+                                if (hrInches > maxJumpInches) maxJumpInches = hrInches;
+                              }
+                              const isBroken = prevInches > 0 ? (maxJumpInches > prevInches) : (maxJumpInches > 0);
+                              const recFlag = isBroken ? 'Y' : 'N';
+                              const formattedPrev = formatJumpBenchmark(prevRecord.recordValue) || prevRecord.recordValue;
+                              const holderClub = prevRecord.recordHolderClub ? ` (${prevRecord.recordHolderClub})` : '';
+                              const holderYear = prevRecord.recordYear ? `, ${prevRecord.recordYear}` : '';
+
+                              return (
+                                <div className="py-1 text-[8.5px] font-bold text-center text-black leading-tight border-b border-dotted border-black/80">
+                                  New record: {recFlag} | Prev: {formattedPrev} by {prevRecord.recordHolderName}{holderClub}{holderYear}
+                                </div>
+                              );
+                            })()}
+
+                            {/* Footer: Dashed Line + App Name Only (No other footer info) */}
+                            {renderThermalFooter()}
                           </div>
                         );
                       })}
                     </div>
                   )}
-
-                  <div className="pt-2 text-center text-[8px]">
-                    Chief Referee Sign: __________________
-                  </div>
-
-                  {renderThermalFooter()}
                 </div>
               </div>
             ) : (
-              /* ================= PLAIN A4 PAPER SHEET (NO OUTLINES/BORDERS/GRAPHICS) ================= */
+              /* ================= PLAIN A4 PAPER SHEET (REDESIGNED AS PER RankingA4.png) ================= */
               <div className="p-2 sm:p-6 overflow-y-auto flex-1 bg-slate-200/80 flex justify-center print:p-0 print:bg-white print:overflow-visible">
                 <div 
-                  className="a4-printable-sheet bg-white w-full max-w-[210mm] min-h-[297mm] p-6 sm:p-10 shadow-md border-0 outline-none flex flex-col justify-between text-black font-sans print:p-0 print:m-0 print:border-none print:shadow-none print:outline-none print:bg-white print:max-w-none print:min-h-0"
+                  className="a4-printable-sheet bg-white w-full max-w-[210mm] min-h-[297mm] p-6 sm:p-10 shadow-md border-0 outline-none text-black font-sans print:p-0 print:m-0 print:border-none print:shadow-none print:outline-none print:bg-white print:max-w-none print:min-h-0 space-y-6"
                   id="printable-rankings-content"
                 >
-                  <div>
-                    {/* Official Meet Header */}
-                    <div className="text-center border-b-2 border-black pb-3 mb-4">
-                      <div className="flex items-center justify-center gap-3.5 mb-1">
-                        <img src={settings.registeredClubLogo || '/icon.png'} alt="Club Logo" className="w-10 h-10 object-contain shrink-0" />
-                        <div className="text-left">
-                          <h1 className="text-lg sm:text-xl font-bold uppercase tracking-tight text-black leading-tight">
-                            {settings.registeredClubName || settings.organizer || 'Agrani Sasthitala Sangha'}
-                          </h1>
-                          <p className="text-xs sm:text-sm font-semibold text-black uppercase tracking-wide leading-tight mt-0.5">
-                            {settings.ordinalTitle || '47th Annual Sports Meet 2027'}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="mt-1.5 inline-block px-3 py-1">
-                        <h2 className="text-xs sm:text-base font-black uppercase text-black">
-                          OFFICIAL ATHLETIC EVENT RANKINGS &amp; WINNERS REPORT
+                  {/* Top Header: Logo + Club & Meet Title on Left | FINAL RANKINGS on Right */}
+                  <div className="flex items-center justify-between pb-2 mb-1 text-black">
+                    <div className="flex items-center gap-3">
+                      <img 
+                        src={settings.registeredClubLogo || '/icon.png'} 
+                        alt="Club Logo" 
+                        className="w-12 h-12 object-contain rounded-full shrink-0"
+                      />
+                      <div className="text-left">
+                        <h1 className="text-xl sm:text-2xl font-black text-black uppercase tracking-tight leading-tight">
+                          {(settings.registeredClubName || settings.organizer || 'SASHTITALA AGRANI').toUpperCase()}
+                        </h1>
+                        <h2 className="text-xs sm:text-sm font-bold text-black uppercase tracking-wide leading-tight mt-0.5">
+                          {(settings.ordinalTitle || '47TH ANNUAL SPORTS MEET 2027').toUpperCase()}
                         </h2>
                       </div>
-                      <p className="text-[10px] text-black font-bold uppercase tracking-wider mt-1">
-                        CHAMPIONSHIP MEDAL WINNERS • AUTHORIZED BY MEET COMMITTEE
-                      </p>
                     </div>
+                    <div className="text-right">
+                      <h2 className="text-lg sm:text-xl font-black uppercase tracking-wider text-black">
+                        FINAL RANKINGS
+                      </h2>
+                    </div>
+                  </div>
 
-                    {/* Print selected events */}
-                    {eventsToPrint.length === 0 ? (
-                      <div className="p-6 text-center text-black font-semibold text-xs sm:text-sm">
-                        No events match the selected print filter.
-                      </div>
-                    ) : (
-                      <div className="space-y-5">
-                        {eventsToPrint.map((evt) => {
-                          const evtRes = results.find((r) => Number(r.eventNo) === Number(evt.Evt_No));
-                          const rankedFinalists = (evtRes?.finalists || [])
-                            .filter((f) => f.position && f.position >= 1 && f.position <= 6)
-                            .sort((a, b) => (a.position || 0) - (b.position || 0));
+                  {/* Thick Horizontal Divider */}
+                  <div className="border-b-2 border-black mb-4"></div>
 
-                          return (
-                            <div key={evt.Evt_No} className="avoid-break space-y-1.5 border-b border-black pb-4">
-                              <div className="flex items-center justify-between border-b-2 border-black pb-1 mb-1">
-                                <span className="font-black text-xs uppercase tracking-wide text-black">
-                                  Event #{evt.Evt_No}: {evt.Evt_Name} ({evt.Gender} • {evt.Height ? evt.Height.replace(/`/g, "'") : 'ALL'})
-                                </span>
-                                <span className="text-[10px] font-bold text-black uppercase">
-                                  {rankedFinalists.length > 0 ? `${rankedFinalists.length} Winner(s)` : 'No Winners Recorded'}
-                                </span>
-                              </div>
+                  {/* Print selected events */}
+                  {eventsToPrint.length === 0 ? (
+                    <div className="p-6 text-center text-black font-semibold text-xs sm:text-sm">
+                      No events match the selected print filter.
+                    </div>
+                  ) : (
+                    eventsToPrint.map((evt) => {
+                      const evtRes = results.find((r) => Number(r.eventNo) === Number(evt.Evt_No));
+                      const rankedFinalists = (evtRes?.winners && evtRes.winners.length > 0 ? evtRes.winners : (evtRes?.finalists || []))
+                        .filter((f) => (f.position || 0) > 0)
+                        .sort((a, b) => (a.position || 0) - (b.position || 0));
 
+                      const cleanHeight = evt.Height ? (evt.Height.toUpperCase() === 'ALL' ? 'ALL' : evt.Height.replace(/[`']/g, "'").replace(/''|``|"/g, '"')) : 'ALL';
+                      const isBroadJump = (evt.Evt_Name || '').toUpperCase().includes('BROAD JUMP');
+
+                      return (
+                        <div 
+                          key={evt.Evt_No} 
+                          className="bg-white p-0 border-0 outline-none shadow-none text-black font-sans avoid-break"
+                        >
+                          {/* Event Header Box */}
+                          <div className="border border-slate-300 rounded-xs py-1.5 px-3 mb-2 flex items-center text-sm font-sans">
+                            <span className="text-black font-normal mr-4">Event:</span>
+                            <span className="font-bold text-black mr-6">{evt.Evt_No}</span>
+                            <span className="font-bold text-black uppercase">
+                              {evt.Evt_Name} / {cleanHeight} / {evt.Gender}
+                            </span>
+                          </div>
+
+                          {/* Rankings Table as per RankingA4.png without box borders and with underlined headers */}
+                          <table className="w-full text-left text-sm border-collapse text-black mb-3 font-sans">
+                            <thead>
+                              <tr className="text-black font-bold">
+                                <th className="pb-1 text-left w-24 font-bold underline">Position</th>
+                                <th className="pb-1 text-left w-24 font-bold underline">Chest No</th>
+                                <th className="pb-1 text-left font-bold underline">Name (Club name)</th>
+                                {isBroadJump && (
+                                  <th className="pb-1 text-left w-28 font-bold underline">Jump</th>
+                                )}
+                              </tr>
+                            </thead>
+                            <tbody>
                               {rankedFinalists.length === 0 ? (
-                                <div className="py-2 text-center text-xs text-black italic">
-                                  Results not recorded yet for Event #{evt.Evt_No}
-                                </div>
+                                <tr>
+                                  <td colSpan={isBroadJump ? 4 : 3} className="py-2 text-slate-500 italic text-xs">
+                                    No rankings recorded yet for this event.
+                                  </td>
+                                </tr>
                               ) : (
-                                <>
-                                  <table className="w-full text-left text-xs border border-black border-collapse bg-white">
-                                    <thead>
-                                      <tr className="bg-white text-black font-black uppercase border-b-2 border-black">
-                                        <th className="py-1.5 px-2.5 w-16 text-center border-r border-black">Rank</th>
-                                        <th className="py-1.5 px-2.5 w-20 text-center border-r border-black">Chest #</th>
-                                        <th className="py-1.5 px-3 border-r border-black">Athlete Name</th>
-                                        <th className="py-1.5 px-3 border-r border-black">Club Name</th>
-                                        {evt.Evt_Name.toUpperCase().includes('BROAD JUMP') && (
-                                          <th className="py-1.5 px-2.5 text-center w-24 border-r border-black">Jump Record</th>
-                                        )}
-                                        <th className="py-1.5 px-2.5 text-center w-20 font-black">Points</th>
-                                      </tr>
-                                    </thead>
-                                    <tbody className="divide-y divide-black">
-                                      {rankedFinalists.map((f) => {
-                                        const rankLabel =
-                                          f.position === 1
-                                            ? '1st (Gold)'
-                                            : f.position === 2
-                                            ? '2nd (Silver)'
-                                            : f.position === 3
-                                            ? '3rd (Bronze)'
-                                            : `${f.position}th`;
+                                rankedFinalists.map((f, idx) => {
+                                  const club = getClubInfo(f.club || '');
+                                  const isSelf = (f.club || '').trim().toUpperCase() === 'SELF';
+                                  const clubNameStr = isSelf ? '' : (club?.name || f.club || '');
+                                  const clubText = clubNameStr ? `(${clubNameStr})` : '';
+                                  const posLabel = getPositionWord(f.position, idx);
 
-                                        return (
-                                          <tr key={f.chestNo} className="bg-white">
-                                            <td className="py-1.5 px-2.5 text-center font-black border-r border-black text-black">
-                                              {rankLabel}
-                                            </td>
-                                            <td className="py-1.5 px-2.5 text-center font-mono font-bold border-r border-black text-black">
-                                              #{f.chestNo}
-                                            </td>
-                                            <td className="py-1.5 px-3 font-bold uppercase border-r border-black text-black">
-                                              {f.candidateName}
-                                            </td>
-                                            <td className="py-1.5 px-3 uppercase font-semibold text-black border-r border-black">
-                                              {f.club || 'Independent'}
-                                            </td>
-                                            {evt.Evt_Name.toUpperCase().includes('BROAD JUMP') && (
-                                              <td className="py-1.5 px-2.5 text-center font-mono font-bold border-r border-black text-black">
-                                                {formatJumpBenchmark(f.jumpRecord || f.resultValue) || f.jumpRecord || f.resultValue || '—'}
-                                              </td>
-                                            )}
-                                            <td className="py-1.5 px-2.5 text-center font-mono font-black text-black">
-                                              +{f.points || getPointsForPosition(f.position || 0)} pts
-                                            </td>
-                                          </tr>
-                                        );
-                                      })}
-                                    </tbody>
-                                  </table>
-
-                                  {/* Broad Jump Record Analysis Callout */}
-                                  {evt.Evt_Name.toUpperCase().includes('BROAD JUMP') && evtRes?.highestRecord && (
-                                    <div className="mt-1.5 p-2 border border-black text-[11px] flex items-center justify-between text-black">
-                                      <div>
-                                        <span className="font-black uppercase">🏅 Meet Broad Jump Record: </span>
-                                        <span className="font-bold">
-                                          Highest Jump: <strong className="font-mono">{formatJumpBenchmark(evtRes.highestRecord.recordValue)}</strong> by {evtRes.highestRecord.candidateName} (#{evtRes.highestRecord.chestNo}{evtRes.highestRecord.club ? `, ${evtRes.highestRecord.club}` : ''})
-                                        </span>
-                                      </div>
-                                      <span className="font-black uppercase">
-                                        {evtRes.highestRecord.isRecordBroken ? '🏆 Record Broken!' : 'Record Stands'}
-                                      </span>
-                                    </div>
-                                  )}
-                                </>
+                                  return (
+                                    <tr key={f.chestNo} className="text-sm text-black">
+                                      <td className="py-1 text-left font-normal text-black w-24">
+                                        {posLabel}
+                                      </td>
+                                      <td className="py-1 text-left font-bold text-black w-24">
+                                        {f.chestNo}
+                                      </td>
+                                      <td className="py-1 text-left font-normal text-black uppercase">
+                                        {f.candidateName} {clubText}
+                                      </td>
+                                      {isBroadJump && (
+                                        <td className="py-1 text-left font-normal text-black w-28 font-mono">
+                                          {formatJumpBenchmark(f.jumpRecord || (f as any).resultValue) || f.jumpRecord || (f as any).resultValue || '—'}
+                                        </td>
+                                      )}
+                                    </tr>
+                                  );
+                                })
                               )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Signatures Footer */}
-                  <div className="mt-8 pt-3 border-t border-black grid grid-cols-3 gap-2 text-center text-[11px] font-bold text-black avoid-break">
-                    <div>
-                      <div className="h-8"></div>
-                      <div className="border-t border-black pt-1">Chief Track Judge</div>
-                    </div>
-                    <div>
-                      <div className="h-8"></div>
-                      <div className="border-t border-black pt-1">President of Meet</div>
-                    </div>
-                    <div>
-                      <div className="h-8"></div>
-                      <div className="border-t border-black pt-1">General Secretary</div>
-                    </div>
-                  </div>
-
+                            </tbody>
+                          </table>
+                        </div>
+                      );
+                    })
+                  )}
                 </div>
               </div>
             )}
@@ -1941,6 +2025,13 @@ export const RankingList: React.FC<RankingListProps> = ({
           </div>
         </div>
       )}
+
+      {/* 58mm Thermal Printer Page Setup Modal */}
+      <ThermalPageSetupModal 
+        isOpen={showThermalSetup} 
+        onClose={() => setShowThermalSetup(false)} 
+        settings={settings} 
+      />
 
     </div>
   );

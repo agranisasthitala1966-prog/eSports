@@ -8,9 +8,12 @@ import {
   X,
   Send,
   Ban,
-  Lock
+  Lock,
+  Printer,
+  FileSpreadsheet
 } from 'lucide-react';
 import { CandidateEditModal } from './CandidateEditModal';
+import { downloadSportsMeetExcel } from '../services/excelExport';
 import { 
   getCandidateRestrictionStatus, 
   getCandidateEditRestrictedMessage 
@@ -55,6 +58,12 @@ export const CandidateList: React.FC<CandidateListProps> = ({
   const [activeCategoryPill, setActiveCategoryPill] = useState<'ALL' | 'C' | 'B' | 'G'>('ALL');
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [editingCandidate, setEditingCandidate] = useState<Candidate | null>(null);
+  const [showPrintModal, setShowPrintModal] = useState(false);
+
+  // Sorted candidates by chest number for A4 printing
+  const chestWiseCandidates = useMemo(() => {
+    return [...candidates].sort((a, b) => (Number(a.chestNo) || 0) - (Number(b.chestNo) || 0));
+  }, [candidates]);
 
   // Unsynced candidates calculation
   const unsyncedCandidates = useMemo(() => {
@@ -185,7 +194,7 @@ export const CandidateList: React.FC<CandidateListProps> = ({
   };
 
   return (
-    <div className="max-w-4xl mx-auto space-y-3">
+    <div className={`max-w-4xl mx-auto space-y-3 candidate-web-content ${showPrintModal ? 'print:hidden' : ''}`}>
       
       {/* CARD CONTAINER */}
       <div className="bg-[#080d19] border border-slate-800 rounded-2xl shadow-2xl overflow-hidden text-slate-100 animate-in fade-in">
@@ -570,39 +579,88 @@ export const CandidateList: React.FC<CandidateListProps> = ({
         </div>
 
         {/* BOTTOM ACTION & SUMMARY BAR */}
-        <div className="px-3.5 py-3 bg-[#070b15] border-t border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs">
+        <div className="px-3.5 py-2.5 bg-[#070b15] border-t border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-2.5 text-xs">
           
-          <div className="text-slate-400 font-medium">
+          <div className="text-slate-400 font-medium text-center sm:text-left">
             Showing <span className="font-bold text-slate-200">{filteredCandidates.length}</span> of {candidates.length} candidates
             {totalFeesSum > 0 && (
               <span className="ml-2 text-amber-400 font-semibold">• Total: {settings.currencySymbol || '₹'}{totalFeesSum}</span>
             )}
           </div>
 
-          <div className="flex items-center gap-2">
-            {/* Export CSV Button */}
-            <button
-              type="button"
-              onClick={handleExportCSV}
-              className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
-              title="Export to CSV"
-            >
-              <Download className="w-3.5 h-3.5 text-slate-300" />
-              <span>CSV</span>
-            </button>
+          <div className="flex items-center justify-center gap-2 sm:gap-2.5 w-full sm:w-auto">
+            {/* Print, Excel & CSV Export Buttons - Only available on Server side, hidden on Client side */}
+            {mode !== 'client' && (
+              <>
+                {/* Print A4 Button (Icon Only) */}
+                <button
+                  type="button"
+                  onClick={() => setShowPrintModal(true)}
+                  className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-blue-600 hover:bg-blue-500 active:scale-95 text-white flex items-center justify-center transition-all cursor-pointer shadow-xs shrink-0"
+                  title="Print Candidate List A4 Sheet"
+                  aria-label="Print Candidate List A4 Sheet"
+                >
+                  <Printer className="w-4 h-4" />
+                </button>
 
-            {/* Send (Sync) Button with count in bracket */}
+                {/* Export Excel (.xlsx) with 'General Entry' & 'Event Allocation' (Icon Only) */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    downloadSportsMeetExcel({
+                      candidates,
+                      events,
+                      clubs,
+                      heats,
+                      results,
+                      settings,
+                    });
+                  }}
+                  className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-emerald-700 hover:bg-emerald-600 active:scale-95 text-white flex items-center justify-center transition-all cursor-pointer shadow-xs shrink-0"
+                  title="Download Excel Workbook (.xlsx) with 'General Entry' & 'Event Allocation' sheets"
+                  aria-label="Download Excel Workbook (.xlsx)"
+                >
+                  <FileSpreadsheet className="w-4 h-4 text-emerald-100" />
+                </button>
+
+                {/* Export CSV Button (Icon Only) */}
+                <button
+                  type="button"
+                  onClick={handleExportCSV}
+                  className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-200 flex items-center justify-center transition-all cursor-pointer shadow-xs shrink-0 border border-slate-700/60"
+                  title="Export to CSV"
+                  aria-label="Export to CSV"
+                >
+                  <Download className="w-4 h-4 text-slate-200" />
+                </button>
+              </>
+            )}
+
+            {/* Send (Sync) Button with count badge (Icon Only) */}
             <button
               type="button"
               onClick={onSyncToServer}
-              disabled={isSyncing}
-              className="px-3.5 py-1.5 rounded-xl bg-[#15803d] hover:bg-[#16a34a] active:scale-98 disabled:opacity-50 text-white font-bold text-xs flex items-center gap-1.5 shadow-md transition-all cursor-pointer"
-              title="Sync pending records to server database"
+              disabled={isSyncing || (mode === 'client' && (settings?.clientResponseEnabled === false))}
+              className={`relative w-9 h-9 sm:w-10 sm:h-10 rounded-xl active:scale-95 text-white flex items-center justify-center shadow-md transition-all shrink-0 ${
+                mode === 'client' && (settings?.clientResponseEnabled === false)
+                  ? 'opacity-40 cursor-not-allowed bg-slate-800 text-slate-500'
+                  : 'bg-[#15803d] hover:bg-[#16a34a] cursor-pointer disabled:opacity-50'
+              }`}
+              title={
+                mode === 'client' && (settings?.clientResponseEnabled === false)
+                  ? 'Client responses are paused by the server administrator'
+                  : isSyncing
+                  ? `Sending... (${unsyncedCandidates.length})`
+                  : `Sync pending records to server database (${unsyncedCandidates.length} pending)`
+              }
+              aria-label="Send / Sync Records"
             >
-              <Send className={`w-3.5 h-3.5 ${isSyncing ? 'animate-pulse' : ''}`} />
-              <span>
-                {isSyncing ? `Sending... (${unsyncedCandidates.length})` : `Send (${unsyncedCandidates.length})`}
-              </span>
+              <Send className={`w-4 h-4 ${isSyncing ? 'animate-pulse' : ''}`} />
+              {unsyncedCandidates.length > 0 && (
+                <span className="absolute -top-1.5 -right-1.5 px-1 min-w-[16px] h-4 rounded-full bg-amber-400 text-slate-950 font-black text-[10px] flex items-center justify-center shadow-xs pointer-events-none">
+                  {unsyncedCandidates.length}
+                </span>
+              )}
             </button>
           </div>
 
@@ -628,6 +686,138 @@ export const CandidateList: React.FC<CandidateListProps> = ({
           }}
           onClose={() => setEditingCandidate(null)}
         />
+      )}
+
+      {/* CANDIDATE LIST A4 PRINT MODAL (Matches CandidateListA4.png exactly) */}
+      {showPrintModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-1 sm:p-4 bg-black/85 backdrop-blur-2xs overflow-y-auto print:static print:inset-auto print:p-0 print:bg-white print:overflow-visible print:block print:w-full print:h-auto">
+          {/* Dynamic Print Stylesheet */}
+          <style>{`
+            @media print {
+              header, nav, footer, .candidate-web-content {
+                display: none !important;
+              }
+              @page {
+                size: A4 portrait !important;
+                margin: 8mm 8mm !important;
+              }
+              html, body {
+                width: 100% !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                background: #ffffff !important;
+                color: #000000 !important;
+                -webkit-print-color-adjust: exact !important;
+                print-color-adjust: exact !important;
+              }
+              .candidate-a4-printable-sheet {
+                display: block !important;
+                width: 100% !important;
+                max-width: 100% !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                background: #ffffff !important;
+                border: none !important;
+                outline: none !important;
+                box-shadow: none !important;
+              }
+            }
+          `}</style>
+          <div className="bg-slate-900 border border-slate-700 rounded-xl sm:rounded-2xl w-full max-w-5xl max-h-[96vh] flex flex-col shadow-2xl overflow-hidden text-slate-900 print:bg-white print:border-none print:shadow-none print:max-h-none print:w-full print:rounded-none print:overflow-visible print:p-0">
+            {/* Modal Actions Bar (Hidden on print) */}
+            <div className="px-3 sm:px-6 py-2.5 sm:py-3.5 bg-slate-900 text-white flex items-center justify-between border-b border-slate-800 print:hidden">
+              <div className="flex items-center gap-2">
+                <Printer className="w-4 h-4 text-blue-400" />
+                <h3 className="font-bold text-xs sm:text-base">Candidate List A4 Print Preview</h3>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => window.print()}
+                  className="px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-md cursor-pointer"
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  <span>Print Document</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowPrintModal(false)}
+                  className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Scrollable Preview Canvas */}
+            <div className="p-2 sm:p-6 overflow-y-auto flex-1 bg-slate-200/80 flex justify-center print:p-0 print:bg-white print:overflow-visible">
+              <div 
+                className="candidate-a4-printable-sheet bg-white w-full max-w-[210mm] min-h-[297mm] p-6 sm:p-10 shadow-md border-0 outline-none text-black print:p-0 print:m-0 print:border-none print:shadow-none print:outline-none print:bg-white print:max-w-none print:min-h-0"
+                id="printable-candidate-list"
+                style={{ fontFamily: 'Consolas, "Courier New", monospace' }}
+              >
+                {/* Top Header: Logo + Club / Meet Title on Left | "Name list (Chest No. wise)" on Right */}
+                <div className="flex items-center justify-between mb-4 pb-1 text-black font-bold">
+                  <div className="flex items-center gap-2">
+                    <img
+                      src={settings.registeredClubLogo || clubs[0]?.logoUrl || '/icon.png'}
+                      alt="Club Logo"
+                      className="w-6 h-6 object-contain rounded-full shrink-0"
+                    />
+                    <span className="font-bold text-sm sm:text-base text-black tracking-tight">
+                      {settings.registeredClubName || settings.organizer || 'Sasthitala Agrani'} / {settings.ordinalTitle || '47th Annual Sports Meet 2027'}
+                    </span>
+                  </div>
+                  <div className="font-bold text-sm sm:text-base text-black tracking-tight">
+                    Name list (Chest No. wise)
+                  </div>
+                </div>
+
+                {/* Table: In Consolas font with bold headers and only chest number in bold in rows */}
+                <table className="w-full text-left border-collapse bg-white text-black" style={{ fontFamily: 'Consolas, "Courier New", monospace' }}>
+                  <thead>
+                    <tr className="border-b border-gray-300 text-sm text-black font-bold">
+                      <th className="py-1 px-2 text-center w-12 font-bold">Sl.</th>
+                      <th className="py-1 px-3 text-center w-16 font-bold">Ch#</th>
+                      <th className="py-1 px-3 text-left font-bold">Name (Club)</th>
+                      <th className="py-1 px-3 text-left w-32 font-bold">Events</th>
+                      <th className="py-1 px-3 text-left w-36 font-bold">Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {chestWiseCandidates.map((cand, idx) => {
+                      const isDue = (cand.feeStatus || '').toUpperCase().includes('DUE') || (cand.feeStatus || '').toUpperCase().includes('UNPAID');
+                      const eventsStr = (cand.selectedEvents || []).map(Number).sort((a, b) => a - b).join(',');
+                      const clubStr = cand.club ? `(${cand.club})` : '';
+                      const amountStr = `₹ ${Number(cand.totalFees || 0).toFixed(2)} (${isDue ? 'D' : 'P'})`;
+
+                      return (
+                        <tr key={cand.id || cand.chestNo} className="border-b border-gray-200 text-sm text-black">
+                          <td className="py-0.5 px-2 text-center font-normal text-black w-12 leading-tight">
+                            {idx + 1}
+                          </td>
+                          <td className="py-0.5 px-3 text-center font-bold text-black w-16 leading-tight">
+                            {cand.chestNo}
+                          </td>
+                          <td className="py-0.5 px-3 text-left font-normal text-black leading-tight">
+                            <span className="uppercase font-normal">{cand.name}</span>
+                            {clubStr && <span className="ml-2 font-normal"> {clubStr}</span>}
+                          </td>
+                          <td className="py-0.5 px-3 text-left font-normal text-black w-32 leading-tight">
+                            {eventsStr || '—'}
+                          </td>
+                          <td className="py-0.5 px-3 text-left font-normal text-black w-36 whitespace-nowrap leading-tight">
+                            {amountStr}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
     </div>

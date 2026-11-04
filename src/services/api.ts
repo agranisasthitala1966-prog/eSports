@@ -1,5 +1,5 @@
 import { SportEvent, Candidate, Club, SportsMeetSettings, EventHeat, EventResult, DatabaseDump, ClientUpload } from '../types';
-import { firestoreSync } from './firestoreSync';
+import { firestoreSync, sanitizeForFirestore, isFirestoreQuotaExhausted } from './firestoreSync';
 import { clientStorage } from './clientStorage';
 import { collection, getDocs, doc, setDoc, deleteDoc } from 'firebase/firestore';
 import { db } from './firebase';
@@ -91,6 +91,14 @@ export const api = {
 
   async sendHeartbeat(sessionId: string): Promise<{ valid: boolean; reason?: string }> {
     try {
+      const res = await fetch(`${API_BASE}/auth/heartbeat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId, deviceId: getDeviceId() }),
+      }).then(r => r.json()).catch(() => null);
+      if (res && res.valid !== undefined) {
+        return res;
+      }
       return await firestoreSync.sendHeartbeat(sessionId);
     } catch {
       return { valid: true };
@@ -147,7 +155,13 @@ export const api = {
     candidates: Candidate[];
     totalFees?: number;
     notes?: string;
+    clubMobile?: string;
   }): Promise<{ success: boolean; message: string; upload: ClientUpload }> {
+    const cachedSettings = clientStorage.getCachedSettings();
+    if (cachedSettings && cachedSettings.clientResponseEnabled === false) {
+      throw new Error('Client response submission is paused by the server administrator.');
+    }
+
     try {
       // 1. Write to Cloud Firestore so any device/container in the world sees it instantly
       const cloudRes = await firestoreSync.submitUpload(data);
@@ -323,7 +337,7 @@ export const api = {
 
   async saveEvent(event: SportEvent): Promise<SportEvent> {
     try {
-      await setDoc(doc(db, 'events', `evt_${event.Evt_No}`), event);
+      await firestoreSync.saveEvent(event);
     } catch {}
     const res = await fetch(`${API_BASE}/events`, {
       method: 'POST',
@@ -337,7 +351,7 @@ export const api = {
 
   async updateEvent(evtNo: number, event: Partial<SportEvent>): Promise<SportEvent> {
     try {
-      await setDoc(doc(db, 'events', `evt_${evtNo}`), event, { merge: true });
+      await firestoreSync.saveEvent({ ...event, Evt_No: evtNo } as SportEvent);
     } catch {}
     const res = await fetch(`${API_BASE}/events/${evtNo}`, {
       method: 'PUT',
@@ -351,7 +365,7 @@ export const api = {
 
   async deleteEvent(evtNo: number): Promise<void> {
     try {
-      await deleteDoc(doc(db, 'events', `evt_${evtNo}`));
+      await firestoreSync.deleteEvent(evtNo);
     } catch {}
     const res = await fetch(`${API_BASE}/events/${evtNo}`, { method: 'DELETE' });
     if (!res.ok) throw new Error('Failed to delete event');
@@ -386,7 +400,7 @@ export const api = {
       fetch(`${API_BASE}/candidates`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(candidate),
+        body: JSON.stringify(saved),
       }).catch(() => {});
       return saved;
     } catch {
@@ -488,9 +502,9 @@ export const api = {
 
   async saveClub(club: Partial<Club>): Promise<Club> {
     const clubId = club.id || `club_${Date.now()}`;
-    const cleanClub = { ...club, id: clubId };
+    const cleanClub = { ...club, id: clubId } as Club;
     try {
-      await setDoc(doc(db, 'clubs', `club_${clubId}`), cleanClub);
+      await firestoreSync.saveClub(cleanClub);
     } catch {}
     const res = await fetch(`${API_BASE}/clubs`, {
       method: 'POST',
@@ -503,8 +517,9 @@ export const api = {
   },
 
   async updateClub(id: string, club: Partial<Club>): Promise<Club> {
+    const cleanClub = { ...club, id } as Club;
     try {
-      await setDoc(doc(db, 'clubs', `club_${id}`), { ...club, id }, { merge: true });
+      await firestoreSync.saveClub(cleanClub);
     } catch {}
     const res = await fetch(`${API_BASE}/clubs/${id}`, {
       method: 'PUT',
@@ -518,7 +533,7 @@ export const api = {
 
   async deleteClub(id: string): Promise<void> {
     try {
-      await deleteDoc(doc(db, 'clubs', `club_${id}`));
+      await firestoreSync.deleteClub(id);
     } catch {}
     const res = await fetch(`${API_BASE}/clubs/${id}`, { method: 'DELETE' });
     if (!res.ok) throw new Error('Failed to delete club');
@@ -642,6 +657,12 @@ export const api = {
     return res.json();
   },
 
+  async exportExcel(): Promise<Blob> {
+    const res = await fetch(`${API_BASE}/db/export-excel`);
+    if (!res.ok) throw new Error('Failed to export Excel workbook');
+    return res.blob();
+  },
+
   async restoreDatabase(dump: any): Promise<{ success: boolean; message: string; stats: any }> {
     const res = await fetch(`${API_BASE}/db/restore`, {
       method: 'POST',
@@ -706,6 +727,30 @@ export const api = {
   },
 
   async createRawRow(table: string, data: any): Promise<any> {
+    try {
+      if (table === 'candidates') {
+        await firestoreSync.saveCandidate(data);
+      } else if (table === 'heats') {
+        await firestoreSync.saveHeat(data);
+      } else if (table === 'results') {
+        await firestoreSync.saveResult(data);
+      } else if (table === 'settings') {
+        await firestoreSync.saveSettings(data);
+      } else if (table === 'events') {
+        await firestoreSync.saveEvent(data);
+      } else if (table === 'clubs') {
+        await firestoreSync.saveClub(data);
+      }
+    } catch (err) {
+      console.warn('[Firestore] Raw row create warning:', err);
+    }
+
+    if (table === 'candidates') {
+      try {
+        clientStorage.saveCandidate(data);
+      } catch {}
+    }
+
     const res = await fetch(`${API_BASE}/db/raw/${table}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -716,6 +761,41 @@ export const api = {
   },
 
   async updateRawRow(table: string, id: string, data: any): Promise<any> {
+    // 1. Sync to Cloud Firestore first so live subscriptions & future fetches reflect the edit
+    try {
+      if (table === 'candidates') {
+        await firestoreSync.saveCandidate({ ...data, id: data.id || id });
+      } else if (table === 'heats') {
+        await firestoreSync.saveHeat(data);
+      } else if (table === 'results') {
+        await firestoreSync.saveResult(data);
+      } else if (table === 'settings') {
+        await firestoreSync.saveSettings(data);
+      } else if (table === 'events') {
+        await firestoreSync.saveEvent({ ...data, Evt_No: data.Evt_No !== undefined ? data.Evt_No : id });
+      } else if (table === 'clubs') {
+        await firestoreSync.saveClub({ ...data, id: data.id || id });
+      }
+    } catch (err) {
+      console.warn('[Firestore] Raw row update warning:', err);
+    }
+
+    // 2. Sync to clientStorage if candidates
+    if (table === 'candidates') {
+      try {
+        const cands = clientStorage.getCandidates();
+        const candId = data.id || id;
+        const cIdx = cands.findIndex((c) => c.id === candId || (c.chestNo && String(c.chestNo) === String(data.chestNo || id)));
+        if (cIdx >= 0) {
+          cands[cIdx] = { ...cands[cIdx], ...data };
+        } else {
+          cands.push(data);
+        }
+        clientStorage.saveCandidates(cands);
+      } catch {}
+    }
+
+    // 3. Update server endpoint
     const res = await fetch(`${API_BASE}/db/raw/${table}/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -726,6 +806,28 @@ export const api = {
   },
 
   async deleteRawRow(table: string, id: string): Promise<any> {
+    try {
+      if (table === 'candidates') {
+        await firestoreSync.deleteCandidate(id);
+      } else if (table === 'heats') {
+        await firestoreSync.deleteHeat(id);
+      } else if (table === 'events') {
+        await firestoreSync.deleteEvent(Number(id));
+      } else if (table === 'clubs') {
+        await firestoreSync.deleteClub(id);
+      } else if (table === 'clientUploads') {
+        await firestoreSync.deleteUpload(id);
+      }
+    } catch (err) {
+      console.warn('[Firestore] Raw row delete warning:', err);
+    }
+
+    if (table === 'candidates') {
+      try {
+        clientStorage.deleteCandidate(id);
+      } catch {}
+    }
+
     const res = await fetch(`${API_BASE}/db/raw/${table}/${id}`, {
       method: 'DELETE',
     });
@@ -734,6 +836,11 @@ export const api = {
   },
 
   async updateRawTable(table: string, data: any): Promise<any> {
+    if (table === 'events' && Array.isArray(data)) {
+      try {
+        await firestoreSync.saveEventsBulk(data);
+      } catch {}
+    }
     const res = await fetch(`${API_BASE}/db/raw/${table}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -741,6 +848,53 @@ export const api = {
     });
     if (!res.ok) throw new Error(`Failed to update table ${table}`);
     return res.json();
+  },
+
+  // Real-time Server-Sent Events subscription for instantaneous push updates across devices
+  subscribeServerStream(onUpdate: (data: any) => void): () => void {
+    if (typeof window === 'undefined' || !window.EventSource) {
+      return () => {};
+    }
+    let es: EventSource | null = null;
+    let isClosed = false;
+
+    const connect = () => {
+      if (isClosed) return;
+      try {
+        es = new EventSource(`${API_BASE}/sync-stream`);
+        es.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data && (data.type === 'db_updated' || data.type === 'connected')) {
+              onUpdate(data);
+            }
+          } catch {}
+        };
+        es.onerror = () => {
+          if (es) {
+            es.close();
+            es = null;
+          }
+          if (!isClosed) {
+            setTimeout(connect, 3000);
+          }
+        };
+      } catch {
+        if (!isClosed) {
+          setTimeout(connect, 5000);
+        }
+      }
+    };
+
+    connect();
+
+    return () => {
+      isClosed = true;
+      if (es) {
+        es.close();
+        es = null;
+      }
+    };
   },
 
   // Aliases & Utilities
@@ -757,7 +911,15 @@ export const api = {
   },
 
   async resetToDefaults(): Promise<any> {
-    return this.seedSampleData();
+    clientStorage.clearCandidates();
+    try {
+      const res = await fetch(`${API_BASE}/db/factory-reset`, { method: 'POST' });
+      if (!res.ok) throw new Error('Failed to reset database');
+      return res.json();
+    } catch (e) {
+      console.warn('[API] /api/db/factory-reset fallback to purgeAll:', e);
+      return this.purgeAllExceptEvents();
+    }
   },
 };
 

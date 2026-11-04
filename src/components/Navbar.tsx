@@ -22,7 +22,9 @@ import {
   Unlock,
   QrCode,
   Globe,
-  ChevronDown
+  ChevronDown,
+  Sparkles,
+  FileSpreadsheet
 } from 'lucide-react';
 import { SportsMeetSettings } from '../types';
 import { QrLinkModal } from './QrLinkModal';
@@ -42,6 +44,7 @@ interface NavbarProps {
   onOpenResetPin: () => void;
   onLockServer: () => void;
   pendingUploadsCount: number;
+  onDownloadExcel?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -59,6 +62,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenResetPin,
   onLockServer,
   pendingUploadsCount,
+  onDownloadExcel,
 }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [showQrModal, setShowQrModal] = useState(false);
@@ -157,22 +161,22 @@ export const Navbar: React.FC<NavbarProps> = ({
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-14 sm:h-16 gap-2 sm:gap-4">
           
-          {/* Brand & Logo (shrink-0 so never squeezed or overlapped) */}
-          <div className="flex items-center gap-2.5 sm:gap-3 shrink-0 min-w-0">
-            <img 
-              src="/icon.png" 
-              alt="eSports Logo" 
-              className="w-9 h-9 sm:w-11 sm:h-11 shrink-0 object-contain"
-            />
-            <div className="shrink-0">
-              <div className="flex items-center gap-2">
-                <span className="text-lg sm:text-2xl font-black tracking-tight font-serif">
-                  <span style={{ color: '#ff0000' }} className="text-[#ff0000]">e</span><span className="text-blue-600">Sports</span>
-                </span>
-                <span className="hidden md:inline-block px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wider bg-blue-50 text-blue-700 rounded-full border border-blue-200">
-                  Sports Management System
-                </span>
-              </div>
+          {/* Brand & Logo */}
+          <div className="flex items-center gap-2.5 sm:gap-3 shrink-0 min-w-0 select-none">
+            <div className="relative shrink-0">
+              <img 
+                src="/icon.png" 
+                alt="eSports Logo" 
+                className="w-9 h-9 sm:w-11 sm:h-11 shrink-0 object-contain"
+              />
+            </div>
+            <div className="shrink-0 flex flex-col justify-center">
+              <span className="text-lg sm:text-2xl font-black tracking-tight font-serif leading-none">
+                <span style={{ color: '#ff0000' }} className="text-[#ff0000]">e</span><span className="text-blue-600">Sports</span>
+              </span>
+              <span className="text-[9px] sm:text-[11px] font-semibold tracking-wide text-blue-700 leading-tight mt-0.5 whitespace-nowrap">
+                Sports Management System
+              </span>
             </div>
           </div>
 
@@ -181,7 +185,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             
             {/* Server Online/Offline Indicator */}
             <div className="hidden xl:flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-slate-100 border border-slate-200 text-slate-700">
-              <span className={`w-2 h-2 rounded-full ${serverOnline ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
+              <span className={`w-2 h-2 rounded-full ${serverOnline ? 'bg-emerald-500 animate-blink-1-5s' : 'bg-rose-500'}`} />
               <span>{serverOnline ? 'Server Online' : 'Offline Mode'}</span>
             </div>
 
@@ -190,10 +194,18 @@ export const Navbar: React.FC<NavbarProps> = ({
               <button
                 id="header-sync-btn"
                 onClick={onSyncTrigger}
-                disabled={isSyncing || unsyncedCount === 0}
-                title={unsyncedCount > 0 ? `${unsyncedCount} new/updated entries ready to upload to server` : 'All entries synced'}
+                disabled={isSyncing || unsyncedCount === 0 || !(settings?.clientResponseEnabled ?? true)}
+                title={
+                  !(settings?.clientResponseEnabled ?? true)
+                    ? 'Client submissions paused by server'
+                    : unsyncedCount > 0
+                    ? `${unsyncedCount} new/updated entries ready to upload to server`
+                    : 'All entries synced'
+                }
                 className={`flex items-center gap-2 px-3 py-1.5 sm:px-3.5 sm:py-2 rounded-xl text-xs sm:text-sm font-bold transition-all shadow-xs cursor-pointer ${
-                  unsyncedCount > 0
+                  !(settings?.clientResponseEnabled ?? true)
+                    ? 'opacity-40 cursor-not-allowed bg-slate-100 text-slate-400 border border-slate-200'
+                    : unsyncedCount > 0
                     ? 'bg-amber-500 hover:bg-amber-600 text-white shadow-amber-500/20'
                     : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200'
                 }`}
@@ -209,71 +221,82 @@ export const Navbar: React.FC<NavbarProps> = ({
             <button
               type="button"
               id="header-qr-link-btn"
+              disabled={currentMode === 'client' && !(settings?.clientResponseEnabled ?? true)}
               onClick={() => setShowQrModal(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 transition-all cursor-pointer shadow-2xs active:scale-98"
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-2xs active:scale-98 ${
+                currentMode === 'client' && !(settings?.clientResponseEnabled ?? true)
+                  ? 'opacity-40 cursor-not-allowed bg-slate-100 text-slate-400 border border-slate-200'
+                  : 'bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300'
+              }`}
               title="View & Share QR Link"
             >
               <QrCode className="w-3.5 h-3.5 text-amber-600 shrink-0" />
               <span>QR Link</span>
             </button>
 
-            {/* Mode Switcher Toggle: Public vs Server */}
-            <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200">
-              <button
-                id="toggle-client-mode"
-                onClick={() => {
-                  setMode('client');
-                  if (!clientTabs.some(t => t.id === activeTab)) {
-                    setActiveTab('enroll');
-                  }
-                }}
-                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                  currentMode === 'client'
-                    ? 'bg-white text-blue-700 shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                <Smartphone className="w-3.5 h-3.5" />
-                <span>Public</span>
-              </button>
+            {/* Mode Controls: At client enroll page there will be no server tab */}
+            {currentMode === 'client' ? (
+              <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                  <Smartphone className="w-3.5 h-3.5" />
+                  <span>Public Portal</span>
+                </div>
+                {/* Discreet PIN Login button for authorized administrators */}
+                <button
+                  type="button"
+                  id="client-pin-login-btn"
+                  onClick={onPromptPin}
+                  className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer border border-slate-200"
+                  title="PIN Login"
+                  aria-label="Server PIN Login"
+                >
+                  <Lock className="w-3.5 h-3.5 text-slate-500" />
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200">
+                  <button
+                    id="toggle-client-mode"
+                    onClick={() => {
+                      setMode('client');
+                      if (!clientTabs.some(t => t.id === activeTab)) {
+                        setActiveTab('enroll');
+                      }
+                    }}
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold text-slate-600 hover:text-slate-900 transition-all cursor-pointer"
+                  >
+                    <Smartphone className="w-3.5 h-3.5" />
+                    <span>Public</span>
+                  </button>
 
-              <button
-                id="toggle-server-mode"
-                onClick={handleServerModeClick}
-                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                  currentMode === 'server'
-                    ? 'bg-blue-600 text-white shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-                title={!isServerAuthenticated ? 'PIN Protected - Click to authenticate' : 'Server Operations'}
-              >
-                {isServerAuthenticated ? <Unlock className="w-3.5 h-3.5" /> : <Lock className="w-3.5 h-3.5 text-amber-500" />}
-                <span>Server</span>
-                {pendingUploadsCount > 0 && currentMode !== 'server' && (
-                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
+                  <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-blue-600 text-white shadow-xs">
+                    <Unlock className="w-3.5 h-3.5" />
+                    <span>Server</span>
+                  </div>
+                </div>
+
+                {/* Server Mode Tools: Reset PIN and Lock */}
+                {isServerAuthenticated && (
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={onOpenResetPin}
+                      className="p-2 text-slate-600 hover:text-amber-600 hover:bg-amber-50 rounded-xl transition-colors cursor-pointer border border-slate-200"
+                      title="Reset / Change Server Login PIN"
+                    >
+                      <KeyRound className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={onLockServer}
+                      className="p-2 text-rose-600 hover:bg-rose-50 rounded-xl transition-colors cursor-pointer border border-rose-200 bg-rose-50/50"
+                      title="Lock Server Control"
+                    >
+                      <Lock className="w-4 h-4 text-rose-600" />
+                    </button>
+                  </div>
                 )}
-              </button>
-            </div>
-
-            {/* Server Mode Tools: Reset PIN and Lock */}
-            {currentMode === 'server' && isServerAuthenticated && (
-              <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={onOpenResetPin}
-                  className="p-2 text-slate-600 hover:text-amber-600 hover:bg-amber-50 rounded-xl transition-colors cursor-pointer border border-slate-200"
-                  title="Reset / Change Server Login PIN"
-                >
-                  <KeyRound className="w-4 h-4" />
-                </button>
-                <button
-                  type="button"
-                  onClick={onLockServer}
-                  className="p-2 text-slate-600 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-colors cursor-pointer border border-slate-200"
-                  title="Lock Server Control"
-                >
-                  <Lock className="w-4 h-4" />
-                </button>
               </div>
             )}
 
@@ -291,45 +314,106 @@ export const Navbar: React.FC<NavbarProps> = ({
 
           {/* Mobile Right Controls: Mode Toggle & Hamburger Button (sm:hidden) */}
           <div className="flex sm:hidden items-center gap-1.5 shrink-0">
-            {/* Mode Switcher Toggle: Compact for mobile */}
-            <div className="flex items-center bg-slate-100 p-0.5 rounded-lg border border-slate-200">
-              <button
-                id="toggle-client-mode-mobile"
-                onClick={() => {
-                  setMode('client');
-                  if (!clientTabs.some(t => t.id === activeTab)) {
-                    setActiveTab('enroll');
+            {currentMode === 'client' ? (
+              <div className="flex items-center gap-1.5">
+                {/* 1. Live indicator with green dot only by 1.5 second duration visible-invisible mode (turns red non-blinking if disabled) */}
+                <div
+                  className="flex items-center justify-center px-0.5 py-1"
+                  title={
+                    !(settings?.clientResponseEnabled ?? true)
+                      ? 'Client responses disabled by server'
+                      : serverOnline
+                      ? 'Live - 1.5s visible-invisible mode'
+                      : 'Offline Mode'
                   }
-                }}
-                className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-bold transition-all cursor-pointer ${
-                  currentMode === 'client'
-                    ? 'bg-white text-blue-700 shadow-2xs'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                <Smartphone className="w-3 h-3" />
-                <span>Public</span>
-              </button>
+                >
+                  <span
+                    className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                      !(settings?.clientResponseEnabled ?? true)
+                        ? 'bg-rose-600'
+                        : serverOnline
+                        ? 'bg-emerald-500 animate-blink-1-5s'
+                        : 'bg-rose-500'
+                    }`}
+                  />
+                </div>
 
-              <button
-                id="toggle-server-mode-mobile"
-                onClick={handleServerModeClick}
-                className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-bold transition-all cursor-pointer ${
-                  currentMode === 'server'
-                    ? 'bg-blue-600 text-white shadow-2xs'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-                title={!isServerAuthenticated ? 'PIN Protected - Click to authenticate' : 'Server Operations'}
-              >
-                {isServerAuthenticated ? <Unlock className="w-3 h-3" /> : <Lock className="w-3 h-3 text-amber-500" />}
-                <span>Server</span>
-                {pendingUploadsCount > 0 && currentMode !== 'server' && (
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping" />
-                )}
-              </button>
-            </div>
+                {/* 2. Upload button at the left of QR icon button with icon only */}
+                <button
+                  type="button"
+                  id="mobile-client-upload-btn"
+                  onClick={onSyncTrigger}
+                  disabled={isSyncing || unsyncedCount === 0 || !(settings?.clientResponseEnabled ?? true)}
+                  className={`p-1.5 rounded-lg border transition-all cursor-pointer shrink-0 ${
+                    !(settings?.clientResponseEnabled ?? true)
+                      ? 'opacity-40 cursor-not-allowed bg-slate-100 text-slate-400 border-slate-200'
+                      : unsyncedCount > 0
+                      ? 'bg-amber-500 hover:bg-amber-600 text-white border-amber-600 shadow-2xs'
+                      : 'bg-slate-50 hover:bg-slate-100 text-slate-600 border-slate-200'
+                  }`}
+                  title={
+                    !(settings?.clientResponseEnabled ?? true)
+                      ? 'Client submissions paused by server'
+                      : unsyncedCount > 0
+                      ? `Upload (${unsyncedCount})`
+                      : 'All Uploaded'
+                  }
+                  aria-label="Upload to server"
+                >
+                  <CloudUpload className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} />
+                </button>
 
-            {/* Mobile Hamburger menu button */}
+                {/* 3. QR button with mini icon only to the left of the Menu */}
+                <button
+                  type="button"
+                  id="mobile-client-qr-btn"
+                  disabled={!(settings?.clientResponseEnabled ?? true)}
+                  onClick={() => setShowQrModal(true)}
+                  className={`p-1.5 rounded-lg border transition-all cursor-pointer shrink-0 ${
+                    !(settings?.clientResponseEnabled ?? true)
+                      ? 'opacity-40 cursor-not-allowed bg-slate-100 text-slate-400 border-slate-200'
+                      : 'bg-amber-50 hover:bg-amber-100 text-amber-700 border-amber-300'
+                  }`}
+                  title={!(settings?.clientResponseEnabled ?? true) ? 'Client responses paused by server' : 'QR Link'}
+                  aria-label="QR Link"
+                >
+                  <QrCode className="w-4 h-4 text-amber-600" />
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-1.5">
+                {/* 1. Live indicator with green dot only by 1.5 second duration visible-invisible mode */}
+                <div className="flex items-center justify-center px-0.5 py-1" title={serverOnline ? "Server Live (1.5s visible-invisible)" : "Server Offline"}>
+                  <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${serverOnline ? 'bg-emerald-500 animate-blink-1-5s' : 'bg-rose-500'}`} />
+                </div>
+
+                {/* 2. QR Link button with icon only */}
+                <button
+                  type="button"
+                  id="mobile-header-qr-icon-btn"
+                  onClick={() => setShowQrModal(true)}
+                  className="p-1.5 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-300 transition-colors cursor-pointer shrink-0"
+                  title="QR Link"
+                  aria-label="QR Link"
+                >
+                  <QrCode className="w-4 h-4 text-amber-600" />
+                </button>
+
+                {/* 3. Server lock red button with icon only, situated at the very left of menu */}
+                <button
+                  type="button"
+                  id="mobile-header-server-lock-btn"
+                  onClick={onLockServer}
+                  className="p-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-300 transition-colors cursor-pointer shrink-0"
+                  title="Lock Server"
+                  aria-label="Lock Server"
+                >
+                  <Lock className="w-4 h-4 text-rose-600" />
+                </button>
+              </div>
+            )}
+
+            {/* 4. Mobile Hamburger menu button */}
             <button
               id="navbar-hamburger-btn"
               onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
@@ -484,74 +568,6 @@ export const Navbar: React.FC<NavbarProps> = ({
         </nav>
       </div>
 
-      {/* Mobile Screen Friendly Secondary Action Bar (sm:hidden) */}
-      <div className="sm:hidden bg-slate-50/95 border-t border-slate-200/80 px-3 py-1.5 flex items-center justify-between gap-2 shadow-2xs">
-        {/* Left Side Actions */}
-        <div className="flex items-center gap-1.5 min-w-0">
-          {currentMode === 'client' ? (
-            <button
-              id="mobile-header-sync-btn"
-              onClick={onSyncTrigger}
-              disabled={isSyncing || unsyncedCount === 0}
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer ${
-                unsyncedCount > 0
-                  ? 'bg-amber-500 hover:bg-amber-600 text-white'
-                  : 'bg-white text-slate-700 border border-slate-200'
-              }`}
-            >
-              <CloudUpload className={`w-3.5 h-3.5 shrink-0 ${isSyncing ? 'animate-spin' : ''}`} />
-              <span className="truncate">
-                {isSyncing ? 'Uploading...' : unsyncedCount > 0 ? `Upload (${unsyncedCount})` : 'All Uploaded'}
-              </span>
-            </button>
-          ) : (
-            currentMode === 'server' && isServerAuthenticated && (
-              <div className="flex items-center gap-1.5">
-                <button
-                  type="button"
-                  id="mobile-server-pin-btn"
-                  onClick={onOpenResetPin}
-                  className="flex items-center gap-1 px-2.5 py-1 bg-white hover:bg-amber-50 border border-slate-200 hover:border-amber-300 rounded-lg text-xs font-bold text-slate-700 hover:text-amber-800 shadow-2xs transition-colors cursor-pointer"
-                  title="Reset / Change Server Login PIN"
-                >
-                  <KeyRound className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                  <span>PIN</span>
-                </button>
-                <button
-                  type="button"
-                  id="mobile-server-lock-btn"
-                  onClick={onLockServer}
-                  className="flex items-center gap-1 px-2.5 py-1 bg-white hover:bg-rose-50 border border-slate-200 hover:border-rose-300 rounded-lg text-xs font-bold text-slate-700 hover:text-rose-700 shadow-2xs transition-colors cursor-pointer"
-                  title="Lock Server Control"
-                >
-                  <Lock className="w-3.5 h-3.5 text-rose-600 shrink-0" />
-                  <span>Lock</span>
-                </button>
-              </div>
-            )
-          )}
-        </div>
-
-        {/* Right Side Actions: QR Link & Status */}
-        <div className="flex items-center gap-2 shrink-0">
-          <button
-            type="button"
-            id="mobile-header-qr-link-btn"
-            onClick={() => setShowQrModal(true)}
-            className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 transition-all cursor-pointer shadow-2xs"
-            title="View & Share QR Link"
-          >
-            <QrCode className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-            <span>QR Link</span>
-          </button>
-
-          <div className="flex items-center gap-1 text-[11px] font-semibold text-slate-600">
-            <span className={`w-2 h-2 rounded-full ${serverOnline ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
-            <span>{serverOnline ? 'Live' : 'Offline'}</span>
-          </div>
-        </div>
-      </div>
-
       {/* Mobile Drawer Navigation */}
       {mobileMenuOpen && (
         <div className="lg:hidden bg-white border-b border-slate-200 px-4 pt-2 pb-4 space-y-1 shadow-lg">
@@ -596,6 +612,25 @@ export const Navbar: React.FC<NavbarProps> = ({
             );
           })}
 
+          {/* Client Mode: Place server icon button inside menu with icon only as the last item */}
+          {currentMode === 'client' && (
+            <div className="pt-2 mt-2 border-t border-slate-100 flex items-center justify-center">
+              <button
+                type="button"
+                id="drawer-server-pin-login-btn"
+                onClick={() => {
+                  setMobileMenuOpen(false);
+                  onPromptPin();
+                }}
+                className="p-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-900 border border-slate-200 transition-colors cursor-pointer"
+                title="Server Login"
+                aria-label="Server Login"
+              >
+                <Lock className="w-5 h-5 text-slate-600" />
+              </button>
+            </div>
+          )}
+
           {/* Settings Group for Mobile in Server Mode */}
           {currentMode === 'server' && (
             <div className="pt-2 mt-2 border-t border-slate-100 space-y-1">
@@ -634,8 +669,8 @@ export const Navbar: React.FC<NavbarProps> = ({
         </div>
       )}
 
-      {/* QR Link Modal */}
-      <QrLinkModal isOpen={showQrModal} onClose={() => setShowQrModal(false)} />
+      {/* QR Link Modal: In client mode, dedicated Client Enroll QR Code; in server mode, full dual-target QR */}
+      <QrLinkModal isOpen={showQrModal} onClose={() => setShowQrModal(false)} mode={currentMode} />
     </header>
   );
 };

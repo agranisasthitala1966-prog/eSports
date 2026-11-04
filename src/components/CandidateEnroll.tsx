@@ -5,6 +5,7 @@ import {
   Candidate, 
   SportsMeetSettings 
 } from '../types';
+import { api } from '../services/api';
 import { isEventCardEnabled, parseHeightToInches, isClubAllowedForEvent0 } from '../utils/heightRules';
 import { 
   UserPlus, 
@@ -27,6 +28,7 @@ import {
   Lock,
   Ban,
   XCircle,
+  Eye,
 } from 'lucide-react';
 import { EventHeat, EventResult } from '../types';
 import { 
@@ -53,6 +55,7 @@ interface CandidateEnrollProps {
   onEditCandidate?: (cand: Candidate) => void;
   onDeleteCandidate?: (id: string) => Promise<void> | void;
   onCancelChest?: (id: string) => Promise<void> | void;
+  onSaveClub?: (clubData: Partial<Club>) => Promise<void> | void;
 }
 
 export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
@@ -73,11 +76,40 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
   onEditCandidate,
   onDeleteCandidate,
   onCancelChest,
+  onSaveClub,
 }) => {
-  // Client's Club Name: stored in localStorage and persistent across resets
+  // Client's Club Name: starts empty when app is opened fresh every time
   const [clientClubName, setClientClubName] = useState<string>(() => {
-    return localStorage.getItem('esports_client_club_name') || 'SASTHITALA AGRANI';
+    // Only retrieve from active tab sessionStorage if user typed it during current session; clean on fresh open
+    try {
+      localStorage.removeItem('esports_client_club_name');
+      return sessionStorage.getItem('esports_client_club_name') || '';
+    } catch {
+      return '';
+    }
   });
+
+  // Client's Club Mobile: starts empty, strictly allows only up to 10 digits
+  const [clientClubMobile, setClientClubMobile] = useState<string>(() => {
+    try {
+      localStorage.removeItem('esports_client_club_mobile');
+      const saved = sessionStorage.getItem('esports_client_club_mobile') || '';
+      return saved.replace(/\D/g, '').slice(0, 10);
+    } catch {
+      return '';
+    }
+  });
+
+  const handleClientClubMobileChange = (val: string) => {
+    // Strictly allow only numbers and maximum 10 digits
+    const cleaned = val.replace(/\D/g, '').slice(0, 10);
+    setClientClubMobile(cleaned);
+    try {
+      sessionStorage.setItem('esports_client_club_mobile', cleaned);
+    } catch {
+      // ignore
+    }
+  };
 
   const [name, setName] = useState('');
   const [clubName, setClubName] = useState('');
@@ -168,7 +200,7 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
   const [editClub, setEditClub] = useState('');
   const [editHeight, setEditHeight] = useState('');
   const [editGender, setEditGender] = useState('B');
-  const [editFeeStatus, setEditFeeStatus] = useState('Due [D]');
+  const [editFeeStatus, setEditFeeStatus] = useState('Due');
   const [editSelectedEvents, setEditSelectedEvents] = useState<number[]>([]);
   const [editErrorMsg, setEditErrorMsg] = useState<string | null>(null);
   const [isSavingEdit, setIsSavingEdit] = useState(false);
@@ -179,11 +211,15 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
 
   const [showSummaryPopup, setShowSummaryPopup] = useState(false);
 
-  // Save client club name to localStorage on change
+  // Save client club name to sessionStorage on change (persists during active session, blank on fresh open)
   const handleClientClubChange = (val: string) => {
     const uppercaseVal = val.toUpperCase();
     setClientClubName(uppercaseVal);
-    localStorage.setItem('esports_client_club_name', uppercaseVal);
+    try {
+      sessionStorage.setItem('esports_client_club_name', uppercaseVal);
+    } catch {
+      // ignore
+    }
   };
 
   // Available Heights from events
@@ -219,7 +255,8 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
       const rawStatus = candidateToEdit.feeStatus || 'Paid';
       if (rawStatus.startsWith('Paid')) setFeeStatus('Paid');
       else if (rawStatus.startsWith('Unpaid') || rawStatus.startsWith('Due')) setFeeStatus('Due');
-      else if (rawStatus.startsWith('Exempted') || rawStatus.startsWith('Free')) setFeeStatus('Free');
+      else if (mode !== 'client' && (rawStatus.startsWith('Exempted') || rawStatus.startsWith('Free'))) setFeeStatus('Free');
+      else if (mode === 'client' && (rawStatus.startsWith('Exempted') || rawStatus.startsWith('Free'))) setFeeStatus('Due');
       else setFeeStatus(rawStatus);
 
       const evts = candidateToEdit.selectedEvents || [];
@@ -295,7 +332,7 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
     }
 
     // Eligibility check
-    const check = isEventCardEnabled(evt, activeGender, activeHeight, effectiveClubForEvent0);
+    const check = isEventCardEnabled(evt, activeGender, activeHeight, effectiveClubForEvent0, events);
     if (!check.enabled) {
       setFeedbackMsg({
         type: 'error',
@@ -462,6 +499,7 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
     if (e && typeof e.preventDefault === 'function') {
       e.preventDefault();
     }
+    if (isSubmitting) return;
     const trimmedName = name.trim();
     if (!trimmedName) {
       setFeedbackMsg({ type: 'error', text: 'Candidate name is required.' });
@@ -496,7 +534,9 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
       const assignedRecordNo = mode === 'client'
         ? (candidateToEdit ? (candidateToEdit.localRecordNo || candidateToEdit.chestNo || clientProvisionalChestNo) : clientProvisionalChestNo)
         : undefined;
-      const targetClub = (mode === 'client' ? clientClubName : (clubName || clientClubName)).trim() || 'Independent';
+      const targetClub = mode === 'server'
+        ? (clubName.trim().toUpperCase() || 'SELF')
+        : (clientClubName.trim() || 'Independent');
 
       if (selectedEvents.includes(0) && !isClubAllowedForEvent0(targetClub)) {
         setFeedbackMsg({
@@ -518,7 +558,37 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
         feeStatus,
         selectedEvents,
         totalFees,
+        clubMobile: mode === 'client' ? clientClubMobile.trim() : undefined,
       });
+
+      // Save club mobile into club table after successful candidate save (club level only, not per candidate)
+      if (mode === 'client' && targetClub && targetClub !== 'Independent' && targetClub !== 'Independent / Unattached') {
+        try {
+          const existing = clubs.find((c) => (c.name || '').trim().toUpperCase() === targetClub.toUpperCase());
+          const clubPayload: Partial<Club> = existing
+            ? {
+                ...existing,
+                name: targetClub,
+                mobile: clientClubMobile.trim(),
+                phone: clientClubMobile.trim() || existing.phone,
+              }
+            : {
+                id: `club_${Date.now()}`,
+                name: targetClub,
+                shortCode: targetClub.slice(0, 4).toUpperCase().replace(/[^A-Z0-9]/g, '') || 'CLUB',
+                mobile: clientClubMobile.trim(),
+                phone: clientClubMobile.trim(),
+              };
+
+          if (onSaveClub) {
+            await onSaveClub(clubPayload);
+          } else {
+            await api.saveClub(clubPayload);
+          }
+        } catch (clubSaveErr) {
+          console.warn('[CandidateEnroll] Club mobile update deferred:', clubSaveErr);
+        }
+      }
 
       setFeedbackMsg({
         type: 'success',
@@ -723,7 +793,7 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
 
     setEditingCandidateItem(cand);
     setEditName(cand.name || '');
-    setEditClub(cand.club || clientClubName || 'SASTHITALA AGRANI');
+    setEditClub(cand.club || clientClubName || '');
     setEditHeight(cand.height === 'ALL' ? '' : (cand.height || ''));
 
     // Normalize gender for dropdown: B, G, C, ALL
@@ -733,11 +803,11 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
     else if (g === 'CHILDRENS' || g === 'CHILDREN' || g === 'C') setEditGender('C');
     else setEditGender('ALL');
 
-    // Normalize fee status: Due [D], Paid [P], Free [F]
+    // Normalize fee status: Due, Paid, Free (In client mode: only Due, Paid)
     const fs = (cand.feeStatus || '').toUpperCase();
-    if (fs.includes('PAID')) setEditFeeStatus('Paid [P]');
-    else if (fs.includes('FREE') || fs.includes('EXEMPT')) setEditFeeStatus('Free [F]');
-    else setEditFeeStatus('Due [D]');
+    if (fs.includes('PAID')) setEditFeeStatus('Paid');
+    else if (mode !== 'client' && (fs.includes('FREE') || fs.includes('EXEMPT'))) setEditFeeStatus('Free');
+    else setEditFeeStatus('Due');
 
     setEditSelectedEvents(cand.selectedEvents ? [...cand.selectedEvents] : []);
     setEditErrorMsg(null);
@@ -926,7 +996,7 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
     setIsSavingEdit(true);
     try {
       const targetGender = criteriaGenderDisplay;
-      const targetClub = editClub.trim().toUpperCase() || clientClubName || 'SASTHITALA AGRANI';
+      const targetClub = editClub.trim().toUpperCase() || clientClubName || 'Independent';
 
       if (editSelectedEvents.includes(0) && !isClubAllowedForEvent0(targetClub)) {
         setEditErrorMsg('Event #0 is restricted to Sasthitala Agrani, Agrani, SA, or Sasthitala club members only.');
@@ -936,9 +1006,11 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
 
       // Calculate total fees
       let totalFees = 0;
-      for (const evtNo of editSelectedEvents) {
-        const ev = events.find(e => Number(e.Evt_No) === Number(evtNo));
-        totalFees += Number(ev?.Fees || 10);
+      if (editFeeStatus !== 'Free' && editFeeStatus !== 'Exempted [E]') {
+        for (const evtNo of editSelectedEvents) {
+          const ev = events.find(e => Number(e.Evt_No) === Number(evtNo));
+          totalFees += ev && ev.Fees !== undefined ? Number(ev.Fees) : 0;
+        }
       }
 
       const updatedCand: Candidate = {
@@ -1016,20 +1088,55 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
         <div className="sticky top-0 z-30 bg-[#0b1120]/95 backdrop-blur-md border-b border-slate-800/90 px-4 sm:px-6 py-2.5 shadow-md">
           <div className="flex items-center justify-between gap-3">
             
-            {/* Ask Client's Club Name only in client mode; remove from server mode */}
+            {/* Ask Client's Club Name and Club Mobile beside each other in client mode; remove from server mode */}
             {mode === 'client' ? (
-              <div className="flex-1 min-w-0">
-                <label htmlFor="client-club-input" className="block text-[11px] font-bold text-amber-400 uppercase tracking-wider mb-1">
-                  Your Club Name
-                </label>
-                <div className="flex items-center gap-2">
+              <div className="flex-1 min-w-0 flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 sm:gap-4">
+                <div className="flex-1 min-w-[150px] sm:max-w-xs md:max-w-sm">
+                  <label htmlFor="client-club-input" className="block text-[11px] font-bold text-amber-400 uppercase tracking-wider mb-1">
+                    Your Club Name
+                  </label>
                   <input
                     id="client-club-input"
                     type="text"
                     value={clientClubName}
                     onChange={(e) => handleClientClubChange(e.target.value)}
-                    placeholder="e.g. SASTHITALA AGRANI"
-                    className="w-full sm:w-80 px-3 py-1.5 rounded-xl bg-[#0e172e] border border-amber-400/80 text-amber-400 font-extrabold uppercase text-xs sm:text-sm focus:outline-hidden focus:ring-2 focus:ring-amber-400/40 transition-all shadow-inner"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        const mobileInput = document.getElementById('client-club-mobile-input') as HTMLInputElement | null;
+                        if (mobileInput) {
+                          mobileInput.focus();
+                          mobileInput.select();
+                        }
+                      }
+                    }}
+                    placeholder="e.g. YOUR CLUB NAME"
+                    className="w-full px-3 py-1.5 rounded-xl bg-[#0e172e] border border-amber-400/80 text-amber-400 font-extrabold uppercase text-xs sm:text-sm focus:outline-hidden focus:ring-2 focus:ring-amber-400/40 transition-all shadow-inner"
+                  />
+                </div>
+                <div className="w-full sm:w-56 md:w-64 min-w-[140px]">
+                  <label htmlFor="client-club-mobile-input" className="block text-[11px] font-bold text-amber-400 uppercase tracking-wider mb-1">
+                    Club Mobile
+                  </label>
+                  <input
+                    id="client-club-mobile-input"
+                    type="tel"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    value={clientClubMobile}
+                    onChange={(e) => handleClientClubMobileChange(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        const candNameInput = document.getElementById('candidate-name') as HTMLInputElement | null;
+                        if (candNameInput) {
+                          candNameInput.focus();
+                          candNameInput.select();
+                        }
+                      }
+                    }}
+                    maxLength={10}
+                    className="w-full px-3 py-1.5 rounded-xl bg-[#0e172e] border border-amber-400/80 text-amber-400 font-extrabold text-xs sm:text-sm focus:outline-hidden focus:ring-2 focus:ring-amber-400/40 transition-all shadow-inner"
                   />
                 </div>
               </div>
@@ -1052,7 +1159,7 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
                 <button
                   type="button"
                   onClick={resetForm}
-                  className="px-2.5 py-1.5 text-xs font-semibold text-slate-300 bg-slate-800 hover:bg-slate-700 rounded-xl transition-colors flex items-center gap-1 border border-slate-700"
+                  className="px-2.5 py-1.5 text-xs font-semibold text-slate-300 bg-slate-800 hover:bg-slate-700 rounded-xl transition-colors flex items-center gap-1 border border-slate-700 cursor-pointer"
                 >
                   <RotateCcw className="w-3.5 h-3.5 text-amber-400" />
                   <span className="hidden sm:inline">Cancel</span>
@@ -1129,7 +1236,7 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
                   <div>
                     <div className="flex items-center justify-between mb-1">
                       <label htmlFor="candidate-club-input" className="block text-xs font-bold text-slate-200">
-                        Club Name <span className="text-amber-400">*</span>
+                        Club Name <span className="text-slate-400 font-normal text-[11px]">(Leave blank for "SELF")</span>
                       </label>
                       {enrolledClubSuggestions.length > 0 && (
                         <span className="text-[10px] text-slate-400 font-medium">
@@ -1141,7 +1248,6 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
                       id="candidate-club-input"
                       type="text"
                       list="enrolled-clubs-datalist"
-                      required
                       value={clubName}
                       onChange={(e) => setClubName(e.target.value.toUpperCase())}
                       onKeyDown={(e) => {
@@ -1157,7 +1263,7 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
                           }
                         }
                       }}
-                      placeholder="Type or select previously enrolled club..."
+                      placeholder="e.g. CLUB NAME (Leave blank for SELF)"
                       className="w-full px-3.5 py-2 rounded-xl bg-[#0e172e] border border-amber-400/70 text-white placeholder:text-slate-500 text-xs sm:text-sm font-semibold uppercase focus:outline-hidden focus:border-amber-400 focus:ring-1 focus:ring-amber-400 transition-all shadow-inner"
                     />
                     <datalist id="enrolled-clubs-datalist">
@@ -1278,23 +1384,43 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
                     )}
                   </div>
 
+                  {/* Client Responses Paused Notice */}
+                  {mode === 'client' && (settings?.clientResponseEnabled === false) && (
+                    <div className="mb-2 p-2 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs font-semibold flex items-center gap-2">
+                      <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                      <span>Client responses are currently paused by the server administrator.</span>
+                    </div>
+                  )}
+
                   {/* 3 Action Buttons */}
                   <div className="grid grid-cols-12 gap-2">
                     <button
                       type="button"
                       id="btn-view-edit-list"
+                      disabled={mode === 'client' && (settings?.clientResponseEnabled === false)}
                       onClick={() => setShowViewEditModal(true)}
-                      className="col-span-4 py-2.5 px-2 rounded-xl bg-[#881337] hover:bg-[#9f1239] active:scale-98 text-white font-black text-xs flex items-center justify-center gap-1 shadow-lg transition-all cursor-pointer truncate"
+                      className={`col-span-4 py-2.5 px-2 rounded-xl active:scale-98 text-white font-black text-xs flex items-center justify-center gap-1 shadow-lg transition-all truncate ${
+                        mode === 'client' && (settings?.clientResponseEnabled === false)
+                          ? 'opacity-40 cursor-not-allowed bg-slate-800'
+                          : 'bg-[#881337] hover:bg-[#9f1239] cursor-pointer'
+                      }`}
                     >
-                      <List className="w-3.5 h-3.5 shrink-0" />
-                      <span className="truncate">View/Edit ({stats.count})</span>
+                      <span className="flex items-center justify-center gap-0.5 truncate">
+                        <span>Edit/</span>
+                        <Eye className="w-3.5 h-3.5 shrink-0 inline text-slate-100" />
+                        <span>({stats.count})</span>
+                      </span>
                     </button>
 
                     <button
                       type="submit"
                       id="btn-submit-enroll"
-                      disabled={isSubmitting || selectedEvents.length === 0 || !name.trim()}
-                      className="col-span-4 py-2.5 px-2 rounded-xl bg-[#facc15] hover:bg-[#eab308] active:scale-98 disabled:opacity-40 disabled:pointer-events-none text-slate-950 font-black text-xs flex items-center justify-center gap-1 shadow-lg shadow-amber-500/10 transition-all cursor-pointer truncate"
+                      disabled={(mode === 'client' && (settings?.clientResponseEnabled === false)) || isSubmitting || selectedEvents.length === 0 || !name.trim()}
+                      className={`col-span-4 py-2.5 px-2 rounded-xl active:scale-98 disabled:opacity-40 disabled:pointer-events-none text-slate-950 font-black text-xs flex items-center justify-center gap-1 shadow-lg shadow-amber-500/10 transition-all truncate ${
+                        mode === 'client' && (settings?.clientResponseEnabled === false)
+                          ? 'opacity-40 cursor-not-allowed bg-slate-700 text-slate-400'
+                          : 'bg-[#facc15] hover:bg-[#eab308] cursor-pointer'
+                      }`}
                     >
                       <UserPlus className="w-3.5 h-3.5 stroke-[2.5] shrink-0" />
                       <span className="truncate">{candidateToEdit ? 'Update' : '+ Enroll'}</span>
@@ -1304,8 +1430,12 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
                       type="button"
                       id="btn-send-sync"
                       onClick={onSyncTrigger}
-                      disabled={isSyncing}
-                      className="col-span-4 py-2.5 px-2 rounded-xl bg-[#15803d] hover:bg-[#16a34a] active:scale-98 disabled:opacity-50 text-white font-black text-xs flex items-center justify-center gap-1 shadow-lg transition-all cursor-pointer truncate"
+                      disabled={(mode === 'client' && (settings?.clientResponseEnabled === false)) || isSyncing}
+                      className={`col-span-4 py-2.5 px-2 rounded-xl active:scale-98 disabled:opacity-40 disabled:pointer-events-none text-white font-black text-xs flex items-center justify-center gap-1 shadow-lg transition-all truncate ${
+                        mode === 'client' && (settings?.clientResponseEnabled === false)
+                          ? 'opacity-40 cursor-not-allowed bg-slate-800 text-slate-500'
+                          : 'bg-[#15803d] hover:bg-[#16a34a] cursor-pointer'
+                      }`}
                     >
                       <Send className={`w-3.5 h-3.5 shrink-0 ${isSyncing ? 'animate-pulse' : ''}`} />
                       <span className="truncate">
@@ -1390,7 +1520,7 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
                   >
                     {events.map((evt) => {
                       const isSelected = selectedEvents.includes(evt.Evt_No);
-                      const eligibility = isEventCardEnabled(evt, gender, height, effectiveClubForEvent0);
+                      const eligibility = isEventCardEnabled(evt, gender, height, effectiveClubForEvent0, events);
                       const isEnabled = eligibility.enabled;
                       const isEvt0Restricted = Number(evt.Evt_No) === 0 && !isClubAllowedForEvent0(effectiveClubForEvent0);
 
@@ -1469,7 +1599,7 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
                               {getEventShorthand(evt)}
                             </span>
                             <span className="text-amber-400 font-mono font-bold shrink-0">
-                              {settings.currencySymbol || '₹'}{Number(evt.Fees).toFixed(0)}
+                              {settings.currencySymbol || '₹'}{Number(evt.Fees ?? 0).toFixed(0)}
                             </span>
                           </div>
                         </div>
@@ -1591,8 +1721,11 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
                       onClick={() => setShowViewEditModal(true)}
                       className="col-span-4 py-2.5 px-2 rounded-xl bg-[#881337] hover:bg-[#9f1239] active:scale-98 text-white font-black text-xs flex items-center justify-center gap-1 shadow-lg transition-all cursor-pointer truncate"
                     >
-                      <List className="w-3.5 h-3.5 shrink-0" />
-                      <span className="truncate">View/Edit ({stats.count})</span>
+                      <span className="flex items-center justify-center gap-0.5 truncate">
+                        <span>Edit/</span>
+                        <Eye className="w-3.5 h-3.5 shrink-0 inline text-slate-100" />
+                        <span>({stats.count})</span>
+                      </span>
                     </button>
 
                     <button
@@ -1736,21 +1869,11 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
             </div>
 
             {/* Modal Footer */}
-            <div className="px-5 py-3.5 border-t border-slate-800 bg-[#0b1326] flex items-center justify-between">
-              <button
-                type="button"
-                onClick={() => {
-                  setShowSummaryPopup(false);
-                  onNavigateToCandidates();
-                }}
-                className="px-3.5 py-2 text-xs font-bold text-slate-200 bg-slate-800 hover:bg-slate-700 rounded-xl transition-colors"
-              >
-                Go to View / Edit All
-              </button>
+            <div className="px-5 py-3.5 border-t border-slate-800 bg-[#0b1326] flex items-center justify-end">
               <button
                 type="button"
                 onClick={() => setShowSummaryPopup(false)}
-                className="px-4 py-2 text-xs font-bold text-slate-950 bg-amber-400 hover:bg-amber-500 rounded-xl transition-colors"
+                className="px-5 py-2 text-xs font-bold text-slate-950 bg-amber-400 hover:bg-amber-500 rounded-xl transition-colors cursor-pointer"
               >
                 Close
               </button>
@@ -2241,9 +2364,11 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
                   onChange={(e) => setEditFeeStatus(e.target.value)}
                   className="w-full bg-transparent text-white font-bold text-sm sm:text-base focus:outline-hidden cursor-pointer"
                 >
-                  <option value="Due [D]" className="bg-[#0d1628] text-white">Due [D]</option>
-                  <option value="Paid [P]" className="bg-[#0d1628] text-white">Paid [P]</option>
-                  <option value="Free [F]" className="bg-[#0d1628] text-white">Free [F]</option>
+                  <option value="Due" className="bg-[#0d1628] text-white">Due</option>
+                  <option value="Paid" className="bg-[#0d1628] text-white">Paid</option>
+                  {mode !== 'client' && (
+                    <option value="Free" className="bg-[#0d1628] text-white">Free</option>
+                  )}
                 </select>
               </div>
 
@@ -2371,7 +2496,7 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
                           )}
                         </div>
                         <div className="text-[11px] text-slate-400 font-semibold truncate">
-                          {evt.Gender} • {evt.Height} • ₹{Number(evt.Fees || 10).toFixed(2)}
+                          {evt.Gender} • {evt.Height} • {settings.currencySymbol || '₹'}{Number(evt.Fees ?? 0).toFixed(2)}
                         </div>
                       </div>
                     </div>

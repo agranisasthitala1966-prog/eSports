@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { 
   ClientUpload, 
   Candidate, 
@@ -26,7 +26,12 @@ import {
   ExternalLink,
   ShieldAlert,
   AlertTriangle,
-  Users
+  Users,
+  List,
+  X,
+  Radio,
+  Ban,
+  Pause
 } from 'lucide-react';
 
 interface ClubUploadsReviewProps {
@@ -38,6 +43,7 @@ interface ClubUploadsReviewProps {
   onRefresh: () => Promise<void>;
   onMergeSuccess: (msg: string) => void;
   onNavigateToCandidates?: () => void;
+  onSaveSettings?: (settings: SportsMeetSettings) => Promise<void>;
 }
 
 export const ClubUploadsReview: React.FC<ClubUploadsReviewProps> = ({
@@ -49,6 +55,7 @@ export const ClubUploadsReview: React.FC<ClubUploadsReviewProps> = ({
   onRefresh,
   onMergeSuccess,
   onNavigateToCandidates,
+  onSaveSettings,
 }) => {
   const [selectedClubFilter, setSelectedClubFilter] = useState<string>('ALL');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'pending' | 'merged' | 'rejected'>('ALL');
@@ -57,6 +64,80 @@ export const ClubUploadsReview: React.FC<ClubUploadsReviewProps> = ({
   const [processingId, setProcessingId] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+
+  // Event List miniature popup state (anchored like settings button click)
+  const [showEventListPopup, setShowEventListPopup] = useState(false);
+  const [popupCoords, setPopupCoords] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const [eventFilterTerm, setEventFilterTerm] = useState('');
+  const eventListBtnRef = useRef<HTMLButtonElement>(null);
+  const eventListPopupRef = useRef<HTMLDivElement>(null);
+
+  // Position calculation so popup floats over scrolling page section with no scrollbars
+  const updatePopupPosition = () => {
+    if (eventListBtnRef.current) {
+      const rect = eventListBtnRef.current.getBoundingClientRect();
+      const popupWidth = Math.min(500, window.innerWidth - 24);
+      const left = Math.max(12, Math.min(rect.left, window.innerWidth - popupWidth - 12));
+      setPopupCoords({
+        top: rect.bottom + 8,
+        left,
+      });
+    }
+  };
+
+  useEffect(() => {
+    if (showEventListPopup) {
+      updatePopupPosition();
+      window.addEventListener('resize', updatePopupPosition);
+      window.addEventListener('scroll', updatePopupPosition, true);
+    }
+    return () => {
+      window.removeEventListener('resize', updatePopupPosition);
+      window.removeEventListener('scroll', updatePopupPosition, true);
+    };
+  }, [showEventListPopup]);
+
+  // Close Event List popup on outside click or Escape key
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (
+        eventListPopupRef.current &&
+        !eventListPopupRef.current.contains(target) &&
+        eventListBtnRef.current &&
+        !eventListBtnRef.current.contains(target)
+      ) {
+        setShowEventListPopup(false);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowEventListPopup(false);
+      }
+    };
+    if (showEventListPopup) {
+      document.addEventListener('mousedown', handleClickOutside);
+      window.addEventListener('keydown', handleKeyDown);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showEventListPopup]);
+
+  // Sorted and filtered master events for the miniature popup
+  const sortedAndFilteredEvents = useMemo(() => {
+    const sorted = [...(events || [])].sort((a, b) => Number(a.Evt_No) - Number(b.Evt_No));
+    if (!eventFilterTerm.trim()) return sorted;
+    const q = eventFilterTerm.toLowerCase();
+    return sorted.filter((e) => {
+      const matchNo = String(e.Evt_No).includes(q);
+      const matchName = (e.Evt_Name || '').toLowerCase().includes(q);
+      const matchHeight = (e.Height || '').toLowerCase().includes(q);
+      const matchGender = (e.Gender || '').toLowerCase().includes(q);
+      return matchNo || matchName || matchHeight || matchGender;
+    });
+  }, [events, eventFilterTerm]);
 
   // Edit Candidate Modal state
   const [editingCandidate, setEditingCandidate] = useState<{
@@ -85,13 +166,8 @@ export const ClubUploadsReview: React.FC<ClubUploadsReviewProps> = ({
     }));
   };
 
-  // Auto-refresh periodically to catch remote entries live
-  React.useEffect(() => {
-    const timer = setInterval(() => {
-      onRefresh();
-    }, 3500);
-    return () => clearInterval(timer);
-  }, [onRefresh]);
+  // Background sync is handled by App.tsx sync-summary listener
+  // Window focus / visibility also triggers fresh data loads.
 
   // Automatically expand pending upload batches so admin immediately sees new incoming requests
   React.useEffect(() => {
@@ -267,18 +343,49 @@ export const ClubUploadsReview: React.FC<ClubUploadsReviewProps> = ({
   return (
     <div className="space-y-4">
       {/* Header Bar (Blue thumbnail banner removed as requested) */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-200">
-        <div>
-          <h1 className="text-base sm:text-lg font-black text-slate-900 tracking-tight">
-            Club Submissions & Review
-          </h1>
-          <p className="text-xs text-slate-500 mt-0.5">
-            Pending client entries require server approval before merging into official registry and receiving chest numbers.
-          </p>
-        </div>
-        <div className="flex items-center gap-2 text-xs font-semibold text-slate-600 bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 self-start sm:self-auto">
-          <span>Active Server Registry:</span>
-          <span className="font-extrabold text-blue-700 font-mono">{serverCandidates.length} Athletes</span>
+      <div className="flex items-center justify-between gap-3 pb-3 border-b border-slate-200">
+        <h1 className="text-base sm:text-lg font-black text-slate-900 tracking-tight truncate">
+          Club Submissions & Review
+        </h1>
+
+        <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+          <div className="hidden sm:flex items-center gap-2 text-xs font-semibold text-slate-600 bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200">
+            <span>Active Server Registry:</span>
+            <span className="font-extrabold text-blue-700 font-mono">{serverCandidates.length} Athletes</span>
+          </div>
+
+          {/* Club Echo Toggle Button: Right-aligned on the same line */}
+          <button
+            type="button"
+            id="btn-toggle-client-response"
+            onClick={async () => {
+              const currentStatus = settings.clientResponseEnabled ?? true;
+              const newSettings = { ...settings, clientResponseEnabled: !currentStatus };
+              if (onSaveSettings) {
+                await onSaveSettings(newSettings);
+              } else {
+                await api.saveSettings(newSettings);
+              }
+            }}
+            className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer border shrink-0 ${
+              (settings.clientResponseEnabled ?? true)
+                ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-300'
+                : 'bg-rose-50 hover:bg-rose-100 text-rose-800 border-rose-300'
+            }`}
+            title={
+              (settings.clientResponseEnabled ?? true)
+                ? 'Club Echo: ON (Client responses are allowed - Click to pause)'
+                : 'Club Echo: PAUSED (Client responses are blocked - Click to enable)'
+            }
+            aria-label="Toggle Club Echo"
+          >
+            <span>Club Echo:</span>
+            {(settings.clientResponseEnabled ?? true) ? (
+              <Radio className="w-4 h-4 text-emerald-600 animate-blink-1-5s shrink-0" />
+            ) : (
+              <Pause className="w-4 h-4 text-rose-600 animate-blink-1-5s shrink-0" />
+            )}
+          </button>
         </div>
       </div>
 
@@ -315,17 +422,180 @@ export const ClubUploadsReview: React.FC<ClubUploadsReviewProps> = ({
 
       {/* Filter and Search Bar */}
       <div className="bg-white rounded-2xl p-3.5 shadow-xs border border-slate-200 flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
-        {/* Search */}
-        <div className="relative flex-1">
-          <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-          <input
-            type="text"
-            placeholder="Search by club name, athlete name, or batch ID..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full pl-9 pr-4 py-2 text-xs sm:text-sm rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:border-blue-500 focus:outline-hidden transition-colors"
-          />
+        {/* Left Side: Event List Button + Search Box */}
+        <div className="flex items-center gap-2 flex-1">
+          {/* Event List Icon Button: Placed at the left of the search box */}
+          <div className="relative shrink-0">
+            <button
+              ref={eventListBtnRef}
+              type="button"
+              id="btn-event-list-reference"
+              onClick={() => {
+                updatePopupPosition();
+                setShowEventListPopup((prev) => !prev);
+              }}
+              className={`p-2 sm:p-2.5 rounded-xl border transition-all cursor-pointer shadow-2xs flex items-center justify-center shrink-0 ${
+                showEventListPopup
+                  ? 'bg-blue-600 text-white border-blue-600 shadow-xs ring-2 ring-blue-400/40'
+                  : 'bg-slate-50 hover:bg-slate-100 text-blue-600 hover:text-blue-700 border-slate-200 active:scale-95'
+              }`}
+              title="Event List (Ready Reference)"
+              aria-label="Event List"
+              aria-expanded={showEventListPopup}
+            >
+              <List className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
+            </button>
+          </div>
+
+          {/* Search Box */}
+          <div className="relative flex-1">
+            <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              type="text"
+              placeholder="Search by club name, athlete name, or batch ID..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full pl-9 pr-8 py-2 text-xs sm:text-sm rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:border-blue-500 focus:outline-hidden transition-colors"
+            />
+            {searchTerm && (
+              <button
+                type="button"
+                onClick={() => setSearchTerm('')}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-rose-600 rounded-full cursor-pointer transition-colors"
+                title="Clear search"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
         </div>
+
+        {/* Event Details Miniature Popup (anchored like Settings button click) */}
+        {showEventListPopup && (
+          <div
+            ref={eventListPopupRef}
+            className="fixed w-[340px] sm:w-[480px] md:w-[520px] max-w-[94vw] bg-white rounded-2xl shadow-2xl border border-slate-200/90 p-3 sm:p-4 z-50 text-left animate-in fade-in zoom-in-95 duration-100"
+            style={{
+              top: `${popupCoords.top}px`,
+              left: `${popupCoords.left}px`,
+              boxShadow: '0 20px 45px -10px rgba(0, 0, 0, 0.22), 0 10px 20px -5px rgba(0, 0, 0, 0.1)',
+            }}
+          >
+            {/* Header Row (like Settings popup) */}
+            <div className="flex items-center justify-between pb-2.5 mb-2.5 border-b border-slate-100 px-1">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="w-7 h-7 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center shrink-0 border border-blue-200/60">
+                  <List className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 block truncate">
+                    EVENT MASTER LIST
+                  </span>
+                  <span className="text-xs font-bold text-slate-800 block truncate">
+                    Ready Reference
+                  </span>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="text-[10px] font-bold uppercase tracking-wider bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full border border-blue-200">
+                  {(events || []).length} Events
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setShowEventListPopup(false)}
+                  className="p-1 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
+                  title="Close"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* Quick mini-filter input inside popup */}
+            <div className="relative mb-2.5">
+              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                type="text"
+                placeholder="Quick search event by name, height, or gender..."
+                value={eventFilterTerm}
+                onChange={(e) => setEventFilterTerm(e.target.value)}
+                className="w-full pl-8 pr-7 py-1.5 text-xs bg-slate-50 rounded-lg border border-slate-200 focus:bg-white focus:border-blue-500 focus:outline-hidden transition-colors"
+              />
+              {eventFilterTerm && (
+                <button
+                  type="button"
+                  onClick={() => setEventFilterTerm('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 text-slate-400 hover:text-slate-700 rounded-full cursor-pointer"
+                  title="Clear filter"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              )}
+            </div>
+
+            {/* Miniature List of Event Details */}
+            <div className="max-h-72 sm:max-h-80 overflow-y-auto space-y-1.5 pr-1 divide-y divide-slate-100">
+              {sortedAndFilteredEvents.length === 0 ? (
+                <div className="py-6 text-center text-xs text-slate-500">
+                  No events match "{eventFilterTerm}".
+                </div>
+              ) : (
+                sortedAndFilteredEvents.map((evt) => (
+                  <div
+                    key={evt.Evt_No}
+                    className="pt-1.5 first:pt-0 p-1.5 rounded-xl hover:bg-slate-50/80 transition-colors flex items-center justify-between gap-2.5 text-xs"
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                      <span className="w-7 h-7 rounded-lg bg-blue-600 text-white font-black text-xs flex items-center justify-center shrink-0 shadow-2xs">
+                        #{evt.Evt_No}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="font-bold text-slate-900 truncate uppercase text-[12px] sm:text-[13px] leading-tight">
+                          {evt.Evt_Name}
+                        </div>
+                        <div className="flex items-center gap-1.5 flex-wrap text-[10px] text-slate-500 mt-0.5">
+                          <span className="px-1.5 py-0.2 rounded bg-slate-100 text-slate-700 font-semibold border border-slate-200">
+                            {evt.Height || 'ALL'}
+                          </span>
+                          <span
+                            className={`px-1.5 py-0.2 rounded font-bold ${
+                              evt.Gender === 'BOYS'
+                                ? 'bg-sky-50 text-sky-700 border border-sky-200'
+                                : evt.Gender === 'GIRLS'
+                                ? 'bg-pink-50 text-pink-700 border border-pink-200'
+                                : evt.Gender === 'CHILDRENS'
+                                ? 'bg-amber-50 text-amber-800 border border-amber-200'
+                                : 'bg-purple-50 text-purple-700 border border-purple-200'
+                            }`}
+                          >
+                            {evt.Gender || 'ALL'}
+                          </span>
+                          {evt.requiredHit === false ? (
+                            <span className="text-[10px] text-slate-400 font-medium">Final Only</span>
+                          ) : (
+                            <span className="text-[10px] text-slate-400 font-medium">Hit &amp; Final</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="text-right shrink-0">
+                      <span className="text-xs sm:text-sm font-black text-emerald-600">
+                        ₹{evt.Fees || 0}
+                      </span>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* Footer summary */}
+            <div className="mt-2.5 pt-2 border-t border-slate-100 flex items-center justify-between text-[10px] text-slate-400 font-medium px-1">
+              <span>Showing {sortedAndFilteredEvents.length} of {(events || []).length} master events</span>
+              <span className="text-slate-400 italic">Press Esc to close</span>
+            </div>
+          </div>
+        )}
 
         {/* Club Filter with Refresh Symbol Button immediately to the right */}
         <div className="flex items-center gap-1.5">

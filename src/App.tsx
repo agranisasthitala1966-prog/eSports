@@ -9,9 +9,9 @@ import {
   HeatParticipant,
   ClientUpload
 } from './types';
-import { api } from './services/api';
+import { api, getDeviceId } from './services/api';
 import { clientStorage } from './services/clientStorage';
-import { firestoreSync } from './services/firestoreSync';
+import { firestoreSync, subscribeQuotaStatus, isFirestoreQuotaExhausted } from './services/firestoreSync';
 import { 
   getCandidateRestrictionStatus, 
   getCandidateEditRestrictedMessage, 
@@ -32,20 +32,28 @@ import { DbExplorer } from './components/DbExplorer';
 import { ClubUploadsReview } from './components/ClubUploadsReview';
 import { PinLoginModal } from './components/PinLoginModal';
 import { ResetPinModal } from './components/ResetPinModal';
+import { downloadSportsMeetExcel } from './services/excelExport';
 import { Phone } from 'lucide-react';
 
 function sanitizeUniqueCandidates(list: Candidate[]): Candidate[] {
   if (!Array.isArray(list)) return [];
   const seenIds = new Set<string>();
+  const seenNames = new Set<string>();
   const seenChests = new Set<number>();
   const result: Candidate[] = [];
 
   list.forEach((c) => {
     if (!c) return;
     const cid = c.id ? String(c.id).trim() : '';
+    const cname = (c.name || '').trim().toUpperCase();
+    const isCancelled = c.isCancelled || c.status === 'cancelled';
+
     if (cid && seenIds.has(cid)) return;
+    // Disallow duplicate records with the exact same candidate name
+    if (!isCancelled && cname && seenNames.has(cname)) return;
 
     if (cid) seenIds.add(cid);
+    if (!isCancelled && cname) seenNames.add(cname);
 
     const chest = Number(c.chestNo);
     if (chest && chest >= 101) {
@@ -71,26 +79,51 @@ export default function App() {
   const [mode, setMode] = useState<'client' | 'server'>('client');
   const [activeTab, setActiveTab] = useState<string>('enroll');
 
-  // Core Data
-  const [candidates, setCandidates] = useState<Candidate[]>([]);
-  const [events, setEvents] = useState<SportEvent[]>(INITIAL_EVENTS);
-  const [clubs, setClubs] = useState<Club[]>(INITIAL_CLUBS);
+  // Core Data - initialized from local storage cache for instant 0ms first paint on mobile
+  const [candidates, setCandidates] = useState<Candidate[]>(() => {
+    try {
+      const cached = clientStorage.getCandidates();
+      return Array.isArray(cached) && cached.length > 0 ? sanitizeUniqueCandidates(cached) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [events, setEvents] = useState<SportEvent[]>(() => {
+    const cached = clientStorage.getEventsCache();
+    return cached && cached.length > 0 ? cached : INITIAL_EVENTS;
+  });
+  const [clubs, setClubs] = useState<Club[]>(() => {
+    const cached = clientStorage.getClubsCache();
+    return cached && cached.length > 0 ? cached : INITIAL_CLUBS;
+  });
   const [heats, setHeats] = useState<EventHeat[]>([]);
   const [results, setResults] = useState<EventResult[]>([]);
-  const [settings, setSettings] = useState<SportsMeetSettings>(INITIAL_SETTINGS);
+  const [settings, setSettings] = useState<SportsMeetSettings>(() => {
+    try {
+      return clientStorage.getCachedSettings() || INITIAL_SETTINGS;
+    } catch {
+      return INITIAL_SETTINGS;
+    }
+  });
   const [uploads, setUploads] = useState<ClientUpload[]>([]);
 
-  // Server Authentication & PIN states
-  const [isServerAuthenticated, setIsServerAuthenticated] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
-    return sessionStorage.getItem('esports_server_auth') === 'true';
-  });
+  // Server Authentication & PIN states: by default server MUST be locked under any circumstances subject to pin login
+  const [isServerAuthenticated, setIsServerAuthenticated] = useState<boolean>(false);
   const [showPinModal, setShowPinModal] = useState<boolean>(false);
   const [showResetPinModal, setShowResetPinModal] = useState<boolean>(false);
 
   // Sync state
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [syncNotice, setSyncNotice] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [isFirestoreQuotaExceeded, setIsFirestoreQuotaExceeded] = useState<boolean>(() => isFirestoreQuotaExhausted());
+  const [dismissQuotaBanner, setDismissQuotaBanner] = useState<boolean>(false);
+
+  useEffect(() => {
+    const unsub = subscribeQuotaStatus((exceeded) => {
+      setIsFirestoreQuotaExceeded(exceeded);
+    });
+    return () => unsub();
+  }, []);
 
   // Edit Candidate State
   const [candidateToEdit, setCandidateToEdit] = useState<Candidate | null>(null);
@@ -111,11 +144,11 @@ export default function App() {
       }, 0);
   }, [uploads]);
 
-  // Reference to track last known server timestamp to avoid redundant fetches
-  const lastUpdatedRef = useRef<string>('');
+  // References to track last known server state to avoid redundant fetches & polling storms
+  const lastServerUpdatedRef = useRef<string>('');
+  const lastServerCandidatesCountRef = useRef<number>(-1);
+  const lastServerUploadsCountRef = useRef<number>(-1);
   const prevPendingCountRef = useRef<number>(-1);
-  const prevUploadsCountRef = useRef<number>(-1);
-  const prevCandidatesCountRef = useRef<number>(-1);
   const isFetchingRef = useRef<boolean>(false);
 
   // Load data based on active mode using single consolidated bootstrap endpoint
@@ -124,63 +157,61 @@ export default function App() {
     isFetchingRef.current = true;
     const effectiveMode = targetMode || mode;
     try {
-      // 1. Fetch entire state in a single lightweight API call
+      // 1. Fetch entire state in a single fast bootstrap API call (50-100ms)
       const bootstrap = await api.getBootstrap().catch(() => null);
 
-      const srvEvents = bootstrap?.events || (await api.getEvents().catch(() => INITIAL_EVENTS));
-      const srvClubs = bootstrap?.clubs || (await api.getClubs().catch(() => INITIAL_CLUBS));
-      const srvSettings = bootstrap?.settings || (await api.getSettings().catch(() => INITIAL_SETTINGS));
-      
+      let srvEvents: SportEvent[];
+      let srvClubs: Club[];
+      let srvSettings: SportsMeetSettings;
       let srvHeats: EventHeat[] = [];
-      try {
-        const cloudHeats = await api.getHeats();
-        srvHeats = cloudHeats.length > 0 ? cloudHeats : (bootstrap?.heats || []);
-      } catch {
-        srvHeats = bootstrap?.heats || [];
-      }
-
       let srvResults: EventResult[] = [];
-      try {
-        const cloudResults = await api.getResults();
-        srvResults = cloudResults.length > 0 ? cloudResults : (bootstrap?.results || []);
-      } catch {
-        srvResults = bootstrap?.results || [];
-      }
-
-      // 2. Fetch and merge Cloud Firestore uploads so that any client submission
-      // from any link/container (ais-pre, mobile, direct link) is NEVER lost or wiped out!
       let srvUploads: ClientUpload[] = [];
-      try {
-        const cloudUploads = await api.getUploads();
-        if (cloudUploads.length > 0) {
-          srvUploads = cloudUploads;
-        } else {
-          srvUploads = bootstrap?.uploads || [];
-        }
-      } catch (err) {
-        console.warn('Could not fetch cloud uploads:', err);
-        srvUploads = bootstrap?.uploads || [];
-      }
-
-      // 3. Fetch and merge Cloud Firestore candidates
       let srvCandidates: Candidate[] = [];
-      try {
-        const cloudCandidates = await api.getCandidates();
-        if (cloudCandidates.length > 0) {
-          srvCandidates = cloudCandidates;
-        } else {
-          srvCandidates = bootstrap?.candidates || [];
+
+      if (bootstrap) {
+        // Fast path: Server provided consolidated state in one single payload
+        srvEvents = bootstrap.events || clientStorage.getEventsCache() || INITIAL_EVENTS;
+        srvClubs = bootstrap.clubs || clientStorage.getClubsCache() || INITIAL_CLUBS;
+        srvSettings = bootstrap.settings || clientStorage.getCachedSettings() || INITIAL_SETTINGS;
+        srvHeats = bootstrap.heats || [];
+        srvResults = bootstrap.results || [];
+        srvUploads = bootstrap.uploads || [];
+        srvCandidates = bootstrap.candidates || [];
+      } else {
+        // Fallback path if server offline or initial cold start:
+        srvEvents = clientStorage.getEventsCache() || INITIAL_EVENTS;
+        srvClubs = clientStorage.getClubsCache() || INITIAL_CLUBS;
+        srvSettings = clientStorage.getCachedSettings() || INITIAL_SETTINGS;
+        // Parallel queries only when bootstrap failed:
+        const [cloudUploads, cloudCandidates, cloudHeats, cloudResults] = await Promise.allSettled([
+          api.getUploads().catch(() => []),
+          api.getCandidates().catch(() => []),
+          api.getHeats().catch(() => []),
+          api.getResults().catch(() => []),
+        ]);
+        if (cloudUploads.status === 'fulfilled' && cloudUploads.value.length > 0) {
+          srvUploads = cloudUploads.value;
         }
-      } catch (err) {
-        console.warn('Could not fetch cloud candidates:', err);
-        srvCandidates = bootstrap?.candidates || [];
+        if (cloudCandidates.status === 'fulfilled' && cloudCandidates.value.length > 0) {
+          srvCandidates = cloudCandidates.value;
+        }
+        if (cloudHeats.status === 'fulfilled' && cloudHeats.value.length > 0) {
+          srvHeats = cloudHeats.value;
+        }
+        if (cloudResults.status === 'fulfilled' && cloudResults.value.length > 0) {
+          srvResults = cloudResults.value;
+        }
       }
 
       if (bootstrap?.lastUpdated) {
-        lastUpdatedRef.current = bootstrap.lastUpdated;
+        lastServerUpdatedRef.current = bootstrap.lastUpdated;
       }
-      prevUploadsCountRef.current = srvUploads.length;
-      prevCandidatesCountRef.current = srvCandidates.length;
+      if (bootstrap?.candidates) {
+        lastServerCandidatesCountRef.current = bootstrap.candidates.length;
+      }
+      if (bootstrap?.uploads) {
+        lastServerUploadsCountRef.current = bootstrap.uploads.length;
+      }
 
       setEvents(srvEvents);
       setClubs(srvClubs);
@@ -243,9 +274,10 @@ export default function App() {
       }
       prevPendingCountRef.current = currentPendingCount;
 
-      // Cache events & clubs to localStorage for offline client capability
+      // Cache events, clubs & settings to localStorage for instant offline client capability
       clientStorage.saveEventsCache(srvEvents);
       clientStorage.saveClubsCache(srvClubs);
+      clientStorage.setCachedSettings(srvSettings);
 
       // 2. Candidates loading:
       if (effectiveMode === 'client') {
@@ -301,16 +333,24 @@ export default function App() {
 
   useEffect(() => {
     loadData();
-    // High-responsiveness sync interval: checks summary every 2.5s to instantly receive remote entries
+
+    // 1. Instantaneous real-time push via Server-Sent Events (SSE) across desktop and mobile
+    const unsubServerStream = api.subscribeServerStream((evt) => {
+      if (evt?.type === 'db_updated') {
+        loadData(true);
+      }
+    });
+
+    // 2. High-frequency active fallback polling (2.5s) to guarantee zero desync
     const interval = setInterval(async () => {
       try {
         const summary = await api.getSyncSummary().catch(() => null);
         if (summary) {
           const hasChanged =
-            (summary.lastUpdated && summary.lastUpdated !== lastUpdatedRef.current) ||
+            (summary.lastUpdated && summary.lastUpdated !== lastServerUpdatedRef.current) ||
             (summary.pendingAthletesCount !== undefined && summary.pendingAthletesCount !== prevPendingCountRef.current) ||
-            (summary.uploadsCount !== undefined && prevUploadsCountRef.current !== -1 && summary.uploadsCount !== prevUploadsCountRef.current) ||
-            (summary.candidatesCount !== undefined && prevCandidatesCountRef.current !== -1 && summary.candidatesCount !== prevCandidatesCountRef.current);
+            (summary.uploadsCount !== undefined && lastServerUploadsCountRef.current !== -1 && summary.uploadsCount !== lastServerUploadsCountRef.current) ||
+            (summary.candidatesCount !== undefined && lastServerCandidatesCountRef.current !== -1 && summary.candidatesCount !== lastServerCandidatesCountRef.current);
 
           if (hasChanged) {
             loadData(true);
@@ -329,12 +369,18 @@ export default function App() {
         loadData(true);
       }
     };
+    const handleOnline = () => {
+      loadData(true);
+    };
     window.addEventListener('focus', handleFocus);
+    window.addEventListener('online', handleOnline);
     document.addEventListener('visibilitychange', handleVisibility);
 
     return () => {
+      unsubServerStream();
       clearInterval(interval);
       window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('online', handleOnline);
       document.removeEventListener('visibilitychange', handleVisibility);
     };
   }, [loadData]);
@@ -436,11 +482,41 @@ export default function App() {
     });
 
     const unsubEvents = firestoreSync.subscribeEvents((cloudEvents) => {
-      if (cloudEvents.length > 0) setEvents(cloudEvents);
+      if (cloudEvents.length > 0) {
+        setEvents(cloudEvents);
+        clientStorage.saveEventsCache(cloudEvents);
+      }
     });
 
     const unsubClubs = firestoreSync.subscribeClubs((cloudClubs) => {
-      if (cloudClubs.length > 0) setClubs(cloudClubs);
+      if (cloudClubs.length > 0) {
+        setClubs(cloudClubs);
+        clientStorage.saveClubsCache(cloudClubs);
+      }
+    });
+
+    // 4. Server Session subscription: Enforce single active server device globally in real time
+    const unsubSession = firestoreSync.subscribeServerSession((session) => {
+      const myDeviceId = getDeviceId();
+      if (session) {
+        if (session.deviceId === myDeviceId) {
+          setIsServerAuthenticated(true);
+        } else {
+          // Another device took over or is the active server
+          setIsServerAuthenticated(false);
+          sessionStorage.removeItem('esports_server_auth');
+          sessionStorage.removeItem('esports_server_session_id');
+          localStorage.removeItem('esports_server_auth');
+          if (mode === 'server') {
+            setMode('client');
+            setActiveTab('enroll');
+            setSyncNotice({
+              type: 'error',
+              message: `Server session is active on ${session.deviceLabel || 'another device'}. Switched to Client mode.`,
+            });
+          }
+        }
+      }
     });
 
     return () => {
@@ -451,6 +527,7 @@ export default function App() {
       unsubSettings();
       unsubEvents();
       unsubClubs();
+      unsubSession();
     };
   }, [mode, settings.ordinalTitle]);
 
@@ -482,24 +559,63 @@ export default function App() {
     return () => clearInterval(interval);
   }, [isServerAuthenticated]);
 
-  // Check URL parameters for explicit mode on initial mount
+  // Helper to sync browser URL with current mode (client vs server)
+  const updateUrlMode = useCallback((targetMode: 'client' | 'server') => {
+    if (typeof window !== 'undefined') {
+      try {
+        const currentUrl = new URL(window.location.href);
+        if (currentUrl.searchParams.get('mode') !== targetMode) {
+          currentUrl.searchParams.set('mode', targetMode);
+          window.history.pushState({ mode: targetMode }, '', currentUrl.toString());
+        }
+      } catch {
+        // ignore history state errors if sandboxed
+      }
+    }
+  }, []);
+
+  // Check URL parameters for explicit mode on initial mount and handle popstate (Back/Forward)
   useEffect(() => {
+    // Clear persistent auth tokens so server remains strictly locked by default
+    try {
+      localStorage.removeItem('esports_server_auth');
+    } catch {
+      // ignore
+    }
+
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
       const urlMode = params.get('mode');
       if (urlMode === 'server') {
-        if (sessionStorage.getItem('esports_server_auth') === 'true') {
-          setMode('server');
-          setActiveTab('uploads');
-        } else {
-          setShowPinModal(true);
-        }
+        // By default server must be locked; under any circumstances subject to pin login
+        setMode('client');
+        setActiveTab('enroll');
+        setShowPinModal(true);
       } else if (urlMode === 'client') {
         setMode('client');
         setActiveTab('enroll');
       }
     }
-  }, []);
+
+    const handlePopState = () => {
+      if (typeof window !== 'undefined') {
+        const params = new URLSearchParams(window.location.search);
+        const urlMode = params.get('mode');
+        if (urlMode === 'server') {
+          if (!isServerAuthenticated) {
+            setShowPinModal(true);
+          } else {
+            setMode('server');
+          }
+        } else {
+          setMode('client');
+          setShowPinModal(false);
+        }
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [isServerAuthenticated]);
 
   // Suggested next chest or record number
   const suggestedChestNo = useMemo(() => {
@@ -540,15 +656,42 @@ export default function App() {
 
     if (mode === 'client') {
       // 1. Save locally to clientStorage (localStorage)
-      const savedCandidate = clientStorage.saveCandidate(candidateData);
+      // Note: mobile number is for club only, not saved into candidate record
+      const { clubMobile, ...pureCandidateData } = candidateData;
+      const savedCandidate = clientStorage.saveCandidate(pureCandidateData);
       const allLocal = clientStorage.getCandidates();
       setCandidates(sanitizeUniqueCandidates(allLocal));
       setCandidateToEdit(null);
 
+      // Save/update club in club table with club mobile number
+      const effectiveClubMobile = (clubMobile || sessionStorage.getItem('esports_client_club_mobile') || '').trim();
+      const clientClubName = (localStorage.getItem('esports_client_club_name') || sessionStorage.getItem('esports_client_club_name') || savedCandidate.club || 'SASTHITALA AGRANI').trim();
+
+      if (effectiveClubMobile && clientClubName && clientClubName !== 'Independent' && clientClubName !== 'Independent / Unattached') {
+        const existing = clubs.find((c) => (c.name || '').trim().toUpperCase() === clientClubName.toUpperCase());
+        const clubPayload: Partial<Club> = existing
+          ? {
+              ...existing,
+              name: clientClubName,
+              mobile: effectiveClubMobile,
+              phone: effectiveClubMobile || existing.phone,
+            }
+          : {
+              id: `club_${Date.now()}`,
+              name: clientClubName,
+              shortCode: clientClubName.slice(0, 4).toUpperCase().replace(/[^A-Z0-9]/g, '') || 'CLUB',
+              mobile: effectiveClubMobile,
+              phone: effectiveClubMobile,
+            };
+
+        handleSaveClub(clubPayload).catch((e) => {
+          console.warn('Club mobile save deferred:', e);
+        });
+      }
+
       // 2. Auto-submit immediately to Server Pending Queue
       // Ensures client's submitted data is instantly available in server's pending list!
       try {
-        const clientClubName = localStorage.getItem('esports_client_club_name') || savedCandidate.club || 'SASTHITALA AGRANI';
         const unsynced = clientStorage.getUnsyncedCandidates();
         const batchToSubmit = unsynced.length > 0 ? unsynced : [savedCandidate];
 
@@ -559,6 +702,7 @@ export default function App() {
           try {
             await api.submitUpload({
               club: clientClubName,
+              clubMobile: effectiveClubMobile,
               clientName: 'Client Portal',
               candidates: batchToSubmit,
               totalFees: batchToSubmit.reduce((sum, c) => sum + (c.totalFees || 0), 0),
@@ -607,8 +751,10 @@ export default function App() {
         }
       }
 
+      const effectiveClub = (candidateData.club || '').trim() || 'SELF';
       const srvCandidate = {
         ...candidateData,
+        club: effectiveClub,
         synced: true,
         isDirty: false,
         updatedAt: new Date().toISOString(),
@@ -660,6 +806,15 @@ export default function App() {
 
   // Trigger Client to Server Upload (Sends candidate entries into Server Staging for review)
   const handleSyncToServer = async () => {
+    if (mode === 'client' && settings.clientResponseEnabled === false) {
+      setSyncNotice({
+        type: 'error',
+        message: 'Client responses are currently paused by the server administrator. Uploads cannot be sent at this time.',
+      });
+      setTimeout(() => setSyncNotice(null), 5000);
+      return;
+    }
+
     setIsSyncing(true);
     setSyncNotice(null);
     try {
@@ -877,6 +1032,17 @@ export default function App() {
     }
   };
 
+  const handleDownloadExcel = useCallback(() => {
+    downloadSportsMeetExcel({
+      candidates,
+      events,
+      clubs,
+      heats,
+      results,
+      settings,
+    });
+  }, [candidates, events, clubs, heats, results, settings]);
+
   const handleRestoreBackup = async (jsonData: any) => {
     await api.restoreDatabaseDump(jsonData);
     await loadData();
@@ -891,14 +1057,17 @@ export default function App() {
   const handleModeChange = (newMode: 'client' | 'server') => {
     if (newMode === 'server') {
       if (!isServerAuthenticated) {
+        updateUrlMode('server');
         setShowPinModal(true);
         return;
       }
       setMode('server');
       setActiveTab('uploads');
+      updateUrlMode('server');
     } else {
       setMode('client');
       setActiveTab('enroll');
+      updateUrlMode('client');
     }
   };
 
@@ -908,6 +1077,7 @@ export default function App() {
     setShowPinModal(false);
     setMode('server');
     setActiveTab('uploads');
+    updateUrlMode('server');
     // Force immediate sync of all server records
     await loadData(true, 'server');
     setSyncNotice({
@@ -919,12 +1089,15 @@ export default function App() {
 
   // Lock server handler
   const handleLockServer = async () => {
-    const sessId = sessionStorage.getItem('esports_server_session_id') || undefined;
+    const sessId = sessionStorage.getItem('esports_server_session_id') || localStorage.getItem('esports_server_session_id') || undefined;
     sessionStorage.removeItem('esports_server_auth');
     sessionStorage.removeItem('esports_server_session_id');
+    localStorage.removeItem('esports_server_auth');
+    localStorage.removeItem('esports_server_session_id');
     setIsServerAuthenticated(false);
     setMode('client');
     setActiveTab('enroll');
+    updateUrlMode('client');
     try {
       await api.logoutServer(sessId);
     } catch {
@@ -951,11 +1124,61 @@ export default function App() {
         isSyncing={isSyncing}
         serverOnline={true}
         isServerAuthenticated={isServerAuthenticated}
-        onPromptPin={() => setShowPinModal(true)}
+        onPromptPin={() => {
+          updateUrlMode('server');
+          setShowPinModal(true);
+        }}
         onOpenResetPin={() => setShowResetPinModal(true)}
         onLockServer={handleLockServer}
         pendingUploadsCount={pendingUploadsCount}
+        onDownloadExcel={handleDownloadExcel}
       />
+
+      {/* Cloud Firestore Quota Exceeded Notice Banner */}
+      {isFirestoreQuotaExceeded && !dismissQuotaBanner && (
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-4 w-full print:hidden">
+          <div className="p-4 rounded-xl text-sm font-medium bg-amber-950/80 border border-amber-500/40 text-amber-200 flex flex-col md:flex-row items-start md:items-center justify-between gap-3 shadow-lg">
+            <div className="flex items-start gap-3">
+              <span className="text-xl shrink-0 mt-0.5">⚠️</span>
+              <div>
+                <p className="font-bold text-amber-300 text-sm">
+                  Firestore Free Daily Write Quota Limit Reached (Spark Plan: 20,000 writes/day)
+                </p>
+                <p className="text-xs text-amber-200/90 mt-1 leading-relaxed">
+                  The application is running smoothly using the local server database so all features, enrollments, reports, and downloads continue without data loss. Quotas automatically reset every 24 hours.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0 self-end md:self-auto text-xs font-semibold">
+              <a
+                href="https://console.firebase.google.com/project/gen-lang-client-0314503200/firestore/databases/ai-studio-esportssportsman-cdafea5a-b133-49a1-b322-b307dac88fe4/data?openUpgradeDialog=true"
+                target="_blank"
+                rel="noreferrer"
+                className="bg-amber-600 hover:bg-amber-500 text-white px-3 py-1.5 rounded-lg transition-colors inline-flex items-center gap-1 shadow-xs"
+              >
+                <span>Upgrade / Console</span>
+                <span className="text-[10px]">↗</span>
+              </a>
+              <a
+                href="https://firebase.google.com/pricing#cloud-firestore"
+                target="_blank"
+                rel="noreferrer"
+                className="bg-slate-800 hover:bg-slate-700 text-amber-300 px-3 py-1.5 rounded-lg border border-amber-500/30 transition-colors inline-flex items-center gap-1"
+              >
+                <span>Pricing Info</span>
+                <span className="text-[10px]">↗</span>
+              </a>
+              <button
+                onClick={() => setDismissQuotaBanner(true)}
+                className="text-amber-400 hover:text-white hover:bg-white/10 px-2 py-1 rounded-md cursor-pointer transition-colors"
+                title="Dismiss notice"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Sync / Action Notification Banner */}
       {syncNotice && (
@@ -995,6 +1218,7 @@ export default function App() {
               setSyncNotice({ type: 'success', message: msg });
               setTimeout(() => setSyncNotice(null), 6000);
             }}
+            onSaveSettings={handleSaveSettings}
           />
         )}
 
@@ -1018,6 +1242,7 @@ export default function App() {
             onEditCandidate={handleEditCandidate}
             onDeleteCandidate={handleDeleteCandidate}
             onCancelChest={handleCancelCandidateChest}
+            onSaveClub={handleSaveClub}
           />
         )}
 
@@ -1101,6 +1326,9 @@ export default function App() {
             settings={settings}
             clubs={clubs}
             events={events}
+            candidates={candidates}
+            heats={heats}
+            results={results}
             onSaveSettings={handleSaveSettings}
             onSaveClub={handleSaveClub}
             onDeleteClub={handleDeleteClub}
@@ -1108,6 +1336,7 @@ export default function App() {
             onDeleteEvent={handleDeleteEvent}
             onResetEvents={handleResetEvents}
             onDownloadBackup={handleDownloadBackup}
+            onDownloadExcel={handleDownloadExcel}
             onRestoreBackup={handleRestoreBackup}
             onResetAllData={handleResetAllData}
             onPurgeExceptEvents={async () => {
@@ -1211,6 +1440,9 @@ export default function App() {
           setShowPinModal(false);
           setMode('client');
           setActiveTab('enroll');
+          if (!isServerAuthenticated) {
+            updateUrlMode('client');
+          }
         }}
       />
 

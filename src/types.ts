@@ -16,7 +16,7 @@ export interface Candidate {
   club: string;
   gender: string;
   height: string;
-  feeStatus?: 'Paid [P]' | 'Unpaid [U]' | 'Exempted [E]' | string;
+  feeStatus?: 'Paid' | 'Due' | 'Free' | string;
   selectedEvents: number[];
   totalFees: number;
   createdAt: string;
@@ -33,12 +33,21 @@ export interface Candidate {
 
 export interface Club {
   id: string;
+  Sl?: number;
+  Reg_Club: string;
+  Mob?: string;
+  Count_1stPlace?: number;
+  Count_2ndPlace?: number;
+  Count_3rdPlace?: number;
+  TotPoints?: number;
+  // Compatibility aliases
   name: string;
-  shortCode: string;
-  logoUrl?: string;
-  contactPerson?: string;
+  mobile?: string;
   phone?: string;
   address?: string;
+  contactPerson?: string;
+  shortCode?: string;
+  logoUrl?: string;
 }
 
 export interface HeatParticipant {
@@ -69,6 +78,7 @@ export interface FinalParticipant {
   resultValue?: string;
   jumpRecord?: string;
   points?: number;
+  remarks?: string;
 }
 
 export interface BroadJumpRecordInfo {
@@ -114,6 +124,7 @@ export interface SportsMeetSettings {
   currencySymbol: string;
   autoChestStart: number;
   serverPin?: string;
+  clientResponseEnabled?: boolean; // Controls whether clients can send responses to server
   broadJumpPreviousRecords?: Record<number, BroadJumpRecordInfo>;
 }
 

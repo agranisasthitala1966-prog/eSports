@@ -1,7 +1,7 @@
 import { SportEvent, Club, SportsMeetSettings, Candidate } from '../types';
 
 export const INITIAL_EVENTS: SportEvent[] = [
-  { Evt_No: 0, Evt_Name: '50 MTS. RUN', Height: '3`-4``', Gender: 'CHILDRENS', Fees: 10.0, requiredHit: true, requiredFinal: true },
+  { Evt_No: 0, Evt_Name: '50M SPRINT', Height: '3`-4``', Gender: 'CHILDRENS', Fees: 0.0, requiredHit: true, requiredFinal: true },
   { Evt_No: 1, Evt_Name: '50 MTS. RUN', Height: '3`-8``', Gender: 'CHILDRENS', Fees: 10.0, requiredHit: true, requiredFinal: true },
   { Evt_No: 2, Evt_Name: 'KANAMACHHI', Height: '3`-8``', Gender: 'CHILDRENS', Fees: 10.0, requiredHit: true, requiredFinal: true },
   { Evt_No: 3, Evt_Name: '100 MTS. RUN', Height: '4`-2``', Gender: 'BOYS', Fees: 10.0, requiredHit: true, requiredFinal: true },
@@ -19,59 +19,13 @@ export const INITIAL_EVENTS: SportEvent[] = [
   { Evt_No: 15, Evt_Name: 'GO AS YOU LIKE', Height: 'ALL', Gender: 'ALL', Fees: 20.0, requiredHit: false, requiredFinal: true },
 ];
 
-export const INITIAL_CLUBS: Club[] = [
-  {
-    id: 'club_1',
-    name: 'Agrani Sasthitala Sangha',
-    shortCode: 'ASS',
-    logoUrl: '/icon.png',
-    contactPerson: 'S. Chakraborty',
-    phone: '+91 98301 23456',
-    address: 'Sasthitala Main Road, Ward 4',
-  },
-  {
-    id: 'club_2',
-    name: 'Milan Samity Athletic Club',
-    shortCode: 'MSAC',
-    logoUrl: 'https://images.unsplash.com/photo-1517649763962-0c623266ddc0?w=100&auto=format&fit=crop&q=60',
-    contactPerson: 'P. Banerjee',
-    phone: '+91 98311 87654',
-    address: 'Station Road North, Block B',
-  },
-  {
-    id: 'club_3',
-    name: 'Tarun Sangha Sports Club',
-    shortCode: 'TSSC',
-    logoUrl: 'https://images.unsplash.com/photo-1461896836934-ffe607ba8211?w=100&auto=format&fit=crop&q=60',
-    contactPerson: 'R. Mukherjee',
-    phone: '+91 94330 55432',
-    address: 'Vivekananda Sarani, Sector 2',
-  },
-  {
-    id: 'club_4',
-    name: 'Subhash Nagar Yuba Parishad',
-    shortCode: 'SNYP',
-    logoUrl: 'https://images.unsplash.com/photo-1546519638-68e109498ffc?w=100&auto=format&fit=crop&q=60',
-    contactPerson: 'A. Dasgupta',
-    phone: '+91 98322 11987',
-    address: 'Subhash Pally, Ground Lane',
-  },
-  {
-    id: 'club_5',
-    name: 'Independent / Unattached',
-    shortCode: 'IND',
-    logoUrl: '/icon.png',
-    contactPerson: 'Individual Entry',
-    phone: '-',
-    address: 'General Public Entry',
-  },
-];
+export const INITIAL_CLUBS: Club[] = [];
 
 export const INITIAL_SETTINGS: SportsMeetSettings = {
   ordinalTitle: '47th Annual Sports Meet 2027',
   registeredClubName: 'Agrani Sasthitala Sangha',
   registeredClubLogo: '/icon.png',
-  registeredClubPhone: '9830123456',
+  registeredClubPhone: '',
   organizer: 'Agrani Sasthitala Sports & Welfare Committee',
   venue: 'Sasthitala Central Stadium & Sports Complex',
   dates: '24th & 25th January 2027',
@@ -79,6 +33,7 @@ export const INITIAL_SETTINGS: SportsMeetSettings = {
   secretary: 'Shri Tapas Ghosh',
   currencySymbol: '₹',
   autoChestStart: 101,
+  clientResponseEnabled: true,
   broadJumpPreviousRecords: {
     6: {
       eventNo: 6,
