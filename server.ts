@@ -7,7 +7,7 @@ import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getFirestore, collection, doc, getDoc, getDocs, setDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
 import * as XLSX from 'xlsx';
 import { isExcludedClubForRanking } from './src/utils/clubRankingFilter.ts';
-import { isDirectEvent, getAdditionalEventsForCandidate, normalizeGender } from './src/utils/heightRules.ts';
+import { isDirectEvent, getAdditionalEventsForCandidate, normalizeGender } from './src/utils/eventEligibilityCore.ts';
 
 const app = express();
 // AI Studio multi-container architecture: Nginx runs on 8080 and proxies traffic to app-container on 3000.
