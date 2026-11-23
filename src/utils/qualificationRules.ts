@@ -366,7 +366,7 @@ export function buildLiveMeetTicker(
     .filter((e) => isEventFinalListPrepared(e.Evt_No, results))
     .map((e) => Number(e.Evt_No));
   if (finalCompletedEvts.length > 0) {
-    items.push({ key: 'final', text: `Final completed: ${finalCompletedEvts.join(', ')}`, isAlert: false });
+    items.push({ key: 'final', text: `Final Prepared: ${finalCompletedEvts.join(', ')}`, isAlert: false });
   }
 
   const resultDeclaredEvts = sortedEvents
