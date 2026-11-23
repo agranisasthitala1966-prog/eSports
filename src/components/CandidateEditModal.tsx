@@ -303,19 +303,19 @@ export const CandidateEditModal: React.FC<CandidateEditModalProps> = ({
 
   return (
     <>
-      {/* DEDICATED SEPARATE MODAL / PAGE: EDIT CANDIDATE DETAILS (Matching 1st Attachment) */}
+      {/* DEDICATED SEPARATE MODAL / PAGE: EDIT CANDIDATE DETAILS (Deep Grey Scheme) */}
       <div className="fixed inset-0 z-60 flex items-center justify-center p-3 sm:p-4 bg-black/85 backdrop-blur-xs animate-in fade-in">
-        <div className="border-2 border-yellow-400 rounded-3xl bg-[#090f1d] p-5 sm:p-6 shadow-2xl max-w-sm sm:max-w-md w-full space-y-4 text-slate-100">
+        <div className="border-2 border-yellow-400 rounded-3xl bg-[#202124] p-5 sm:p-6 shadow-2xl max-w-sm sm:max-w-md w-full space-y-4 text-neutral-100">
           
           {/* Header Title with Golden Text */}
           <div className="flex items-center justify-between pb-1">
             <h2 className="text-yellow-400 font-bold text-lg sm:text-xl">
-              Edit Candidate ({mode === 'server' ? `Chest #${candidate.chestNo || '—'}` : (candidate.chestNo && Number(candidate.chestNo) >= 101 ? `Chest #${candidate.chestNo}` : `#${candidate.localRecordNo || candidate.chestNo || 1}`)})
+              Edit Candidate ({mode === 'server' ? `Chest ${candidate.chestNo || '—'}` : (candidate.chestNo && Number(candidate.chestNo) >= 101 ? `Chest ${candidate.chestNo}` : `${candidate.localRecordNo || candidate.chestNo || 1}`)})
             </h2>
             <button
               type="button"
               onClick={onClose}
-              className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+              className="p-1.5 text-neutral-400 hover:text-white rounded-lg hover:bg-neutral-700 transition-colors cursor-pointer"
             >
               <X className="w-5 h-5 stroke-[2.5]" />
             </button>
@@ -334,35 +334,37 @@ export const CandidateEditModal: React.FC<CandidateEditModalProps> = ({
             </div>
           )}
 
-          {/* Form Fields matching 1st Attachment with Floating Labels and Yellow Accents */}
+          {/* Form Fields with Floating Labels and Yellow Accents */}
           <div className="space-y-3.5">
             
             {/* Field 1: Candidate Name (UPPERCASE) */}
-            <div className="relative border border-slate-600 rounded-xl px-3 pt-3 pb-2.5 bg-[#0d1628] focus-within:border-yellow-400 transition-colors">
-              <label className="absolute -top-2.5 left-3 px-1.5 bg-[#0d1628] text-[11px] font-bold text-slate-300 pointer-events-none">
+            <div className="relative border border-neutral-500 rounded-xl px-3 pt-3 pb-2.5 bg-[#2b2d31] focus-within:border-yellow-400 transition-colors">
+              <label className="absolute -top-2.5 left-3 px-1.5 bg-[#2b2d31] text-[11px] font-bold text-neutral-300 pointer-events-none">
                 Candidate Name (UPPERCASE)
               </label>
               <input
                 type="text"
                 value={editName}
                 onChange={(e) => handleNameChange(e.target.value)}
+                disabled={isEditRestricted}
                 placeholder="CANDIDATE NAME"
-                className="w-full bg-transparent text-white font-bold text-sm sm:text-base uppercase tracking-wide focus:outline-hidden"
+                className="w-full bg-transparent text-white font-bold text-sm sm:text-base uppercase tracking-wide focus:outline-hidden disabled:opacity-60 disabled:cursor-not-allowed"
               />
             </div>
 
             {/* Field 2: Club Name (UPPERCASE) - Only for Server mode, omitted for Client mode */}
             {mode !== 'client' && (
-              <div className="relative border border-slate-600 rounded-xl px-3 pt-3 pb-2.5 bg-[#0d1628] focus-within:border-yellow-400 transition-colors">
-                <label className="absolute -top-2.5 left-3 px-1.5 bg-[#0d1628] text-[11px] font-bold text-slate-300 pointer-events-none">
+              <div className="relative border border-neutral-500 rounded-xl px-3 pt-3 pb-2.5 bg-[#2b2d31] focus-within:border-yellow-400 transition-colors">
+                <label className="absolute -top-2.5 left-3 px-1.5 bg-[#2b2d31] text-[11px] font-bold text-neutral-300 pointer-events-none">
                   Club Name (UPPERCASE)
                 </label>
                 <input
                   type="text"
                   value={editClub}
                   onChange={(e) => setEditClub(e.target.value.toUpperCase())}
+                  disabled={isEditRestricted}
                   placeholder="CLUB NAME"
-                  className="w-full bg-transparent text-white font-bold text-sm sm:text-base uppercase tracking-wide focus:outline-hidden"
+                  className="w-full bg-transparent text-white font-bold text-sm sm:text-base uppercase tracking-wide focus:outline-hidden disabled:opacity-60 disabled:cursor-not-allowed"
                 />
               </div>
             )}
@@ -370,12 +372,13 @@ export const CandidateEditModal: React.FC<CandidateEditModalProps> = ({
             {/* Fields 3 & 4: Height & Gender (Two Columns) */}
             <div className="grid grid-cols-2 gap-3">
               {/* Height Combo */}
-              <div className="relative border border-slate-600 rounded-xl px-3 pt-3 pb-2 bg-[#0d1628] focus-within:border-yellow-400 transition-colors">
-                <label className="absolute -top-2.5 left-3 px-1.5 bg-[#0d1628] text-[11px] font-bold text-slate-300 pointer-events-none">
+              <div className="relative border border-neutral-500 rounded-xl px-3 pt-3 pb-2 bg-[#2b2d31] focus-within:border-yellow-400 transition-colors">
+                <label className="absolute -top-2.5 left-3 px-1.5 bg-[#2b2d31] text-[11px] font-bold text-neutral-300 pointer-events-none">
                   Height
                 </label>
                 <select
                   value={editHeight}
+                  disabled={isEditRestricted}
                   onChange={(e) => {
                     const newHeight = e.target.value;
                     if (newHeight !== editHeight) {
@@ -385,22 +388,23 @@ export const CandidateEditModal: React.FC<CandidateEditModalProps> = ({
                       setTempSelectedEvents([]);
                     }
                   }}
-                  className="w-full bg-transparent text-white font-bold text-sm sm:text-base focus:outline-hidden cursor-pointer"
+                  className="w-full bg-transparent text-white font-bold text-sm sm:text-base focus:outline-hidden cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  <option value="ALL" className="bg-[#0d1628] text-white">ALL</option>
+                  <option value="ALL" className="bg-[#2b2d31] text-white">ALL</option>
                   {availableHeights.map(h => (
-                    <option key={h} value={h} className="bg-[#0d1628] text-white">{h}</option>
+                    <option key={h} value={h} className="bg-[#2b2d31] text-white">{h}</option>
                   ))}
                 </select>
               </div>
 
               {/* Gender Combo */}
-              <div className="relative border border-slate-600 rounded-xl px-3 pt-3 pb-2 bg-[#0d1628] focus-within:border-yellow-400 transition-colors">
-                <label className="absolute -top-2.5 left-3 px-1.5 bg-[#0d1628] text-[11px] font-bold text-slate-300 pointer-events-none">
+              <div className="relative border border-neutral-500 rounded-xl px-3 pt-3 pb-2 bg-[#2b2d31] focus-within:border-yellow-400 transition-colors">
+                <label className="absolute -top-2.5 left-3 px-1.5 bg-[#2b2d31] text-[11px] font-bold text-neutral-300 pointer-events-none">
                   Gender
                 </label>
                 <select
                   value={editGender}
+                  disabled={isEditRestricted}
                   onChange={(e) => {
                     const newGender = e.target.value;
                     if (newGender !== editGender) {
@@ -410,12 +414,12 @@ export const CandidateEditModal: React.FC<CandidateEditModalProps> = ({
                       setTempSelectedEvents([]);
                     }
                   }}
-                  className="w-full bg-transparent text-white font-bold text-sm sm:text-base focus:outline-hidden cursor-pointer"
+                  className="w-full bg-transparent text-white font-bold text-sm sm:text-base focus:outline-hidden cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  <option value="B" className="bg-[#0d1628] text-white">B</option>
-                  <option value="G" className="bg-[#0d1628] text-white">G</option>
-                  <option value="C" className="bg-[#0d1628] text-white">C</option>
-                  <option value="ALL" className="bg-[#0d1628] text-white">ALL</option>
+                  <option value="B" className="bg-[#2b2d31] text-white">B</option>
+                  <option value="G" className="bg-[#2b2d31] text-white">G</option>
+                  <option value="C" className="bg-[#2b2d31] text-white">C</option>
+                  <option value="ALL" className="bg-[#2b2d31] text-white">ALL</option>
                 </select>
               </div>
             </div>
@@ -426,9 +430,9 @@ export const CandidateEditModal: React.FC<CandidateEditModalProps> = ({
                 setTempSelectedEvents([...editSelectedEvents]);
                 setShowSelectEventsModal(true);
               }}
-              className="relative border border-slate-600 rounded-xl px-3 pt-3 pb-2.5 bg-[#0d1628] cursor-pointer hover:border-yellow-400 transition-colors flex items-center justify-between group"
+              className="relative border border-neutral-500 rounded-xl px-3 pt-3 pb-2.5 bg-[#2b2d31] cursor-pointer hover:border-yellow-400 transition-colors flex items-center justify-between group"
             >
-              <label className="absolute -top-2.5 left-3 px-1.5 bg-[#0d1628] text-[11px] font-bold text-slate-300 group-hover:text-yellow-400 transition-colors pointer-events-none">
+              <label className="absolute -top-2.5 left-3 px-1.5 bg-[#2b2d31] text-[11px] font-bold text-neutral-300 group-hover:text-yellow-400 transition-colors pointer-events-none">
                 Selected Events (Tap to update)
               </label>
               <span className="text-yellow-400 font-extrabold text-sm sm:text-base font-mono truncate mr-2">
@@ -438,19 +442,20 @@ export const CandidateEditModal: React.FC<CandidateEditModalProps> = ({
             </div>
 
             {/* Field 6: Fee Status */}
-            <div className="relative border border-slate-600 rounded-xl px-3 pt-3 pb-2 bg-[#0d1628] focus-within:border-yellow-400 transition-colors">
-              <label className="absolute -top-2.5 left-3 px-1.5 bg-[#0d1628] text-[11px] font-bold text-slate-300 pointer-events-none">
+            <div className="relative border border-neutral-500 rounded-xl px-3 pt-3 pb-2 bg-[#2b2d31] focus-within:border-yellow-400 transition-colors">
+              <label className="absolute -top-2.5 left-3 px-1.5 bg-[#2b2d31] text-[11px] font-bold text-neutral-300 pointer-events-none">
                 Fee Status
               </label>
               <select
                 value={editFeeStatus}
+                disabled={isEditRestricted}
                 onChange={(e) => setEditFeeStatus(e.target.value)}
-                className="w-full bg-transparent text-white font-bold text-sm sm:text-base focus:outline-hidden cursor-pointer"
+                className="w-full bg-transparent text-white font-bold text-sm sm:text-base focus:outline-hidden cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
               >
-                <option value="Due" className="bg-[#0d1628] text-white">Due</option>
-                <option value="Paid" className="bg-[#0d1628] text-white">Paid</option>
+                <option value="Due" className="bg-[#2b2d31] text-white">Due</option>
+                <option value="Paid" className="bg-[#2b2d31] text-white">Paid</option>
                 {mode !== 'client' && (
-                  <option value="Free" className="bg-[#0d1628] text-white">Free</option>
+                  <option value="Free" className="bg-[#2b2d31] text-white">Free</option>
                 )}
               </select>
             </div>
@@ -485,7 +490,7 @@ export const CandidateEditModal: React.FC<CandidateEditModalProps> = ({
             <button
               type="button"
               onClick={onClose}
-              className="flex-1 py-3 rounded-full bg-[#162035] hover:bg-[#1f2d4a] text-white font-bold border border-slate-600 text-sm active:scale-98 transition-all cursor-pointer"
+              className="flex-1 py-3 rounded-full bg-[#35373d] hover:bg-[#43464e] text-white font-bold border border-neutral-500 text-sm active:scale-98 transition-all cursor-pointer"
             >
               Cancel
             </button>
@@ -493,7 +498,7 @@ export const CandidateEditModal: React.FC<CandidateEditModalProps> = ({
               type="button"
               onClick={handleSave}
               disabled={isSaving || isEditRestricted || Boolean(editErrorMsg)}
-              className="flex-1 py-3 rounded-full bg-yellow-400 hover:bg-yellow-300 text-slate-950 font-black text-sm shadow-md active:scale-98 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex-1 py-3 rounded-full bg-yellow-400 hover:bg-yellow-300 text-neutral-950 font-black text-sm shadow-md active:scale-98 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isEditRestricted ? 'Editing Disabled' : isSaving ? 'Saving...' : 'Save Changes'}
             </button>
@@ -502,18 +507,18 @@ export const CandidateEditModal: React.FC<CandidateEditModalProps> = ({
         </div>
       </div>
 
-      {/* MULTI-SELECT EVENTS LIST BOX MODAL (Matching 2nd Attachment with Golden Border) */}
+      {/* MULTI-SELECT EVENTS LIST BOX MODAL (Deep Grey Scheme) */}
       {showSelectEventsModal && (
         <div className="fixed inset-0 z-70 flex items-center justify-center p-3 sm:p-4 bg-black/85 backdrop-blur-xs animate-in fade-in">
-          <div className="border-2 border-yellow-400 rounded-3xl bg-[#090f1d] p-5 shadow-2xl max-w-sm sm:max-w-md w-full flex flex-col max-h-[85vh] text-slate-100">
+          <div className="border-2 border-yellow-400 rounded-3xl bg-[#202124] p-5 shadow-2xl max-w-sm sm:max-w-md w-full flex flex-col max-h-[85vh] text-neutral-100">
             
             {/* Modal Header */}
-            <div className="flex items-start justify-between pb-3 border-b border-slate-800">
+            <div className="flex items-start justify-between pb-3 border-b border-neutral-700">
               <div>
                 <h3 className="text-yellow-400 font-bold text-lg sm:text-xl">
                   Select Events
                 </h3>
-                <p className="text-slate-400 text-xs font-semibold mt-0.5">
+                <p className="text-neutral-400 text-xs font-semibold mt-0.5">
                   {(!editHeight || editHeight === 'ALL') && (!editGender || editGender === 'ALL')
                     ? 'Criteria: ALL / ALL • Event #15 Only'
                     : `Criteria: ${criteriaGenderDisplay} • ${editHeight || 'ALL'} & higher (Event #15 Open for All)`}
@@ -522,7 +527,7 @@ export const CandidateEditModal: React.FC<CandidateEditModalProps> = ({
               <button
                 type="button"
                 onClick={() => setShowSelectEventsModal(false)}
-                className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+                className="p-1.5 text-neutral-400 hover:text-white rounded-lg hover:bg-neutral-700 transition-colors cursor-pointer"
               >
                 <X className="w-5 h-5 stroke-[2.5]" />
               </button>
@@ -531,7 +536,7 @@ export const CandidateEditModal: React.FC<CandidateEditModalProps> = ({
             {/* Events List Scrollable */}
             <div className="flex-1 overflow-y-auto py-3 space-y-2.5 pr-1">
               {eligibleEditEvents.length === 0 ? (
-                <div className="text-center py-10 text-slate-400 text-xs">
+                <div className="text-center py-10 text-neutral-400 text-xs">
                   No events found matching criteria ({criteriaGenderDisplay} • {editHeight || 'ALL'} & higher).
                 </div>
               ) : (
@@ -545,20 +550,20 @@ export const CandidateEditModal: React.FC<CandidateEditModalProps> = ({
                       onClick={() => !isDisabled && toggleTempEvent(evt.Evt_No)}
                       className={`rounded-2xl p-3 flex items-center gap-3 transition-all ${
                         isDisabled
-                          ? 'opacity-35 bg-slate-900/60 border border-slate-800 cursor-not-allowed pointer-events-none select-none'
+                          ? 'opacity-35 bg-[#18191b] border border-neutral-800 cursor-not-allowed pointer-events-none select-none'
                           : isSelected
-                          ? 'border-2 border-yellow-400 bg-[#0e172a] shadow-md shadow-yellow-500/10 cursor-pointer'
-                          : 'border border-slate-700 bg-[#0b1222] hover:border-slate-500 cursor-pointer'
+                          ? 'border-2 border-yellow-400 bg-[#2f3136] shadow-md shadow-yellow-500/10 cursor-pointer'
+                          : 'border border-neutral-600 bg-[#27282c] hover:border-neutral-400 cursor-pointer'
                       }`}
                     >
                       {/* Checkbox Icon */}
                       <div
                         className={`w-6 h-6 rounded flex items-center justify-center shrink-0 transition-colors ${
                           isDisabled
-                            ? 'border-2 border-slate-700 bg-transparent'
+                            ? 'border-2 border-neutral-700 bg-transparent'
                             : isSelected
-                            ? 'bg-yellow-400 text-slate-950 font-black'
-                            : 'border-2 border-slate-500 bg-transparent'
+                            ? 'bg-yellow-400 text-neutral-950 font-black'
+                            : 'border-2 border-neutral-500 bg-transparent'
                         }`}
                       >
                         {isSelected && !isDisabled && <Check className="w-4 h-4 stroke-[3]" />}
@@ -568,10 +573,10 @@ export const CandidateEditModal: React.FC<CandidateEditModalProps> = ({
                       <div
                         className={`w-7 h-7 rounded flex items-center justify-center font-black text-xs shrink-0 ${
                           isDisabled
-                            ? 'bg-slate-800 text-slate-500'
+                            ? 'bg-neutral-800 text-neutral-500'
                             : isSelected
-                            ? 'bg-amber-400 text-slate-950'
-                            : 'bg-[#1a2b4c] text-blue-200'
+                            ? 'bg-amber-400 text-neutral-950'
+                            : 'bg-[#3b3e46] text-neutral-200'
                         }`}
                       >
                         #{evt.Evt_No}
@@ -580,7 +585,7 @@ export const CandidateEditModal: React.FC<CandidateEditModalProps> = ({
                       {/* Event Details */}
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
-                          <span className={`font-extrabold text-xs sm:text-sm uppercase tracking-wide truncate ${isDisabled ? 'text-slate-500' : 'text-white'}`}>
+                          <span className={`font-extrabold text-xs sm:text-sm uppercase tracking-wide truncate ${isDisabled ? 'text-neutral-500' : 'text-white'}`}>
                             {evt.Evt_Name}
                           </span>
                           {isEvt0Disabled && (
@@ -589,7 +594,7 @@ export const CandidateEditModal: React.FC<CandidateEditModalProps> = ({
                             </span>
                           )}
                         </div>
-                        <div className="text-[11px] text-slate-400 font-semibold truncate">
+                        <div className="text-[11px] text-neutral-400 font-semibold truncate">
                           {evt.Gender} • {evt.Height} • ₹{Number(evt.Fees ?? 0).toFixed(2)}
                         </div>
                       </div>
@@ -600,7 +605,7 @@ export const CandidateEditModal: React.FC<CandidateEditModalProps> = ({
             </div>
 
             {/* Modal Footer with Selection Count, Cancel and Ok */}
-            <div className="flex items-center justify-between pt-3 border-t border-slate-800 gap-3">
+            <div className="flex items-center justify-between pt-3 border-t border-neutral-700 gap-3">
               <div className="text-yellow-400 font-bold text-xs sm:text-sm">
                 {tempSelectedEvents.length} event(s) selected
               </div>
@@ -608,14 +613,14 @@ export const CandidateEditModal: React.FC<CandidateEditModalProps> = ({
                 <button
                   type="button"
                   onClick={() => setShowSelectEventsModal(false)}
-                  className="px-4 sm:px-5 py-2 rounded-full bg-[#162035] hover:bg-[#1f2d4a] text-white font-bold border border-slate-600 text-xs sm:text-sm transition-colors cursor-pointer"
+                  className="px-4 sm:px-5 py-2 rounded-full bg-[#35373d] hover:bg-[#43464e] text-white font-bold border border-neutral-500 text-xs sm:text-sm transition-colors cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="button"
                   onClick={confirmSelectEvents}
-                  className="px-5 sm:px-6 py-2 rounded-full bg-yellow-400 hover:bg-yellow-300 text-slate-950 font-black text-xs sm:text-sm shadow-md transition-all active:scale-98 cursor-pointer"
+                  className="px-5 sm:px-6 py-2 rounded-full bg-yellow-400 hover:bg-yellow-300 text-neutral-950 font-black text-xs sm:text-sm shadow-md transition-all active:scale-98 cursor-pointer"
                 >
                   Ok
                 </button>

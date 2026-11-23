@@ -1,7 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Club, SportsMeetSettings, SportEvent, Candidate, EventHeat, EventResult } from '../types';
-import { api } from '../services/api';
-import { downloadSportsMeetExcel } from '../services/excelExport';
 import { EventMaster } from './EventMaster';
 import { resizeImageToMax50KB } from '../utils/imageResize';
 import { 
@@ -17,10 +15,7 @@ import {
   ChevronUp, 
   Calendar, 
   Shield, 
-  Phone,
-  FileSpreadsheet,
-  Database,
-  Download
+  Phone
 } from 'lucide-react';
 
 interface AdminPanelProps {
@@ -33,13 +28,14 @@ interface AdminPanelProps {
   onSaveSettings: (settings: SportsMeetSettings) => Promise<void>;
   onSaveClub: (club: Partial<Club>) => Promise<void>;
   onDeleteClub: (clubId: string) => Promise<void>;
+  onMarkClubsPaid?: (clubNames: string[]) => Promise<{ updatedCount: number; totalMarkedAmount: number }>;
   onSaveEvent?: (event: SportEvent) => Promise<void>;
   onDeleteEvent?: (evtNo: number) => Promise<void>;
   onResetEvents?: () => Promise<void>;
-  onDownloadBackup: () => void;
+  onDownloadBackup?: () => void;
   onDownloadExcel?: () => void;
-  onRestoreBackup: (jsonData: any) => Promise<void>;
-  onResetAllData: () => Promise<void>;
+  onRestoreBackup?: (jsonData: any) => Promise<void>;
+  onResetAllData?: () => Promise<void>;
   onPurgeExceptEvents?: () => Promise<void>;
   onOpenResetPin?: () => void;
 }
@@ -49,19 +45,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   clubs,
   events = [],
   candidates = [],
-  heats = [],
-  results = [],
   onSaveSettings,
   onSaveClub,
   onDeleteClub,
+  onMarkClubsPaid,
   onSaveEvent,
   onDeleteEvent,
   onResetEvents,
-  onDownloadBackup,
-  onDownloadExcel,
-  onRestoreBackup,
-  onResetAllData,
-  onPurgeExceptEvents,
   onOpenResetPin,
 }) => {
   const [localSettings, setLocalSettings] = useState<SportsMeetSettings>(() => ({
@@ -88,6 +78,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [editingClub, setEditingClub] = useState<Partial<Club> | null>(null);
   const [statusMsg, setStatusMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [selectedClubNames, setSelectedClubNames] = useState<string[]>([]);
+  const [isMarkingPaid, setIsMarkingPaid] = useState(false);
 
   useEffect(() => {
     // Only synchronize from upstream if user is not actively editing the meet details form
@@ -143,7 +135,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     eventMaster: false,
     clubs: false,
     securityPin: false,
-    databaseBackup: false,
   });
 
   const toggleSection = (sectionKey: string) => {
@@ -159,7 +150,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       eventMaster: true,
       clubs: true,
       securityPin: true,
-      databaseBackup: true,
     });
   };
 
@@ -169,36 +159,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       eventMaster: false,
       clubs: false,
       securityPin: false,
-      databaseBackup: false,
     });
-  };
-
-  // Download Database & Data as Excel Workbook (.xlsx) with 'General Entry' & 'Event Allocation'
-  const handleDownloadExcel = () => {
-    if (onDownloadExcel) {
-      onDownloadExcel();
-      return;
-    }
-    try {
-      downloadSportsMeetExcel({
-        candidates: candidates || [],
-        events: events || [],
-        clubs: clubs || [],
-        heats: heats || [],
-        results: results || [],
-        settings: localSettings,
-      });
-      setStatusMsg({
-        type: 'success',
-        text: "Excel workbook (.xlsx) with 'General Entry' & 'Event Allocation' downloaded successfully!",
-      });
-      setTimeout(() => setStatusMsg(null), 3500);
-    } catch (err: any) {
-      setStatusMsg({
-        type: 'error',
-        text: 'Failed to generate Excel file: ' + err.message,
-      });
-    }
   };
 
   // Handle settings update
@@ -237,8 +198,81 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   };
 
+  // Selected clubs statistics & bulk Paid action
+  const activeSelectedClubsSet = useMemo(() => {
+    const validClubsSet = new Set(
+      clubs.map((c) => String(c.Reg_Club || c.name || '').trim().toUpperCase()).filter(Boolean)
+    );
+    return new Set(
+      selectedClubNames.map((n) => n.trim().toUpperCase()).filter((n) => validClubsSet.has(n))
+    );
+  }, [clubs, selectedClubNames]);
+
+  const { selectedClubCandidateCount, selectedClubDueCandidates, selectedClubDueAmount } = useMemo(() => {
+    if (activeSelectedClubsSet.size === 0) {
+      return {
+        selectedClubCandidateCount: 0,
+        selectedClubDueCandidates: [] as Candidate[],
+        selectedClubDueAmount: 0,
+      };
+    }
+
+    const matchedCandidates = candidates.filter((c) => {
+      if (c.isCancelled || c.status === 'cancelled') return false;
+      const clubNorm = (c.club || '').trim().toUpperCase();
+      return activeSelectedClubsSet.has(clubNorm);
+    });
+
+    const dueCandidates = matchedCandidates.filter((c) => {
+      const st = (c.feeStatus || 'Due').trim().toUpperCase();
+      const isFree = st.includes('FREE') || st.includes('EXEMPT');
+      return !isFree && (st.includes('DUE') || st.includes('UNPAID') || !st.includes('PAID'));
+    });
+
+    const dueAmount = dueCandidates.reduce((sum, c) => sum + (Number(c.totalFees) || 0), 0);
+    return {
+      selectedClubCandidateCount: matchedCandidates.length,
+      selectedClubDueCandidates: dueCandidates,
+      selectedClubDueAmount: dueAmount,
+    };
+  }, [candidates, activeSelectedClubsSet]);
+
+  const toggleClubSelection = (clubNameRaw: string) => {
+    const normalized = clubNameRaw.trim().toUpperCase();
+    if (!normalized) return;
+    setSelectedClubNames((prev) =>
+      prev.includes(normalized)
+        ? prev.filter((name) => name !== normalized)
+        : [...prev, normalized]
+    );
+  };
+
+  const handleMarkSelectedClubsPaid = async () => {
+    if (!onMarkClubsPaid || activeSelectedClubsSet.size === 0 || selectedClubDueCandidates.length === 0) {
+      return;
+    }
+    setIsMarkingPaid(true);
+    setStatusMsg(null);
+    try {
+      const targetClubList = Array.from(activeSelectedClubsSet);
+      const result = await onMarkClubsPaid(targetClubList);
+      setStatusMsg({
+        type: 'success',
+        text: `Marked ${result.updatedCount} due candidate(s) as Paid (${settings.currencySymbol || '₹'}${result.totalMarkedAmount.toFixed(0)}) across ${targetClubList.join(', ')}.`,
+      });
+      setTimeout(() => setStatusMsg(null), 4500);
+    } catch (err: any) {
+      setStatusMsg({
+        type: 'error',
+        text: err.message || 'Failed to update club payment status',
+      });
+    } finally {
+      setIsMarkingPaid(false);
+    }
+  };
+
   return (
-    <div className="max-w-5xl mx-auto space-y-6">
+    <div className="max-w-5xl mx-auto space-y-3.5 sm:space-y-4">
       
       {/* Header - Direct to Page Background (No White Box) */}
       <div className="flex flex-row items-center justify-between gap-3 pt-1">
@@ -288,62 +322,62 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       {/* ========================================================================= */}
       {/* 1. SPORTS MEET DETAILS & ORDINAL NUMBER (MINIMIZED WITH OPTION TO EXPAND) */}
       {/* ========================================================================= */}
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden transition-all">
+      <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden transition-all">
         <div
           onClick={() => toggleSection('meetDetails')}
-          className="p-5 sm:p-6 flex items-center justify-between gap-4 cursor-pointer hover:bg-slate-50/70 transition-colors select-none"
+          className="min-h-[64px] px-4 py-3 sm:px-5 sm:py-3.5 cursor-pointer hover:bg-slate-50/70 transition-colors select-none"
         >
-          <div className="flex items-center gap-3 min-w-0">
-            <span className="w-7 h-7 rounded-lg bg-blue-600 text-white flex items-center justify-center text-xs font-bold shrink-0">
+          <div className="flex items-start gap-3">
+            <span className="w-7 h-7 rounded-lg bg-blue-600 text-white flex items-center justify-center text-xs font-bold shrink-0 mt-0.5">
               1
             </span>
-            <div className="min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <h2 className="text-base font-bold text-slate-900">Host Club registration &amp; Meet Settings</h2>
-                <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200 truncate">
-                  {localSettings.ordinalTitle || 'Configured'}
-                </span>
-                <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200 truncate">
-                  {localSettings.registeredClubName || 'Registered Club'}
-                </span>
-                <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-slate-50 text-slate-700 border border-slate-200 truncate">
-                  Start Chest: #{localSettings.autoChestStart || 101}
-                </span>
-                {localSettings.registeredClubPhone && (
-                  <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 truncate flex items-center gap-1 font-mono">
-                    <Phone className="w-3 h-3 text-emerald-600" />
-                    <span>{localSettings.registeredClubPhone}</span>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 flex-wrap min-w-0">
+                  <h2 className="text-sm sm:text-base font-bold text-slate-900 leading-snug">
+                    Host Club &amp; Meet Setup
+                  </h2>
+                  <span className="hidden lg:inline-block text-[11px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200 truncate">
+                    {localSettings.ordinalTitle || 'Configured'}
                   </span>
-                )}
+                  <span className="hidden lg:inline-block text-[11px] font-semibold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200 truncate">
+                    {localSettings.registeredClubName || 'Registered Club'}
+                  </span>
+                  <span className="hidden md:inline-block text-[11px] font-semibold px-2 py-0.5 rounded-full bg-slate-50 text-slate-700 border border-slate-200 truncate">
+                    Start Chest: #{localSettings.autoChestStart || 101}
+                  </span>
+                  {localSettings.registeredClubPhone && (
+                    <span className="hidden xl:inline-flex text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 truncate items-center gap-1 font-mono">
+                      <Phone className="w-3 h-3 text-emerald-600" />
+                      <span>{localSettings.registeredClubPhone}</span>
+                    </span>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleSection('meetDetails');
+                  }}
+                  aria-label={expandedSections.meetDetails ? 'Minimize Host Club & Meet Setup' : 'Expand Host Club & Meet Setup'}
+                  title={expandedSections.meetDetails ? 'Minimize' : 'Expand'}
+                  className="w-8 h-8 rounded-lg flex items-center justify-center text-blue-600 bg-blue-50 hover:bg-blue-100 active:scale-95 transition-colors shrink-0 cursor-pointer ml-auto"
+                >
+                  {expandedSections.meetDetails ? (
+                    <ChevronUp className="w-4 h-4" />
+                  ) : (
+                    <ChevronDown className="w-4 h-4" />
+                  )}
+                </button>
               </div>
-              <p className="text-xs text-slate-500 mt-0.5">
+              <p className="text-xs text-slate-500 mt-0.5 leading-snug truncate">
                 {expandedSections.meetDetails
                   ? 'Configure host club registration, logo, meet title, dates, venue, and starting chest number.'
                   : 'Click to expand and edit host club registration, logo, meet title, dates, venue, and starting chest number.'}
               </p>
             </div>
           </div>
-
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              toggleSection('meetDetails');
-            }}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 transition-colors shrink-0 cursor-pointer"
-          >
-            {expandedSections.meetDetails ? (
-              <>
-                <ChevronUp className="w-4 h-4" />
-                <span>Minimize</span>
-              </>
-            ) : (
-              <>
-                <ChevronDown className="w-4 h-4" />
-                <span>Expand</span>
-              </>
-            )}
-          </button>
         </div>
 
         {expandedSections.meetDetails && (
@@ -628,50 +662,48 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       {/* ========================================================================= */}
       {/* 2. EVENT MASTER ENTRY (MINIMIZED WITH OPTION TO EXPAND)                    */}
       {/* ========================================================================= */}
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden transition-all">
+      <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden transition-all">
         <div
           onClick={() => toggleSection('eventMaster')}
-          className="p-5 sm:p-6 flex items-center justify-between gap-4 cursor-pointer hover:bg-slate-50/70 transition-colors select-none"
+          className="min-h-[64px] px-4 py-3 sm:px-5 sm:py-3.5 cursor-pointer hover:bg-slate-50/70 transition-colors select-none"
         >
-          <div className="flex items-center gap-3 min-w-0">
-            <span className="w-7 h-7 rounded-lg bg-blue-600 text-white flex items-center justify-center text-xs font-bold shrink-0">
+          <div className="flex items-start gap-3">
+            <span className="w-7 h-7 rounded-lg bg-blue-600 text-white flex items-center justify-center text-xs font-bold shrink-0 mt-0.5">
               2
             </span>
-            <div className="min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <h2 className="text-base font-bold text-slate-900">Event Master Entry</h2>
-                <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
-                  {events?.length || 0} Events Registered
-                </span>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 flex-wrap min-w-0">
+                  <h2 className="text-sm sm:text-base font-bold text-slate-900 leading-snug">
+                    Event Master Entry
+                  </h2>
+                  <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
+                    {events?.length || 0} Events Registered
+                  </span>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleSection('eventMaster');
+                  }}
+                  aria-label={expandedSections.eventMaster ? 'Minimize Event Master Entry' : 'Expand Event Master Entry'}
+                  title={expandedSections.eventMaster ? 'Minimize' : 'Expand'}
+                  className="w-8 h-8 rounded-lg flex items-center justify-center text-blue-600 bg-blue-50 hover:bg-blue-100 active:scale-95 transition-colors shrink-0 cursor-pointer ml-auto"
+                >
+                  {expandedSections.eventMaster ? (
+                    <ChevronUp className="w-4 h-4" />
+                  ) : (
+                    <ChevronDown className="w-4 h-4" />
+                  )}
+                </button>
               </div>
-              <p className="text-xs text-slate-500 mt-0.5">
-                {expandedSections.eventMaster
-                  ? 'Configure athletic meet disciplines, standard height brackets, categories, and fees.'
-                  : 'Click to expand and view or manage athletic events master list.'}
+              <p className="text-xs text-slate-500 mt-0.5 leading-snug">
+                View &amp; Manage Event List
               </p>
             </div>
           </div>
-
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              toggleSection('eventMaster');
-            }}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 transition-colors shrink-0 cursor-pointer"
-          >
-            {expandedSections.eventMaster ? (
-              <>
-                <ChevronUp className="w-4 h-4" />
-                <span>Minimize</span>
-              </>
-            ) : (
-              <>
-                <ChevronDown className="w-4 h-4" />
-                <span>Expand</span>
-              </>
-            )}
-          </button>
         </div>
 
         {expandedSections.eventMaster && (
@@ -693,65 +725,105 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       {/* ========================================================================= */}
       {/* 3. REGISTERED CLUBS (MINIMIZED WITH OPTION TO EXPAND, ALL LOGOS REMOVED)   */}
       {/* ========================================================================= */}
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden transition-all">
+      <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden transition-all">
         <div
           onClick={() => toggleSection('clubs')}
-          className="p-5 sm:p-6 flex items-center justify-between gap-4 cursor-pointer hover:bg-slate-50/70 transition-colors select-none"
+          className="min-h-[64px] px-4 py-3 sm:px-5 sm:py-3.5 cursor-pointer hover:bg-slate-50/70 transition-colors select-none"
         >
-          <div className="flex items-center gap-3 min-w-0">
-            <span className="w-7 h-7 rounded-lg bg-blue-600 text-white flex items-center justify-center text-xs font-bold shrink-0">
+          <div className="flex items-start gap-3">
+            <span className="w-7 h-7 rounded-lg bg-blue-600 text-white flex items-center justify-center text-xs font-bold shrink-0 mt-0.5">
               3
             </span>
-            <div className="min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <h2 className="text-base font-bold text-slate-900">Registered Clubs</h2>
-                <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
-                  {clubs.length} Clubs Registered
-                </span>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="flex items-center gap-2 flex-wrap min-w-0">
+                  <h2 className="text-sm sm:text-base font-bold text-slate-900 leading-snug">
+                    Registered Clubs
+                  </h2>
+                  <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
+                    {clubs.length} Clubs Registered
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 ml-auto flex-wrap justify-end">
+                  {expandedSections.clubs && (
+                    <>
+                      {/* Left of total fee label: Total candidate count for selected club(s) */}
+                      <span
+                        onClick={(e) => e.stopPropagation()}
+                        title="Total active candidates under selected club(s)"
+                        className="px-2 py-1 rounded-lg bg-slate-100 border border-slate-200 text-slate-700 text-[11px] sm:text-xs font-bold whitespace-nowrap"
+                      >
+                        {selectedClubCandidateCount} Cand.
+                      </span>
+
+                      {/* Left of Paid ∀ button: Total due amount for selected club(s) */}
+                      <span
+                        onClick={(e) => e.stopPropagation()}
+                        title="Total due amount to be paid for selected club(s)"
+                        className="px-2 py-1 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-[11px] sm:text-xs font-bold whitespace-nowrap"
+                      >
+                        Due: {settings.currencySymbol || '₹'}{selectedClubDueAmount}
+                      </span>
+
+                      {/* Left of Club Add button: Paid ∀ button */}
+                      <button
+                        type="button"
+                        disabled={isMarkingPaid || selectedClubDueCandidates.length === 0}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleMarkSelectedClubsPaid();
+                        }}
+                        title={
+                          activeSelectedClubsSet.size === 0
+                            ? 'Select club checkbox(es) first'
+                            : selectedClubDueCandidates.length === 0
+                            ? 'No due candidates in selected club(s)'
+                            : `Mark ${selectedClubDueCandidates.length} unpaid candidate(s) as Paid`
+                        }
+                        className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 active:scale-98 disabled:opacity-45 disabled:cursor-not-allowed text-white rounded-lg text-xs font-bold transition-colors cursor-pointer shadow-xs whitespace-nowrap"
+                      >
+                        {isMarkingPaid ? 'Updating...' : 'Paid ∀'}
+                      </button>
+
+                      {/* Icon-only Add Club button */}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditingClub({ name: '', shortCode: '', address: '' });
+                        }}
+                        aria-label="Add Club"
+                        title="Add Club"
+                        className="w-7 h-7 sm:w-8 sm:h-8 bg-blue-600 hover:bg-blue-700 active:scale-95 text-white rounded-lg flex items-center justify-center transition-colors cursor-pointer shadow-xs shrink-0"
+                      >
+                        <Plus className="w-4 h-4" />
+                      </button>
+                    </>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleSection('clubs');
+                    }}
+                    aria-label={expandedSections.clubs ? 'Minimize Registered Clubs' : 'Expand Registered Clubs'}
+                    title={expandedSections.clubs ? 'Minimize' : 'Expand'}
+                    className="w-8 h-8 rounded-lg flex items-center justify-center text-blue-600 bg-blue-50 hover:bg-blue-100 active:scale-95 transition-colors shrink-0 cursor-pointer"
+                  >
+                    {expandedSections.clubs ? (
+                      <ChevronUp className="w-4 h-4" />
+                    ) : (
+                      <ChevronDown className="w-4 h-4" />
+                    )}
+                  </button>
+                </div>
               </div>
-              <p className="text-xs text-slate-500 mt-0.5">
-                {expandedSections.clubs
-                  ? 'Manage participating sports clubs, short codes, and addresses.'
-                  : 'Click to expand and view or manage registered sports clubs.'}
+              <p className="text-xs text-slate-500 mt-0.5 leading-snug">
+                View/Edit club details &amp; mark bulk club payments
               </p>
             </div>
-          </div>
-
-          <div className="flex items-center gap-2 shrink-0">
-            {expandedSections.clubs && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setEditingClub({ name: '', shortCode: '', address: '' });
-                }}
-                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 active:scale-98 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>Add Club</span>
-              </button>
-            )}
-
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                toggleSection('clubs');
-              }}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 transition-colors cursor-pointer"
-            >
-              {expandedSections.clubs ? (
-                <>
-                  <ChevronUp className="w-4 h-4" />
-                  <span>Minimize</span>
-                </>
-              ) : (
-                <>
-                  <ChevronDown className="w-4 h-4" />
-                  <span>Expand</span>
-                </>
-              )}
-            </button>
           </div>
         </div>
 
@@ -845,49 +917,75 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               </form>
             )}
 
-            {/* Club Grid without any club logo */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 pt-3">
-              {clubs.map((c) => (
-                <div
-                  key={c.id}
-                  className="p-3.5 rounded-xl border border-slate-200 hover:border-slate-300 bg-white flex items-center justify-between gap-3 shadow-2xs"
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-700 flex items-center justify-center font-bold text-xs shrink-0 border border-blue-100">
-                      {c.shortCode ? c.shortCode.slice(0, 3) : <Building2 className="w-5 h-5 text-blue-600" />}
-                    </div>
-                    <div className="min-w-0">
-                      <h4 className="text-sm font-bold text-slate-900 leading-tight truncate">{c.name}</h4>
-                      <p className="text-xs text-slate-500 mt-0.5 truncate">
-                        {c.shortCode ? `Code: ${c.shortCode}` : ''} {c.mobile || c.phone ? `• Mobile: ${c.mobile || c.phone}` : ''} {c.address ? `• ${c.address}` : ''}
-                      </p>
-                    </div>
-                  </div>
+            {/* Compact Club Grid with Checkbox Selection (Reduced Thumbnail Height) */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 pt-3">
+              {clubs.map((c) => {
+                const clubNormName = String(c.Reg_Club || c.name || '').trim().toUpperCase();
+                const isSelected = activeSelectedClubsSet.has(clubNormName);
+                const metaParts = [
+                  c.shortCode ? c.shortCode : '',
+                  c.mobile || c.phone ? `${c.mobile || c.phone}` : '',
+                  c.address ? c.address : '',
+                ].filter(Boolean);
 
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => setEditingClub(c)}
-                      className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
-                      title="Edit Club"
-                    >
-                      <Settings className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        if (window.confirm(`Delete club "${c.name}"?`)) {
-                          await onDeleteClub(c.id);
-                        }
-                      }}
-                      className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
-                      title="Delete Club"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                return (
+                  <div
+                    key={c.id}
+                    className={`px-2.5 py-1.5 rounded-lg border flex items-center justify-between gap-2 transition-colors shadow-2xs ${
+                      isSelected
+                        ? 'border-blue-500 bg-blue-50/50'
+                        : 'border-slate-200 hover:border-slate-300 bg-white'
+                    }`}
+                  >
+                    <label className="flex items-center gap-2 min-w-0 flex-1 cursor-pointer select-none py-0.5">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggleClubSelection(clubNormName)}
+                        className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500/30 cursor-pointer shrink-0 accent-blue-600"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs sm:text-[13px] font-bold text-slate-900 leading-tight truncate">
+                          {c.name}
+                        </div>
+                        {metaParts.length > 0 && (
+                          <div className="text-[10px] text-slate-500 leading-tight truncate mt-0.5">
+                            {metaParts.join(' • ')}
+                          </div>
+                        )}
+                      </div>
+                    </label>
+
+                    <div className="flex items-center gap-0.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditingClub(c);
+                        }}
+                        className="p-1 text-slate-400 hover:text-blue-600 hover:bg-slate-100 rounded-md transition-colors cursor-pointer"
+                        title="Edit Club"
+                      >
+                        <Settings className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          if (window.confirm(`Delete club "${c.name}"?`)) {
+                            setSelectedClubNames((prev) => prev.filter((name) => name !== clubNormName));
+                            await onDeleteClub(c.id);
+                          }
+                        }}
+                        className="p-1 text-slate-400 hover:text-rose-600 hover:bg-slate-100 rounded-md transition-colors cursor-pointer"
+                        title="Delete Club"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
@@ -896,50 +994,48 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       {/* ========================================================================= */}
       {/* 4. SERVER SECURITY & ACCESS PIN (MINIMIZED WITH OPTION TO EXPAND)         */}
       {/* ========================================================================= */}
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden transition-all">
+      <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden transition-all">
         <div
           onClick={() => toggleSection('securityPin')}
-          className="p-5 sm:p-6 flex items-center justify-between gap-4 cursor-pointer hover:bg-slate-50/70 transition-colors select-none"
+          className="min-h-[64px] px-4 py-3 sm:px-5 sm:py-3.5 cursor-pointer hover:bg-slate-50/70 transition-colors select-none"
         >
-          <div className="flex items-center gap-3 min-w-0">
-            <span className="w-7 h-7 rounded-lg bg-blue-600 text-white flex items-center justify-center text-xs font-bold shrink-0">
+          <div className="flex items-start gap-3">
+            <span className="w-7 h-7 rounded-lg bg-blue-600 text-white flex items-center justify-center text-xs font-bold shrink-0 mt-0.5">
               4
             </span>
-            <div className="min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <h2 className="text-base font-bold text-slate-900">Server Security &amp; Access PIN</h2>
-                <span className="px-2 py-0.5 rounded-full text-[11px] font-extrabold bg-emerald-100 text-emerald-800">
-                  Active
-                </span>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 flex-wrap min-w-0">
+                  <h2 className="text-sm sm:text-base font-bold text-slate-900 leading-snug">
+                    Security PIN Setup
+                  </h2>
+                  <span className="px-2 py-0.5 rounded-full text-[11px] font-extrabold bg-emerald-100 text-emerald-800">
+                    Active
+                  </span>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleSection('securityPin');
+                  }}
+                  aria-label={expandedSections.securityPin ? 'Minimize Security PIN Setup' : 'Expand Security PIN Setup'}
+                  title={expandedSections.securityPin ? 'Minimize' : 'Expand'}
+                  className="w-8 h-8 rounded-lg flex items-center justify-center text-blue-600 bg-blue-50 hover:bg-blue-100 active:scale-95 transition-colors shrink-0 cursor-pointer ml-auto"
+                >
+                  {expandedSections.securityPin ? (
+                    <ChevronUp className="w-4 h-4" />
+                  ) : (
+                    <ChevronDown className="w-4 h-4" />
+                  )}
+                </button>
               </div>
-              <p className="text-xs text-slate-500 mt-0.5">
-                {expandedSections.securityPin
-                  ? 'Protect Server Control from unauthorized devices & browsers.'
-                  : 'Click to expand and manage server access PIN protection.'}
+              <p className="text-xs text-slate-500 mt-0.5 leading-snug">
+                Server PIN Protection
               </p>
             </div>
           </div>
-
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              toggleSection('securityPin');
-            }}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 transition-colors shrink-0 cursor-pointer"
-          >
-            {expandedSections.securityPin ? (
-              <>
-                <ChevronUp className="w-4 h-4" />
-                <span>Minimize</span>
-              </>
-            ) : (
-              <>
-                <ChevronDown className="w-4 h-4" />
-                <span>Expand</span>
-              </>
-            )}
-          </button>
         </div>
 
         {expandedSections.securityPin && (
@@ -967,166 +1063,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   <span>Reset / Change PIN</span>
                 </button>
               )}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* ========================================================================= */}
-      {/* 5. DATABASE BACKUP, EXPORT & MAINTENANCE (MINIMIZED WITH OPTION TO EXPAND) */}
-      {/* ========================================================================= */}
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden transition-all">
-        <div
-          onClick={() => toggleSection('databaseBackup')}
-          className="p-5 sm:p-6 flex items-center justify-between gap-4 cursor-pointer hover:bg-slate-50/70 transition-colors select-none"
-        >
-          <div className="flex items-center gap-3 min-w-0">
-            <span className="w-7 h-7 rounded-lg bg-emerald-600 text-white flex items-center justify-center text-xs font-bold shrink-0">
-              5
-            </span>
-            <div className="min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <h2 className="text-base font-bold text-slate-900">Database &amp; Data Export / Backup</h2>
-                <span className="px-2 py-0.5 rounded-full text-[11px] font-extrabold bg-emerald-100 text-emerald-800">
-                  Excel (.xlsx) Ready
-                </span>
-                <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-slate-100 text-slate-700">
-                  JSON Backup
-                </span>
-              </div>
-              <p className="text-xs text-slate-500 mt-0.5">
-                {expandedSections.databaseBackup
-                  ? "Download full database & data in .xlsx format ('General Entry' & 'Event Allocation' sheets), create JSON backups, or restore."
-                  : "Click to expand options to download database & data in .xlsx format, backup, and restore."}
-              </p>
-            </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              toggleSection('databaseBackup');
-            }}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 transition-colors shrink-0 cursor-pointer"
-          >
-            {expandedSections.databaseBackup ? (
-              <>
-                <ChevronUp className="w-4 h-4" />
-                <span>Minimize</span>
-              </>
-            ) : (
-              <>
-                <ChevronDown className="w-4 h-4" />
-                <span>Expand</span>
-              </>
-            )}
-          </button>
-        </div>
-
-        {expandedSections.databaseBackup && (
-          <div className="p-6 pt-0 border-t border-slate-100 mt-2 space-y-4 animate-in fade-in duration-150">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-3">
-              
-              {/* Option A: Excel Workbook (.xlsx) */}
-              <div className="p-4 rounded-xl border border-emerald-200 bg-emerald-50/40 flex flex-col justify-between gap-3 shadow-2xs">
-                <div className="space-y-1.5">
-                  <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 rounded-lg bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-2xs">
-                      <FileSpreadsheet className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <h4 className="text-sm font-bold text-slate-900 leading-tight">
-                        Download Database &amp; Data (.xlsx)
-                      </h4>
-                      <span className="text-[10px] font-bold text-emerald-700 uppercase tracking-wider">
-                        Two Formatted Sheets
-                      </span>
-                    </div>
-                  </div>
-                  <p className="text-xs text-slate-600 leading-relaxed">
-                    Downloads an Excel workbook (.xlsx) formatted with:
-                  </p>
-                  <ul className="text-xs text-slate-700 space-y-1 list-disc list-inside bg-white/70 p-2.5 rounded-lg border border-emerald-100 font-mono text-[11px]">
-                    <li><strong>'General Entry':</strong> Sl_No, Chest_No, Name_, Club_Name, Height, Gndr, Fees, Evt, _Amt</li>
-                    <li><strong>'Event Allocation':</strong> Sl_No, Chest_No, Evt_No, Hit_Flag, Final_Flag, Awd, Prize_1st to Prize_6th &amp; Jump_1st to Jump_6th</li>
-                  </ul>
-                </div>
-
-                <button
-                  type="button"
-                  id="admin-download-excel-btn"
-                  onClick={handleDownloadExcel}
-                  className="w-full py-2.5 px-4 bg-emerald-700 hover:bg-emerald-800 active:scale-98 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer shadow-xs"
-                  title="Download database & data in .xlsx format"
-                >
-                  <FileSpreadsheet className="w-4 h-4 text-emerald-200" />
-                  <span>Download Database (.xlsx)</span>
-                </button>
-              </div>
-
-              {/* Option B: Full JSON Backup */}
-              <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/70 flex flex-col justify-between gap-3 shadow-2xs">
-                <div className="space-y-1.5">
-                  <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 rounded-lg bg-slate-800 text-white flex items-center justify-center shrink-0 shadow-2xs">
-                      <Download className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <h4 className="text-sm font-bold text-slate-900 leading-tight">
-                        Full Database Backup (.json)
-                      </h4>
-                      <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">
-                        Raw JSON Dump
-                      </span>
-                    </div>
-                  </div>
-                  <p className="text-xs text-slate-600 leading-relaxed">
-                    Downloads complete raw database snapshot (candidates, events, clubs, heats, results, and system settings) for full backup and restoration.
-                  </p>
-                </div>
-
-                <div className="flex flex-col sm:flex-row items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={onDownloadBackup}
-                    className="w-full sm:flex-1 py-2.5 px-3 bg-slate-900 hover:bg-slate-800 active:scale-98 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer shadow-xs"
-                    title="Download JSON database backup"
-                  >
-                    <Download className="w-4 h-4" />
-                    <span>Download JSON</span>
-                  </button>
-
-                  <label className="w-full sm:flex-1 py-2.5 px-3 bg-blue-600 hover:bg-blue-700 active:scale-98 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 cursor-pointer transition-all shadow-xs text-center">
-                    <Upload className="w-4 h-4" />
-                    <span>Restore File</span>
-                    <input
-                      type="file"
-                      accept=".json"
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        if (!file) return;
-                        const reader = new FileReader();
-                        reader.onload = async () => {
-                          try {
-                            const json = JSON.parse(reader.result as string);
-                            if (window.confirm('Are you sure you want to restore the database from this file? This will replace existing data.')) {
-                              await onRestoreBackup(json);
-                              setStatusMsg({ type: 'success', text: 'Database successfully restored!' });
-                            }
-                          } catch (err: any) {
-                            setStatusMsg({ type: 'error', text: 'Invalid JSON backup file: ' + err.message });
-                          }
-                        };
-                        reader.readAsText(file);
-                        e.target.value = '';
-                      }}
-                      className="hidden"
-                    />
-                  </label>
-                </div>
-              </div>
-
             </div>
           </div>
         )}

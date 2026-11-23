@@ -1,5 +1,99 @@
 @import "tailwindcss";
 
+/* Enforce readable thermal print typography, with Lucida Console for chest numbers and jump records */
+.receipt,
+.receipt *,
+.thermal-printable-wrapper,
+.thermal-printable-wrapper *,
+.thermal-printable-sheet,
+.thermal-printable-sheet * {
+  font-family: Arial, "Segoe UI", Helvetica, sans-serif !important;
+  box-sizing: border-box !important;
+}
+
+.receipt *,
+.thermal-printable-wrapper *,
+.thermal-printable-sheet * {
+  font-size: inherit !important;
+}
+
+.receipt .thermal-chest-no,
+.thermal-printable-wrapper .thermal-chest-no,
+.thermal-printable-sheet .thermal-chest-no {
+  font-family: "Lucida Console", Monaco, monospace !important;
+  font-size: calc(1em + 1.5pt) !important;
+  font-weight: 400 !important;
+}
+
+.receipt .thermal-jump-record,
+.thermal-printable-wrapper .thermal-jump-record,
+.thermal-printable-sheet .thermal-jump-record {
+  font-family: "Arial Narrow", "Roboto Condensed", "Helvetica Neue Condensed Bold", "Liberation Sans Narrow", "Nimbus Sans Narrow", sans-serif !important;
+  font-size: calc(1em + 1.5pt) !important;
+  font-weight: 700 !important;
+  font-stretch: condensed !important;
+}
+
+.receipt .thermal-header-club,
+.thermal-printable-wrapper .thermal-header-club,
+.thermal-printable-sheet .thermal-header-club {
+  font-size: calc(1em + 0.5pt) !important;
+  font-weight: 700 !important;
+}
+
+.receipt .thermal-ordinal-title,
+.thermal-printable-wrapper .thermal-ordinal-title,
+.thermal-printable-sheet .thermal-ordinal-title {
+  font-weight: 400 !important;
+}
+
+.receipt .float-right,
+.thermal-printable-wrapper .float-right,
+.thermal-printable-sheet .float-right {
+  float: right !important;
+  display: block !important;
+}
+
+.receipt .thermal-jump-record.float-right,
+.thermal-printable-wrapper .thermal-jump-record.float-right,
+.thermal-printable-sheet .thermal-jump-record.float-right {
+  line-height: 1 !important;
+}
+
+.receipt .thermal-footer-brand,
+.thermal-printable-wrapper .thermal-footer-brand,
+.thermal-printable-sheet .thermal-footer-brand,
+.receipt .thermal-footer-time,
+.thermal-printable-wrapper .thermal-footer-time,
+.thermal-printable-sheet .thermal-footer-time {
+  font-size: calc(1em - 1.5pt) !important;
+}
+
+.receipt .thermal-record-clamp-1,
+.thermal-printable-wrapper .thermal-record-clamp-1,
+.thermal-printable-sheet .thermal-record-clamp-1 {
+  display: block !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+.receipt .thermal-record-clamp-2,
+.thermal-printable-wrapper .thermal-record-clamp-2,
+.thermal-printable-sheet .thermal-record-clamp-2 {
+  display: -webkit-box !important;
+  -webkit-box-orient: vertical !important;
+  -webkit-line-clamp: 2 !important;
+  line-clamp: 2 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  word-break: break-word !important;
+  overflow-wrap: anywhere !important;
+  white-space: normal !important;
+}
+
 @media print {
   @page {
     size: auto;
@@ -62,5 +156,96 @@
 .animate-blink-1-5s,
 .animate-blink-1s {
   animation: blink-1-5s 1.5s steps(1, end) infinite;
+}
+
+/* ==========================================================================
+   Copyright Protection: App Logo & Registered Club Logo
+   Restricts copy, download, drag, share, long-press menu, and opening in Chrome
+   ========================================================================== */
+.protected-logo,
+img.protected-logo,
+[data-protect-logo="true"],
+img[src*="icon.png"],
+img[alt*="logo" i],
+img[alt*="eSports" i],
+img[alt*="Logo" i] {
+  -webkit-touch-callout: none !important;
+  -webkit-user-select: none !important;
+  -khtml-user-select: none !important;
+  -moz-user-select: none !important;
+  -ms-user-select: none !important;
+  user-select: none !important;
+  -webkit-user-drag: none !important;
+  user-drag: none !important;
+  pointer-events: none !important;
+}
+
+.protected-logo-wrapper {
+  position: relative;
+  -webkit-touch-callout: none !important;
+  -webkit-user-select: none !important;
+  user-select: none !important;
+  -webkit-user-drag: none !important;
+  user-drag: none !important;
+}
+
+.protected-logo-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  z-index: 20;
+  -webkit-touch-callout: none !important;
+  -webkit-user-select: none !important;
+  user-select: none !important;
+  cursor: default;
+}
+
+/* Custom mini scrollbar for auto-scroll and compact lists */
+.mini-scrollbar::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+.mini-scrollbar::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.7);
+  border-radius: 4px;
+}
+.mini-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(245, 158, 11, 0.45);
+  border-radius: 4px;
+}
+.mini-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(245, 158, 11, 0.85);
+}
+.mini-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(245, 158, 11, 0.45) rgba(15, 23, 42, 0.7);
+}
+
+@keyframes meet-status-ticker-scroll {
+  0% {
+    transform: translateX(0%);
+  }
+  100% {
+    transform: translateX(-100%);
+  }
+}
+
+.meet-status-ticker-track {
+  display: inline-block;
+  white-space: nowrap;
+  padding-left: 100%;
+  line-height: 1.15;
+  vertical-align: middle;
+  will-change: transform;
+  animation-name: meet-status-ticker-scroll;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+
+.meet-status-ticker-track:hover,
+.meet-status-ticker-track:active {
+  animation-play-state: paused;
 }
 

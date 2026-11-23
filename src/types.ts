@@ -99,6 +99,8 @@ export interface EventResult {
   winners?: FinalParticipant[];
   completed: boolean;
   recordedAt?: string;
+  targetRankCount?: number;
+  cancelledChestNos?: number[];
   highestRecord?: {
     candidateName: string;
     chestNo: number;
@@ -131,6 +133,7 @@ export interface SportsMeetSettings {
 export interface ClientUpload {
   id: string;
   club: string;
+  clubMobile?: string;
   clientName?: string;
   uploadedAt: string;
   status: 'pending' | 'reviewed' | 'merged' | 'rejected';

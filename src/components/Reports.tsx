@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { 
   Candidate, 
   SportEvent, 
@@ -18,7 +18,9 @@ import {
   Receipt, 
   Sparkles,
   FileSpreadsheet,
-  Sliders
+  Sliders,
+  Bluetooth,
+  RefreshCw
 } from 'lucide-react';
 import { downloadSportsMeetExcel } from '../services/excelExport';
 import { parseJumpToInches, formatJumpBenchmark } from './RankingList';
@@ -26,8 +28,32 @@ import { ThermalPageSetupModal } from './ThermalPageSetupModal';
 import { 
   ThermalPrintSettings, 
   getThermalSettings, 
-  generateThermalPrintCSS 
+  generateThermalPrintCSS,
+  formatThermalEventSuffix 
 } from '../utils/thermalSettings';
+import { 
+  printDirectlyToThermalPrinter, 
+  isWebBluetoothSupported, 
+  isMobileClient 
+} from '../utils/thermalBluetoothPrint';
+import { ThermalLogo } from './ThermalLogo';
+import { ThermalTwoLineRecord } from './ThermalTwoLineRecord';
+import { receiptDomToOfflineHtmlBlob } from '../utils/thermalLogo';
+import {
+  WhatsAppIcon,
+  generateClubWiseWhatsAppText,
+  generateChampionshipWhatsAppText,
+  openWhatsAppWithText,
+  shareThermalHtmlBlob,
+} from '../utils/whatsappThermalReport';
+import { isExcludedClubForRanking } from '../utils/clubRankingFilter';
+import { ClubEchoPrintModal } from './ClubEchoPrintModal';
+import {
+  FirstPrintCategory,
+  isEventHitRequired,
+  hasWarnedFirstPrint,
+  markFirstPrintWarned,
+} from '../utils/qualificationRules';
 
 function formatA4ClubTimestamp(date: Date = new Date()): string {
   const d = String(date.getDate()).padStart(2, '0');
@@ -59,6 +85,7 @@ interface ReportsProps {
   settings: SportsMeetSettings;
   heats?: EventHeat[];
   results?: EventResult[];
+  onSaveSettings?: (settings: SportsMeetSettings) => Promise<void> | void;
 }
 
 export type ReportType = 'chest' | 'club' | 'hit' | 'final' | 'ranking' | 'championship';
@@ -71,18 +98,25 @@ export const Reports: React.FC<ReportsProps> = ({
   settings,
   heats = [],
   results = [],
+  onSaveSettings,
 }) => {
   // Navigation & format states
   const [reportType, setReportType] = useState<ReportType>('chest');
   const [paperFormat, setPaperFormat] = useState<PaperFormat>('a4');
 
-  // Club selection filter for Club-wise report ('all' or specific club name)
-  const [selectedClubFilter, setSelectedClubFilter] = useState<string>('all');
+  // Club selection filter for Club-wise report ('' until selected, 'all' or specific club name)
+  const [selectedClubFilter, setSelectedClubFilter] = useState<string>('');
 
-  // Event selection filters for Hit, Final, Ranking reports ('all' or specific event number)
-  const [selectedHitEvtNo, setSelectedHitEvtNo] = useState<string>('all');
-  const [selectedFinalEvtNo, setSelectedFinalEvtNo] = useState<string>('all');
-  const [selectedRankingEvtNo, setSelectedRankingEvtNo] = useState<string>('all');
+  // Event selection filters for Hit, Final, Ranking reports ('' until selected, 'all' or specific event number)
+  const [selectedHitEvtNo, setSelectedHitEvtNo] = useState<string>('');
+  const [selectedFinalEvtNo, setSelectedFinalEvtNo] = useState<string>('');
+  const [selectedRankingEvtNo, setSelectedRankingEvtNo] = useState<string>('');
+
+  const isFilterRequiredAndMissing =
+    (reportType === 'club' && !selectedClubFilter) ||
+    (reportType === 'hit' && !selectedHitEvtNo) ||
+    (reportType === 'final' && !selectedFinalEvtNo) ||
+    (reportType === 'ranking' && !selectedRankingEvtNo);
 
   // Live formatted timestamp for print footer
   const [currentTimestamp, setCurrentTimestamp] = useState<string>(() => {
@@ -224,7 +258,7 @@ export const Reports: React.FC<ReportsProps> = ({
     clubs.forEach((c) => {
       if (!c.name) return;
       const cleanName = c.name.trim();
-      if (!cleanName || cleanName.toUpperCase() === 'SELF' || cleanName === 'Independent' || cleanName === 'Independent / Unattached') return;
+      if (isExcludedClubForRanking(cleanName)) return;
       clubMap[cleanName] = { 
         name: cleanName, 
         shortCode: c.shortCode || cleanName.slice(0, 4).toUpperCase(), 
@@ -240,7 +274,7 @@ export const Reports: React.FC<ReportsProps> = ({
 
     candidates.forEach((c) => {
       const cClub = (c.club || '').trim();
-      if (!cClub || cClub.toUpperCase() === 'SELF' || cClub === 'Independent' || cClub === 'Independent / Unattached') return;
+      if (isExcludedClubForRanking(cClub)) return;
       const cMobile = (c as any).clubMobile || '';
       if (!clubMap[cClub]) {
         const existing = clubs.find(cl => cl.name.trim().toLowerCase() === cClub.toLowerCase());
@@ -266,7 +300,7 @@ export const Reports: React.FC<ReportsProps> = ({
       const participants = res.winners && res.winners.length > 0 ? res.winners : (res.finalists || []);
       participants.forEach((f) => {
         const fClub = (f.club || '').trim();
-        if (!fClub || fClub.toUpperCase() === 'SELF' || fClub === 'Independent' || fClub === 'Independent / Unattached') return;
+        if (isExcludedClubForRanking(fClub)) return;
         if (!clubMap[fClub]) {
           const existing = clubs.find(cl => cl.name.trim().toLowerCase() === fClub.toLowerCase());
           clubMap[fClub] = { 
@@ -358,6 +392,16 @@ export const Reports: React.FC<ReportsProps> = ({
 
   const [thermalConfig, setThermalConfig] = useState<ThermalPrintSettings>(getThermalSettings());
   const [showThermalSetup, setShowThermalSetup] = useState<boolean>(false);
+  const [isPrintingDirect, setIsPrintingDirect] = useState<boolean>(false);
+  const [isSharingWhatsApp, setIsSharingWhatsApp] = useState<boolean>(false);
+  const [directPrintStatus, setDirectPrintStatus] = useState<{ message: string; type: 'info' | 'success' | 'error' } | null>(null);
+  const [echoPrintModalState, setEchoPrintModalState] = useState<{
+    category: FirstPrintCategory;
+    evtNos: number[];
+    contextLabel: string;
+  } | null>(null);
+  const thermalReceiptRef = useRef<HTMLDivElement | null>(null);
+  const offscreenThermalShareRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const handleSettingsChange = (e: any) => {
@@ -369,8 +413,172 @@ export const Reports: React.FC<ReportsProps> = ({
     return () => window.removeEventListener('thermal-settings-changed', handleSettingsChange);
   }, []);
 
-  const handlePrint = () => {
+  const executeActualPrint = async () => {
+    if (paperFormat === 'thermal' && (isMobileClient() || isWebBluetoothSupported())) {
+      const receiptEl = document.querySelector('.receipt') as HTMLElement | null;
+      setIsPrintingDirect(true);
+      setDirectPrintStatus({ message: 'Sending to Bluetooth thermal printer...', type: 'info' });
+
+      try {
+        const result = await printDirectlyToThermalPrinter(receiptEl, thermalConfig);
+
+        if (result.success) {
+          setDirectPrintStatus({ message: 'Printed directly to thermal printer successfully!', type: 'success' });
+          setTimeout(() => setDirectPrintStatus(null), 4000);
+        } else {
+          setDirectPrintStatus({ message: result.message, type: 'error' });
+        }
+      } catch (err: any) {
+        console.warn('Reports thermal print fallback:', err?.message || err);
+        window.print();
+        setDirectPrintStatus({ message: 'Printed via print dialog (Bluetooth unavailable in this frame)', type: 'info' });
+        setTimeout(() => setDirectPrintStatus(null), 4000);
+      } finally {
+        setIsPrintingDirect(false);
+      }
+      return;
+    }
+
+    // Default desktop/standard print
     window.print();
+  };
+
+  const handlePrint = async () => {
+    if (isFilterRequiredAndMissing) {
+      setDirectPrintStatus({ message: 'Please select a specific club or event from the dropdown before printing.', type: 'error' });
+      setTimeout(() => setDirectPrintStatus(null), 4000);
+      return;
+    }
+
+    const isClubEchoOn = settings?.clientResponseEnabled !== false;
+    if (isClubEchoOn) {
+      if (reportType === 'hit') {
+        const targetEvents = (selectedHitEvtNo === 'all'
+          ? eventsWithHeats
+          : eventsWithHeats.filter((e) => String(e.Evt_No) === String(selectedHitEvtNo))
+        ).filter((e) => isEventHitRequired(e) && !hasWarnedFirstPrint('hit', e.Evt_No));
+
+        if (targetEvents.length > 0) {
+          const evtNos = targetEvents.map((e) => Number(e.Evt_No));
+          const contextLabel =
+            targetEvents.length === 1
+              ? `Event #${targetEvents[0].Evt_No}: ${targetEvents[0].Evt_Name} — Hit List`
+              : `Events #${evtNos.join(', #')} — Hit List`;
+          setEchoPrintModalState({ category: 'hit', evtNos, contextLabel });
+          return;
+        }
+      }
+
+      if (reportType === 'final') {
+        const targetEvents = (selectedFinalEvtNo === 'all'
+          ? eventsWithFinalists
+          : eventsWithFinalists.filter((e) => String(e.Evt_No) === String(selectedFinalEvtNo))
+        ).filter((e) => !isEventHitRequired(e) && !hasWarnedFirstPrint('direct-final', e.Evt_No));
+
+        if (targetEvents.length > 0) {
+          const evtNos = targetEvents.map((e) => Number(e.Evt_No));
+          const contextLabel =
+            targetEvents.length === 1
+              ? `Event #${targetEvents[0].Evt_No}: ${targetEvents[0].Evt_Name} — Direct Final List`
+              : `Events #${evtNos.join(', #')} — Direct Final List`;
+          setEchoPrintModalState({ category: 'direct-final', evtNos, contextLabel });
+          return;
+        }
+      }
+    }
+
+    await executeActualPrint();
+  };
+
+  const handleShareWhatsApp = async () => {
+    if (isFilterRequiredAndMissing) {
+      setDirectPrintStatus({ message: 'Please select a specific club or event from the dropdown before sharing.', type: 'error' });
+      setTimeout(() => setDirectPrintStatus(null), 4000);
+      return;
+    }
+
+    // Exclusive for Name List, Hit List, Final List, and Ranking List thermal report sharing:
+    // share the complete page data including white page in offline HTML format
+    if (reportType === 'chest' || reportType === 'ranking' || reportType === 'hit' || reportType === 'final') {
+      const targetEl =
+        (paperFormat === 'thermal' ? thermalReceiptRef.current : offscreenThermalShareRef.current) ||
+        (document.querySelector('.receipt') as HTMLElement | null);
+
+      const reportLabel =
+        reportType === 'chest'
+          ? 'Name List'
+          : reportType === 'hit'
+          ? 'Hit List'
+          : reportType === 'final'
+          ? 'Final List'
+          : 'Ranking List';
+      const fileName =
+        reportType === 'chest'
+          ? 'Name_List_Thermal.html'
+          : reportType === 'hit'
+          ? (selectedHitEvtNo && selectedHitEvtNo !== 'all'
+              ? `Hit_List_Evt_${selectedHitEvtNo}_Thermal.html`
+              : 'Hit_List_Thermal.html')
+          : reportType === 'final'
+          ? (selectedFinalEvtNo && selectedFinalEvtNo !== 'all'
+              ? `Final_List_Evt_${selectedFinalEvtNo}_Thermal.html`
+              : 'Final_List_Thermal.html')
+          : (selectedRankingEvtNo && selectedRankingEvtNo !== 'all'
+              ? `Ranking_List_Evt_${selectedRankingEvtNo}_Thermal.html`
+              : 'Ranking_List_Thermal.html');
+      const docTitle = `${reportLabel} Thermal Report`;
+
+      if (!targetEl) {
+        setDirectPrintStatus({ message: `Unable to locate ${reportLabel} thermal sheet for offline HTML export.`, type: 'error' });
+        setTimeout(() => setDirectPrintStatus(null), 4000);
+        return;
+      }
+
+      setIsSharingWhatsApp(true);
+      setDirectPrintStatus({ message: `Generating offline HTML for ${reportLabel}...`, type: 'info' });
+
+      try {
+        const htmlBlob = await receiptDomToOfflineHtmlBlob(targetEl, {
+          title: docTitle,
+          printableWidthMm: thermalConfig.printableWidth,
+        });
+        if (!htmlBlob) {
+          setDirectPrintStatus({ message: `Failed to generate offline HTML for ${reportLabel}.`, type: 'error' });
+          setTimeout(() => setDirectPrintStatus(null), 4000);
+          return;
+        }
+        const res = await shareThermalHtmlBlob(htmlBlob, fileName, docTitle);
+        if (!res.cancelled) {
+          setDirectPrintStatus({ message: res.message, type: res.success ? 'success' : 'error' });
+          setTimeout(() => setDirectPrintStatus(null), 5000);
+        } else {
+          setDirectPrintStatus(null);
+        }
+      } finally {
+        setIsSharingWhatsApp(false);
+      }
+      return;
+    }
+
+    let text = '';
+
+    if (reportType === 'club') {
+      text = displayedClubNames
+        .map((clubName) => generateClubWiseWhatsAppText(clubName, clubGroupedCandidates[clubName] || []))
+        .join('\n\n');
+    } else if (reportType === 'championship') {
+      text = generateChampionshipWhatsAppText(top3Clubs);
+    }
+
+    if (!text.trim()) {
+      setDirectPrintStatus({ message: 'No report records available to share.', type: 'error' });
+      setTimeout(() => setDirectPrintStatus(null), 4000);
+      return;
+    }
+
+    const res = openWhatsAppWithText(text);
+    setDirectPrintStatus({ message: res.message, type: res.success ? 'success' : 'error' });
+    setTimeout(() => setDirectPrintStatus(null), 4000);
   };
 
   return (
@@ -434,27 +642,49 @@ export const Reports: React.FC<ReportsProps> = ({
             </h1>
           </div>
 
-          {/* 58mm Thermal Page Setup Button on the same line at right side, disabled when Normal mode */}
-          <button
-            type="button"
-            id="btn-thermal-page-setup"
-            disabled={paperFormat === 'a4'}
-            onClick={() => setShowThermalSetup(true)}
-            className={`px-2.5 sm:px-3 py-1.5 rounded-lg border transition-all flex items-center gap-1.5 text-xs font-bold shrink-0 ${
-              paperFormat === 'a4'
-                ? 'opacity-40 cursor-not-allowed bg-slate-100 text-slate-400 border-slate-200'
-                : 'text-slate-700 hover:text-slate-950 hover:bg-slate-100 border-slate-200 bg-white shadow-2xs active:scale-98 cursor-pointer'
-            }`}
-            title={
-              paperFormat === 'a4'
-                ? 'Thermal page setup only available in Thermal mode'
-                : '58mm Thermal Printer Page Setup'
-            }
-            aria-label="58mm Thermal Printer Page Setup"
-          >
-            <Sliders className={`w-3.5 h-3.5 ${paperFormat === 'a4' ? 'text-slate-400' : 'text-amber-500'}`} />
-            <span className="hidden xs:inline sm:inline">58mm Setup</span>
-          </button>
+          {/* Thermal Page Setup (Icon Only) + WhatsApp Share (Icon Only) on right side */}
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            <button
+              type="button"
+              id="btn-thermal-page-setup"
+              onClick={() => setShowThermalSetup(true)}
+              className="p-2 rounded-lg border border-amber-300 bg-amber-50 hover:bg-amber-100 text-slate-900 transition-all flex items-center justify-center shrink-0 shadow-2xs active:scale-98 cursor-pointer"
+              title="Thermal Printer Setup"
+              aria-label="Thermal Printer Setup"
+            >
+              <Sliders className="w-4 h-4 text-amber-600 shrink-0" />
+            </button>
+
+            <button
+              type="button"
+              id="btn-reports-whatsapp-share"
+              disabled={isSharingWhatsApp || isFilterRequiredAndMissing}
+              onClick={handleShareWhatsApp}
+              className={`p-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white transition-all flex items-center justify-center shrink-0 shadow-2xs active:scale-98 cursor-pointer ${
+                isSharingWhatsApp ? 'opacity-60 cursor-wait' : isFilterRequiredAndMissing ? 'opacity-40 cursor-not-allowed' : ''
+              }`}
+              title={
+                isFilterRequiredAndMissing
+                  ? 'Select a club or event first before sharing'
+                  : reportType === 'chest'
+                  ? 'Share Name List Thermal Report (Offline HTML)'
+                  : reportType === 'hit'
+                  ? 'Share Hit List Thermal Report (Offline HTML)'
+                  : reportType === 'final'
+                  ? 'Share Final List Thermal Report (Offline HTML)'
+                  : reportType === 'ranking'
+                  ? 'Share Ranking List Thermal Report (Offline HTML)'
+                  : 'Share Report via WhatsApp'
+              }
+              aria-label="Share via WhatsApp"
+            >
+              {isSharingWhatsApp ? (
+                <RefreshCw className="w-4 h-4 animate-spin text-white shrink-0" />
+              ) : (
+                <WhatsAppIcon className="w-4 h-4 text-white shrink-0" />
+              )}
+            </button>
+          </div>
         </div>
 
         {/* Row 2: Format Switcher (Normal/Thermal) on Left | "Print" and "Excel" Buttons (Icon Only) on Right */}
@@ -496,16 +726,29 @@ export const Reports: React.FC<ReportsProps> = ({
             <button
               type="button"
               id="btn-execute-report-print"
+              disabled={isPrintingDirect || isFilterRequiredAndMissing}
               onClick={handlePrint}
               className={`p-2 rounded-lg text-xs font-bold flex items-center justify-center transition-all shadow-xs active:scale-98 cursor-pointer ${
                 paperFormat === 'thermal'
                   ? 'bg-amber-500 hover:bg-amber-400 text-slate-950'
                   : 'bg-blue-600 hover:bg-blue-700 text-white'
-              }`}
-              title={`Print Report (${paperFormat === 'thermal' ? '58mm Thermal' : 'A4 Normal'})`}
+              } ${isPrintingDirect ? 'opacity-60 cursor-wait' : isFilterRequiredAndMissing ? 'opacity-40 cursor-not-allowed' : ''}`}
+              title={
+                isFilterRequiredAndMissing
+                  ? 'Select a club or event first before printing'
+                  : isPrintingDirect 
+                  ? 'Sending directly to thermal printer...'
+                  : `Print Report (${paperFormat === 'thermal' ? '58mm Thermal' : 'A4 Normal'})`
+              }
               aria-label="Print Report"
             >
-              <Printer className="w-4 h-4" />
+              {isPrintingDirect ? (
+                <RefreshCw className="w-4 h-4 animate-spin text-slate-950" />
+              ) : paperFormat === 'thermal' ? (
+                <Printer className="w-4 h-4" />
+              ) : (
+                <Printer className="w-4 h-4" />
+              )}
             </button>
 
             {/* Option: Download Database & Data as Excel (Icon Only) */}
@@ -530,6 +773,30 @@ export const Reports: React.FC<ReportsProps> = ({
             </button>
           </div>
         </div>
+
+        {directPrintStatus && (
+          <div className={`p-2.5 rounded-lg text-xs font-semibold flex items-center justify-between gap-2 border transition-all ${
+            directPrintStatus.type === 'error'
+              ? 'bg-rose-50 border-rose-200 text-rose-800'
+              : directPrintStatus.type === 'success'
+              ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+              : 'bg-amber-50 border-amber-200 text-amber-900 animate-pulse'
+          }`}>
+            <div className="flex items-center gap-2 min-w-0">
+              <Bluetooth className={`w-4 h-4 shrink-0 ${
+                directPrintStatus.type === 'error' ? 'text-rose-600' : directPrintStatus.type === 'success' ? 'text-emerald-600' : 'text-amber-600'
+              }`} />
+              <span className="truncate">{directPrintStatus.message}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setDirectPrintStatus(null)}
+              className="text-[11px] px-1.5 py-0.5 rounded font-bold hover:bg-black/10 shrink-0 cursor-pointer"
+            >
+              ✕
+            </button>
+          </div>
+        )}
 
         {/* 6 Report Types Navigation Tabs: Arranged in 2 Columns and 3 Rows with Justify Alignment */}
         <div className="grid grid-cols-2 gap-2 w-full pt-2 border-t border-slate-100">
@@ -558,7 +825,10 @@ export const Reports: React.FC<ReportsProps> = ({
           {/* Row 1, Col 2: 2. Club Wise Candidate List */}
           <button
             type="button"
-            onClick={() => setReportType('club')}
+            onClick={() => {
+              setSelectedClubFilter('');
+              setReportType('club');
+            }}
             className={`w-full flex items-center justify-between px-2.5 sm:px-3 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
               reportType === 'club'
                 ? 'bg-blue-600 text-white shadow-xs'
@@ -579,7 +849,10 @@ export const Reports: React.FC<ReportsProps> = ({
           {/* Row 2, Col 1: 3. Hit List */}
           <button
             type="button"
-            onClick={() => setReportType('hit')}
+            onClick={() => {
+              setSelectedHitEvtNo('');
+              setReportType('hit');
+            }}
             className={`w-full flex items-center justify-between px-2.5 sm:px-3 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
               reportType === 'hit'
                 ? 'bg-blue-600 text-white shadow-xs'
@@ -600,7 +873,10 @@ export const Reports: React.FC<ReportsProps> = ({
           {/* Row 2, Col 2: 4. Final List */}
           <button
             type="button"
-            onClick={() => setReportType('final')}
+            onClick={() => {
+              setSelectedFinalEvtNo('');
+              setReportType('final');
+            }}
             className={`w-full flex items-center justify-between px-2.5 sm:px-3 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
               reportType === 'final'
                 ? 'bg-blue-600 text-white shadow-xs'
@@ -621,7 +897,10 @@ export const Reports: React.FC<ReportsProps> = ({
           {/* Row 3, Col 1: 5. Ranking Sheet */}
           <button
             type="button"
-            onClick={() => setReportType('ranking')}
+            onClick={() => {
+              setSelectedRankingEvtNo('');
+              setReportType('ranking');
+            }}
             className={`w-full flex items-center justify-between px-2.5 sm:px-3 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
               reportType === 'ranking'
                 ? 'bg-blue-600 text-white shadow-xs'
@@ -677,6 +956,7 @@ export const Reports: React.FC<ReportsProps> = ({
                   onChange={(e) => setSelectedClubFilter(e.target.value)}
                   className="w-full sm:w-auto sm:flex-1 sm:max-w-md bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 font-bold text-slate-800 text-xs focus:ring-2 focus:ring-blue-500 focus:outline-none shadow-2xs"
                 >
+                  <option value="">-- Select a Club --</option>
                   <option value="all">★ All Registered Clubs (Print with Subtotals)</option>
                   {allAvailableClubNames.map((cName) => {
                     const count = clubGroupedCandidates[cName]?.length || 0;
@@ -702,6 +982,7 @@ export const Reports: React.FC<ReportsProps> = ({
                   onChange={(e) => setSelectedHitEvtNo(e.target.value)}
                   className="w-full sm:w-auto sm:flex-1 sm:max-w-md bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 font-bold text-slate-800 text-xs focus:ring-2 focus:ring-blue-500 focus:outline-none shadow-2xs"
                 >
+                  <option value="">-- Select an Event --</option>
                   <option value="all">★ All Events with Scheduled Heats</option>
                   {eventsWithHeats.map((ev) => (
                     <option key={ev.Evt_No} value={String(ev.Evt_No)}>
@@ -724,6 +1005,7 @@ export const Reports: React.FC<ReportsProps> = ({
                   onChange={(e) => setSelectedFinalEvtNo(e.target.value)}
                   className="w-full sm:w-auto sm:flex-1 sm:max-w-md bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 font-bold text-slate-800 text-xs focus:ring-2 focus:ring-blue-500 focus:outline-none shadow-2xs"
                 >
+                  <option value="">-- Select an Event --</option>
                   {eventsWithFinalists.length > 0 ? (
                     <>
                       <option value="all">★ All Events with Finalists ({eventsWithFinalists.length})</option>
@@ -752,6 +1034,7 @@ export const Reports: React.FC<ReportsProps> = ({
                   onChange={(e) => setSelectedRankingEvtNo(e.target.value)}
                   className="w-full sm:w-auto sm:flex-1 sm:max-w-md bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 font-bold text-slate-800 text-xs focus:ring-2 focus:ring-blue-500 focus:outline-none shadow-2xs"
                 >
+                  <option value="">-- Select an Event --</option>
                   <option value="all">★ All Completed Event Rankings</option>
                   {eventsWithRankings.map((ev) => (
                     <option key={ev.Evt_No} value={String(ev.Evt_No)}>
@@ -770,25 +1053,51 @@ export const Reports: React.FC<ReportsProps> = ({
       {/* ======================= RENDER DISPATCHER ============================== */}
       {/* ========================================================================= */}
 
-      {paperFormat === 'thermal' ? (
+      {isFilterRequiredAndMissing ? (
+        <div className="bg-white rounded-2xl border border-dashed border-slate-300 p-8 sm:p-12 text-center shadow-2xs print:hidden">
+          <div className="w-12 h-12 rounded-2xl bg-slate-100 text-slate-500 flex items-center justify-center mx-auto mb-3">
+            {reportType === 'club' ? (
+              <Building2 className="w-6 h-6 text-blue-600" />
+            ) : reportType === 'hit' ? (
+              <Flame className="w-6 h-6 text-orange-500" />
+            ) : reportType === 'final' ? (
+              <Medal className="w-6 h-6 text-blue-600" />
+            ) : (
+              <Trophy className="w-6 h-6 text-amber-500" />
+            )}
+          </div>
+          <h3 className="text-sm sm:text-base font-bold text-slate-800">
+            {reportType === 'club'
+              ? 'Select a Club to Preview Report'
+              : 'Select an Event to Preview Report'}
+          </h3>
+          <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">
+            {reportType === 'club'
+              ? 'Choose a club from the dropdown above to preview and print its candidate report.'
+              : 'Choose a specific event from the dropdown above to preview and print without accidentally printing all pages.'}
+          </p>
+        </div>
+      ) : paperFormat === 'thermal' ? (
         /* ================= THERMAL PRINTER 58MM ROLL PAPER VIEW (EXACT PREVIEW MATCHING PRINT OUTPUT) ================= */
-        <div className="flex flex-col items-center justify-center p-4 sm:p-8 bg-slate-300 rounded-2xl border border-slate-300 print:bg-white print:p-0 print:border-none">
+        <div className="flex flex-col items-center justify-center p-3 sm:p-8 bg-slate-300 rounded-2xl border border-slate-300 print:bg-white print:p-0 print:border-none">
           <div className="text-[11px] font-bold text-slate-700 mb-2 flex items-center gap-1.5 print:hidden">
             <Receipt className="w-3.5 h-3.5 text-amber-600" />
-            <span>58mm Roll Preview ({thermalConfig.printableWidth}mm net printable)</span>
+            <span>58mm Roll Preview ({thermalConfig.printableWidth}mm • {thermalConfig.fontSize}pt)</span>
           </div>
           <div 
-            className="receipt thermal-printable-wrapper bg-white text-black p-3 shadow-2xl rounded-xs select-none print:shadow-none print:p-0"
+            ref={thermalReceiptRef}
+            className="receipt thermal-printable-wrapper bg-white text-black p-0 shadow-2xl rounded-xs select-none print:shadow-none print:p-0"
             style={{
               width: `${thermalConfig.printableWidth}mm`,
               maxWidth: `${thermalConfig.printableWidth}mm`,
+              boxSizing: 'border-box',
               paddingLeft: `${thermalConfig.marginHorizontal}mm`,
               paddingRight: `${thermalConfig.marginHorizontal}mm`,
-              paddingTop: `${thermalConfig.topMargin || 5}mm`,
+              paddingTop: `${thermalConfig.topMargin ?? 5}mm`,
               paddingBottom: `${thermalConfig.feedBeforeCut}mm`,
-              fontSize: `${thermalConfig.fontSize}px`,
+              fontSize: `${thermalConfig.fontSize}pt`,
               lineHeight: thermalConfig.lineSpacing,
-              fontFamily: 'Consolas, "Courier New", monospace'
+              fontFamily: 'Arial, "Segoe UI", Helvetica, sans-serif'
             }}
           >
             {renderThermalReport()}
@@ -801,11 +1110,71 @@ export const Reports: React.FC<ReportsProps> = ({
         </div>
       )}
 
+      {/* Offscreen Thermal sheet for Name List, Hit List, Final List & Ranking List so offline HTML share works even while Normal (A4) view is active */}
+      {(reportType === 'chest' || reportType === 'ranking' || reportType === 'hit' || reportType === 'final') && paperFormat !== 'thermal' && !isFilterRequiredAndMissing && (
+        <div
+          aria-hidden="true"
+          className="fixed -left-[99999px] top-0 pointer-events-none opacity-0 print:hidden"
+        >
+          <div
+            ref={offscreenThermalShareRef}
+            className="thermal-printable-wrapper bg-white text-black p-0"
+            style={{
+              width: `${thermalConfig.printableWidth}mm`,
+              maxWidth: `${thermalConfig.printableWidth}mm`,
+              boxSizing: 'border-box',
+              paddingLeft: `${thermalConfig.marginHorizontal}mm`,
+              paddingRight: `${thermalConfig.marginHorizontal}mm`,
+              paddingTop: `${thermalConfig.topMargin ?? 5}mm`,
+              paddingBottom: `${thermalConfig.feedBeforeCut}mm`,
+              fontSize: `${thermalConfig.fontSize}pt`,
+              lineHeight: thermalConfig.lineSpacing,
+              fontFamily: 'Arial, "Segoe UI", Helvetica, sans-serif',
+            }}
+          >
+            {reportType === 'chest'
+              ? renderThermalCandidateList()
+              : reportType === 'hit'
+              ? renderThermalHitList()
+              : reportType === 'final'
+              ? renderThermalFinalList()
+              : renderThermalRankingSheet()}
+          </div>
+        </div>
+      )}
+
       {/* 58mm Thermal Printer Page Setup Modal */}
       <ThermalPageSetupModal 
         isOpen={showThermalSetup} 
         onClose={() => setShowThermalSetup(false)} 
         settings={settings} 
+      />
+
+      {/* Club Echo ON Warning Flash Modal on First Print */}
+      <ClubEchoPrintModal
+        isOpen={Boolean(echoPrintModalState)}
+        contextLabel={echoPrintModalState?.contextLabel}
+        canTurnOffEcho={Boolean(onSaveSettings)}
+        onTurnOffAndPrint={async () => {
+          if (!echoPrintModalState) return;
+          markFirstPrintWarned(echoPrintModalState.category, echoPrintModalState.evtNos);
+          setEchoPrintModalState(null);
+          if (onSaveSettings) {
+            await onSaveSettings({ ...settings, clientResponseEnabled: false });
+          }
+          setTimeout(() => {
+            executeActualPrint();
+          }, 60);
+        }}
+        onContinuePrint={() => {
+          if (!echoPrintModalState) return;
+          markFirstPrintWarned(echoPrintModalState.category, echoPrintModalState.evtNos);
+          setEchoPrintModalState(null);
+          setTimeout(() => {
+            executeActualPrint();
+          }, 60);
+        }}
+        onCancel={() => setEchoPrintModalState(null)}
       />
 
     </div>
@@ -833,52 +1202,50 @@ export const Reports: React.FC<ReportsProps> = ({
     }
   }
 
-  // Header: Registered club logo placed beside left of registered club name, meet ordinal centered below (same as Candidate list)
+  // Header: Registered club logo placed beside left of registered club name, meet ordinal centered below
   function renderThermalHeader(specificClubName?: string, topMargin?: string) {
     const clubDisplayName = getThermalClubName(specificClubName);
     const clubLogo = specificClubName ? getThermalClubLogo(specificClubName) : getRegisteredClubLogo();
 
     return (
       <div 
-        className="pb-1 mb-1 border-b border-dashed border-black pt-1"
+        className="w-full pb-1 mb-1 border-b border-dashed border-black pt-1"
         style={topMargin ? { paddingTop: topMargin } : undefined}
       >
-        <div className="flex items-center justify-center gap-1.5 leading-tight">
-          <img 
+        <div className="flex items-center justify-center gap-1.5 leading-tight flex-wrap text-center">
+          <ThermalLogo 
             src={clubLogo} 
             alt="Club Logo" 
-            className="w-5 h-5 shrink-0 object-contain filter grayscale contrast-200"
-            style={{ filter: 'grayscale(100%) contrast(200%)' }}
+            className="thermal-header-logo w-5 h-5 shrink-0 object-contain"
+            rasterSizePx={64}
           />
-          <span className="font-bold text-[10.5px] uppercase tracking-tight text-black truncate max-w-[36mm]">
+          <span className="thermal-header-club font-bold uppercase tracking-tight text-black break-words">
             {clubDisplayName}
           </span>
         </div>
-        <div className="text-[8.5px] font-semibold text-black leading-tight mt-0.5 whitespace-nowrap overflow-hidden text-ellipsis max-w-[46mm] mx-auto text-center">
+        <div className="thermal-ordinal-title font-normal text-black leading-tight mt-0.5 break-words text-center">
           {settings.ordinalTitle || '47th Annual Sports Meet 2027'}
         </div>
       </div>
     );
   }
 
-  // Footer: Place app logo and app name in ONE LINE within 48mm width
+  // Footer: Brand logo and brand name "eSports-Sport Management" + timestamp (no top dashed border)
   function renderThermalFooter() {
     return (
-      <div className="text-center pt-1 mt-1 border-t border-dashed border-black text-black">
-        {/* App logo and app name in ONE LINE strictly within 48mm */}
-        <div className="flex items-center justify-center gap-1 leading-none max-w-[46mm] mx-auto whitespace-nowrap overflow-hidden">
-          <img 
+      <div className="w-full text-center pt-1.5 mt-1 text-black">
+        <div className="flex items-center justify-center gap-1 leading-tight flex-wrap">
+          <ThermalLogo 
             src="/icon.png" 
             alt="eSports Logo" 
-            className="w-3.5 h-3.5 shrink-0 object-contain filter grayscale contrast-200"
-            style={{ filter: 'grayscale(100%) contrast(200%)' }}
+            className="thermal-footer-logo w-3.5 h-3.5 shrink-0 object-contain"
+            rasterSizePx={48}
           />
-          <span className="font-semibold text-[8px] tracking-tight text-black whitespace-nowrap truncate">
-            eSports (Sport Management System)
+          <span className="thermal-footer-brand font-semibold tracking-tight text-black break-words">
+            eSports-Sport Management
           </span>
         </div>
-        {/* Date & time stamp */}
-        <div className="text-[7.5px] text-black leading-none mt-0.5 font-mono whitespace-nowrap">
+        <div className="thermal-footer-time text-black leading-tight mt-0.5 break-words">
           {currentTimestamp}
         </div>
       </div>
@@ -903,54 +1270,50 @@ export const Reports: React.FC<ReportsProps> = ({
       return s;
     }, 0);
 
-    const clubDisplayName = getThermalClubName();
-    const clubLogo = getRegisteredClubLogo();
-
     return (
-      <div style={{ fontFamily: 'Consolas, "Courier New", monospace' }}>
+      <div style={{ fontFamily: 'Arial, "Segoe UI", Helvetica, sans-serif' }}>
         {renderThermalHeader()}
 
-        <div className="text-center font-bold uppercase text-[10px] mb-1 tracking-wider leading-none">
-          --- Name list ---
+        <div className="text-center font-bold uppercase mb-1 tracking-wider leading-tight">
+          NAME LIST
         </div>
 
-        {/* Minimal important info columns: SL, CH, NAME, EVTS, FEE */}
-        <div className="border-b border-black pb-0.5 mb-1 font-bold flex items-center justify-between text-[10px] leading-tight text-black">
-          <span className="w-5 text-center shrink-0 font-bold">SL</span>
-          <span className="w-7 text-center shrink-0 font-bold">CH</span>
-          <span className="flex-1 text-left px-1 font-bold">NAME</span>
-          <span className="w-7 text-center shrink-0 font-bold">EVTS</span>
-          <span className="w-13 text-right shrink-0 font-bold">FEE</span>
+        {/* Columns: SL, CH, NAME, EVTS */}
+        <div className="flex items-center font-normal leading-tight text-black pb-0.5">
+          <span className="w-[2.4em] pr-0.5 text-left shrink-0 font-normal">SL</span>
+          <span className="w-[2.3em] text-left shrink-0 font-normal">CH</span>
+          <span className="flex-1 text-left pl-0.5 font-normal">NAME</span>
+          <span className="text-right pl-1 shrink-0 font-normal">EVTS</span>
         </div>
+        <div className="w-full border-b border-black mb-1"></div>
 
         <div className="space-y-0 text-black">
           {chestWiseCandidates.map((c, idx) => {
-            const isDue = (c.feeStatus || '').toUpperCase().includes('DUE') || (c.feeStatus || '').toUpperCase().includes('UNPAID');
             const clubText = c.club ? `(${c.club})` : '';
+            const evtsText = (c.selectedEvents || []).map(Number).sort((a,b)=>a-b).join(',');
             return (
               <div key={c.id || c.chestNo}>
-                <div className="flex justify-between items-center text-[10px] py-0.5 leading-tight">
-                  <span className="w-5 text-center font-normal shrink-0">{idx + 1}</span>
-                  <span className="w-7 text-center font-bold shrink-0">{c.chestNo}</span>
-                  <span className="flex-1 text-left truncate px-1 uppercase font-normal">
-                    {c.name} {clubText}
-                  </span>
-                  <span className="w-7 text-center text-[9px] font-normal shrink-0">
-                    {(c.selectedEvents || []).map(Number).sort((a,b)=>a-b).join(',')}
-                  </span>
-                  <span className="w-13 text-right font-normal shrink-0">
-                    {settings.currencySymbol || '₹'}{Number(c.totalFees || 0).toFixed(0)} ({isDue ? 'D' : 'P'})
-                  </span>
+                <div className="flex items-start py-0.5 leading-tight">
+                  <span className="w-[2.4em] pr-0.5 text-left font-normal shrink-0">{idx + 1}</span>
+                  <span className="w-[2.3em] text-left font-normal shrink-0 thermal-chest-no">{c.chestNo}</span>
+                  <div className="flex-1 min-w-0 text-left pl-0.5">
+                    <ThermalTwoLineRecord
+                      text={`${c.name} ${clubText}`.trim()}
+                      rightText={evtsText}
+                      rightClassName="max-w-[26%] !pl-1 thermal-record-clamp-2 thermal-evts-col font-normal"
+                      deps={[thermalConfig.printableWidth, thermalConfig.fontSize, thermalConfig.lineSpacing, thermalConfig.marginHorizontal]}
+                    />
+                  </div>
                 </div>
-                <div className="border-b border-dotted border-black/80"></div>
+                <div className="w-full border-b border-dotted border-black/80"></div>
               </div>
             );
           })}
         </div>
 
-        {/* Total Summary: Amt:₹x | P: ₹y | D: ₹z all in one line, no "Total Candidates:" */}
-        <div className="mt-1 pt-0.5 border-t border-dashed border-black text-[10px] font-normal leading-tight text-center text-black">
-          <span>Amt:{settings.currencySymbol || '₹'}{totalFees.toFixed(0)} | P: {settings.currencySymbol || '₹'}{totalPaid.toFixed(0)} | D: {settings.currencySymbol || '₹'}{totalDue.toFixed(0)}</span>
+        {/* Total Summary */}
+        <div className="w-full mt-1 pt-0.5 font-normal leading-tight text-center text-black break-words">
+          <span>Amt:{settings.currencySymbol || '₹'}{totalFees.toFixed(0)} | P:{settings.currencySymbol || '₹'}{totalPaid.toFixed(0)} | D:{settings.currencySymbol || '₹'}{totalDue.toFixed(0)}</span>
         </div>
 
         {renderThermalFooter()}
@@ -961,7 +1324,7 @@ export const Reports: React.FC<ReportsProps> = ({
   // 2. Thermal Club Wise Candidate List with Subtotal (One by One or All)
   function renderThermalClubWise() {
     return (
-      <div className="space-y-3" style={{ fontFamily: 'Consolas, "Courier New", monospace' }}>
+      <div className="space-y-3" style={{ fontFamily: 'Arial, "Segoe UI", Helvetica, sans-serif' }}>
         {displayedClubNames.map((clubName) => {
           const athletes = clubGroupedCandidates[clubName] || [];
           const clubTotalFees = athletes.reduce((sum, c) => sum + (Number(c.totalFees) || 0), 0);
@@ -982,62 +1345,58 @@ export const Reports: React.FC<ReportsProps> = ({
 
           return (
             <div key={clubName} className="avoid-break pb-2 border-b border-dashed border-black last:border-b-0">
-              {/* Header: same as Candidate list */}
               {renderThermalHeader()}
 
-              {/* Participating club name */}
-              <div className="font-normal text-[10.5px] mb-1 leading-tight text-black truncate">
-                CLUB: &lt;{clubName}&gt;
+              <div className="font-normal mb-1 leading-tight text-black break-words thermal-club-banner">
+                CLUB: [<span className="font-bold">{clubName}</span>]
               </div>
 
-              {/* Column Headers */}
-              <div className="border-b border-black pb-0.5 mb-1 font-bold flex justify-between text-[10px] leading-tight text-black">
-                <span className="w-8 text-left">CH#</span>
-                <span className="flex-1 text-left px-1">NAME</span>
-                <span className="w-10 text-center">EVTS</span>
-                <span className="w-8 text-right">FEE</span>
+              <div className="pb-0.5 font-normal flex items-center leading-tight text-black">
+                <span className="w-[2.6em] text-left shrink-0">CH</span>
+                <span className="flex-1 text-left pl-1">NAME</span>
+                <span className="text-right pl-1 shrink-0">EVTS</span>
               </div>
+              <div className="w-full border-b border-black mb-1"></div>
 
-              {/* Athletes: Bold only chest numbers and due amount, NO # prefix before chest number */}
               <div className="space-y-0.5 text-black">
-                {athletes.map((c) => (
-                  <div key={c.id || c.chestNo} className="flex justify-between items-start text-[10px] leading-tight font-normal">
-                    <span className="w-8 text-left font-bold shrink-0">{c.chestNo}</span>
-                    <span className="flex-1 text-left truncate px-1 uppercase font-normal">{c.name}</span>
-                    <span className="w-10 text-center font-normal text-[9px] shrink-0">
-                      {(c.selectedEvents || []).map(Number).sort((a,b)=>a-b).join(',')}
-                    </span>
-                    <span className="w-8 text-right font-normal shrink-0">
-                      ₹{Number(c.totalFees || 0).toFixed(0)}
-                    </span>
-                  </div>
-                ))}
+                {athletes.map((c) => {
+                  const evtsStr = (c.selectedEvents || []).map(Number).sort((a,b)=>a-b).join(',');
+                  return (
+                    <div key={c.id || c.chestNo} className="flex items-start leading-tight font-normal py-0.5 border-b border-dotted border-black/50 last:border-b-0">
+                      <span className="w-[2.6em] text-left font-normal shrink-0 thermal-chest-no">{c.chestNo}</span>
+                      <div className="flex-1 min-w-0 text-left pl-1">
+                        <ThermalTwoLineRecord
+                          text={c.name}
+                          rightText={evtsStr}
+                          rightClassName="max-w-[32%] thermal-record-clamp-2 thermal-evts-col font-normal"
+                          deps={[thermalConfig.printableWidth, thermalConfig.fontSize, thermalConfig.lineSpacing, thermalConfig.marginHorizontal]}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
 
-              {/* Dashed Line */}
-              <div className="border-b border-dashed border-black my-1"></div>
+              <div className="w-full border-b border-dashed border-black my-1"></div>
 
-              {/* Subtotal Section */}
-              <div className="text-[10px] text-black font-normal flex justify-between leading-tight">
-                <span>Enrolled: {athletes.length}</span>
-                <span>Total: ₹{clubTotalFees.toFixed(0)}</span>
+              <div className="club-subtotal-section text-black font-normal space-y-0.5">
+                <div className="flex justify-between items-center leading-tight flex-wrap gap-1">
+                  <span className="text-left font-normal">Enrolled: {athletes.length}</span>
+                  <span className="text-right font-normal">Total: ₹{clubTotalFees.toFixed(0)}</span>
+                </div>
+
+                <div className="flex justify-between items-center leading-tight flex-wrap gap-1">
+                  <span className="text-left font-normal">Paid: ₹{clubTotalPaid.toFixed(0)}</span>
+                  <span className="text-right font-normal">Due: ₹{clubTotalDue.toFixed(0)}</span>
+                </div>
+
+                <div className="w-full border-b border-black my-1"></div>
+
+                <div className="text-right font-bold text-black leading-tight">
+                  <span className="font-bold thermal-due-amount">Net Payable: ₹{clubTotalDue.toFixed(0)}</span>
+                </div>
               </div>
 
-              <div className="text-[10px] text-black font-normal flex justify-between leading-tight mt-0.5">
-                <span>Paid: ₹{clubTotalPaid.toFixed(0)}</span>
-                <span>DUE: <span className="font-bold">₹{clubTotalDue.toFixed(0)}</span></span>
-              </div>
-
-              {/* Solid Horizontal Line */}
-              <div className="border-b border-black my-1"></div>
-
-              {/* SUB TOTAL (DUE) */}
-              <div className="text-[10.5px] text-black flex justify-between leading-tight">
-                <span className="font-normal">SUB TOTAL (DUE):</span>
-                <span className="font-bold">₹{clubTotalDue.toFixed(0)}</span>
-              </div>
-
-              {/* Footer: same as Candidate list */}
               {renderThermalFooter()}
             </div>
           );
@@ -1046,7 +1405,7 @@ export const Reports: React.FC<ReportsProps> = ({
     );
   }
 
-  // 3. Thermal Hit List (Field Recording Sheet as per HitListThermal Report.jpg)
+  // 3. Thermal Hit List
   function renderThermalHitList() {
     const eventsToRender = selectedHitEvtNo === 'all' 
       ? (eventsWithHeats.length > 0 ? eventsWithHeats : events.filter(e => candidates.some(c => (c.selectedEvents || []).map(Number).includes(Number(e.Evt_No)))))
@@ -1056,122 +1415,74 @@ export const Reports: React.FC<ReportsProps> = ({
       return (
         <div className="text-center py-4">
           {renderThermalHeader()}
-          <p className="font-bold my-2 text-[10px]">NO HIT LISTS AVAILABLE</p>
+          <p className="font-bold my-2">NO HIT LISTS AVAILABLE</p>
           {renderThermalFooter()}
         </div>
       );
     }
 
-    const formatThermalHeight = (hStr?: string) => {
-      if (!hStr) return 'ALL';
-      const clean = hStr.trim().toUpperCase();
-      if (clean === 'ALL') return 'ALL';
-      return clean.replace(/[`']/g, "'").replace(/''|``|"/g, "''");
-    };
-
-    const getThermalGenderAbbr = (gender?: string) => {
-      if (!gender) return 'ALL';
-      const g = gender.trim().toUpperCase();
-      if (g.startsWith('BOY') || g === 'B') return 'B';
-      if (g.startsWith('GIRL') || g === 'G') return 'G';
-      if (g.startsWith('CHILD') || g === 'C') return 'C';
-      return 'ALL';
-    };
-
-    const clubDisplayName = (settings.registeredClubName || settings.organizer || 'SASTHITALA AGRANI').toUpperCase();
-    const meetTitle = settings.ordinalTitle || '47th Annual Sports Meet 2027';
-    const clubLogo = settings.registeredClubLogo || '/icon.png';
-
     return (
-      <div className="space-y-4" style={{ fontFamily: 'Consolas, "Courier New", monospace' }}>
+      <div className="space-y-4" style={{ fontFamily: 'Arial, "Segoe UI", Helvetica, sans-serif' }}>
         {eventsToRender.map((evt) => {
           const evtHeats = heats.filter(h => Number(h.eventNo) === Number(evt.Evt_No));
           const enrolled = candidates.filter(c => (c.selectedEvents || []).map(Number).includes(Number(evt.Evt_No)))
             .sort((a, b) => (Number(a.chestNo) || 0) - (Number(b.chestNo) || 0));
 
-          const heightDisp = formatThermalHeight(evt.Height);
-          const genderAbbr = getThermalGenderAbbr(evt.Gender);
+          const continuousHitParticipants = evtHeats.length > 0
+            ? evtHeats
+                .slice()
+                .sort((a, b) => (a.heatNumber || 0) - (b.heatNumber || 0))
+                .flatMap((heat) => heat.participants || [])
+            : enrolled.map((p) => ({
+                chestNo: p.chestNo,
+                candidateName: p.name,
+                club: p.club,
+              }));
 
           return (
             <div 
               key={evt.Evt_No} 
               className="avoid-break pt-2 pb-2 border-b border-dashed border-black last:border-b-0 text-black leading-tight"
             >
-              {/* Header: same as Candidate list */}
               {renderThermalHeader()}
 
-              {/* Two-line Report Name and Event Details */}
-              <div className="text-center font-bold text-[10px] uppercase tracking-wider text-black">
+              <div className="text-center font-bold uppercase tracking-wider text-black">
                 HIT LIST
               </div>
-              <div className="text-center font-bold text-[9px] uppercase pb-0.5 tracking-tight text-black break-words leading-tight">
-                EVT #{evt.Evt_No}: {evt.Evt_Name} ({heightDisp} • {genderAbbr})
+              <div className="thermal-event-details text-center font-normal uppercase pb-0.5 tracking-tight text-black break-words leading-tight">
+                <span className="thermal-event-no font-bold">EVT {evt.Evt_No}</span>{formatThermalEventSuffix(evt.Evt_Name, evt.Height, evt.Gender)}
               </div>
 
-              {/* Dashed Line */}
-              <div className="border-b border-dashed border-black my-1"></div>
+              <div className="w-full border-b border-dashed border-black my-1"></div>
 
-              {/* Table Column Headers */}
-              <div className="flex items-center text-[9px] font-bold text-black uppercase pt-1">
-                <span className="w-6 text-center">SL</span>
-                <span className="w-8 text-center">CH#</span>
-                <span className="flex-1 text-left pl-2">ATHLETE (CLUB)</span>
+              <div className="flex items-center font-normal text-black uppercase pt-1">
+                <span className="w-[1.8em] text-left shrink-0">SL</span>
+                <span className="w-[2.6em] text-left shrink-0">CH</span>
+                <span className="flex-1 text-left pl-1">ATHLETE (CLUB)</span>
               </div>
-              <div className="border-b-2 border-black mb-1 mt-0.5"></div>
+              <div className="w-full border-b-2 border-black mb-1 mt-0.5"></div>
 
-              {/* Athletes List */}
-              {evtHeats.length > 0 ? (
-                <div className="space-y-2">
-                  {evtHeats.map((heat) => (
-                    <div key={heat.id}>
-                      {evtHeats.length > 1 && (
-                        <div className="font-bold text-[8.5px] uppercase text-black py-0.5">
-                          --- HEAT {heat.heatNumber} ---
+              <div className="space-y-0 text-black">
+                {continuousHitParticipants.map((p, idx) => {
+                  const club = getClubInfo(p.club || '');
+                  const clubNameStr = club?.name || p.club || 'BANDIPUR';
+                  return (
+                    <div key={`${p.chestNo}-${idx}`}>
+                      <div className="flex items-start py-1 text-black leading-tight">
+                        <span className="w-[1.8em] text-left font-normal shrink-0">{idx + 1}</span>
+                        <span className="w-[2.6em] text-left font-normal shrink-0 thermal-chest-no">{p.chestNo}</span>
+                        <div className="flex-1 min-w-0 text-left pl-1">
+                          <div className="font-normal uppercase thermal-record-clamp-1 thermal-athlete-name">
+                            {p.candidateName} ({clubNameStr})
+                          </div>
                         </div>
-                      )}
-                      <div className="space-y-0 text-black">
-                        {(heat.participants || []).map((p, idx) => {
-                          const club = getClubInfo(p.club || '');
-                          const clubNameStr = club?.name || p.club || 'BANDIPUR';
-                          return (
-                            <div key={p.chestNo}>
-                              <div className="flex items-center text-[9.5px] py-1 text-black leading-tight">
-                                <span className="w-6 text-center font-normal shrink-0">{idx + 1}</span>
-                                <span className="w-8 text-center font-bold shrink-0">{p.chestNo}</span>
-                                <span className="flex-1 text-left font-normal uppercase truncate pl-2">
-                                  {p.candidateName} ({clubNameStr})
-                                </span>
-                              </div>
-                              <div className="border-b border-dotted border-black/80"></div>
-                            </div>
-                          );
-                        })}
                       </div>
+                      <div className="w-full border-b border-dotted border-black/80"></div>
                     </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="space-y-0 text-black">
-                  {enrolled.map((p, idx) => {
-                    const club = getClubInfo(p.club || '');
-                    const clubNameStr = club?.name || p.club || 'BANDIPUR';
-                    return (
-                      <div key={p.id || p.chestNo}>
-                        <div className="flex items-center text-[9.5px] py-1 text-black leading-tight">
-                          <span className="w-6 text-center font-normal shrink-0">{idx + 1}</span>
-                          <span className="w-8 text-center font-bold shrink-0">{p.chestNo}</span>
-                          <span className="flex-1 text-left font-normal uppercase truncate pl-2">
-                            {p.name} ({clubNameStr})
-                          </span>
-                        </div>
-                        <div className="border-b border-dotted border-black/80"></div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
+                  );
+                })}
+              </div>
 
-              {/* Footer: same as Candidate list */}
               {renderThermalFooter()}
             </div>
           );
@@ -1180,7 +1491,7 @@ export const Reports: React.FC<ReportsProps> = ({
     );
   }
 
-  // 4. Thermal Final List (Redesigned as per FinalListThermal Report.jpg)
+  // 4. Thermal Final List
   function renderThermalFinalList() {
     const eventsToRender = selectedFinalEvtNo === 'all'
       ? eventsWithFinalists
@@ -1190,34 +1501,14 @@ export const Reports: React.FC<ReportsProps> = ({
       return (
         <div className="text-center py-4">
           {renderThermalHeader()}
-          <p className="font-bold my-2 text-[10px]">NO FINAL LISTS PREPARED YET</p>
+          <p className="font-bold my-2">NO FINAL LISTS PREPARED YET</p>
           {renderThermalFooter()}
         </div>
       );
     }
 
-    const formatThermalHeight = (hStr?: string) => {
-      if (!hStr) return 'ALL';
-      const clean = hStr.trim().toUpperCase();
-      if (clean === 'ALL') return 'ALL';
-      return clean.replace(/[`']/g, "'").replace(/''|``|"/g, "''");
-    };
-
-    const getThermalGenderAbbr = (gender?: string) => {
-      if (!gender) return 'ALL';
-      const g = gender.trim().toUpperCase();
-      if (g.startsWith('BOY') || g === 'B') return 'B';
-      if (g.startsWith('GIRL') || g === 'G') return 'G';
-      if (g.startsWith('CHILD') || g === 'C') return 'C';
-      return 'ALL';
-    };
-
-    const clubDisplayName = (settings.registeredClubName || settings.organizer || 'SASTHITALA AGRANI').toUpperCase();
-    const meetTitle = settings.ordinalTitle || '47th Annual Sports Meet 2027';
-    const clubLogo = settings.registeredClubLogo || '/icon.png';
-
     return (
-      <div className="space-y-4" style={{ fontFamily: 'Consolas, "Courier New", monospace' }}>
+      <div className="space-y-4" style={{ fontFamily: 'Arial, "Segoe UI", Helvetica, sans-serif' }}>
         {eventsToRender.map((evt) => {
           const res = results.find(r => Number(r.eventNo) === Number(evt.Evt_No));
           const directFinalists = res?.finalists || [];
@@ -1236,57 +1527,50 @@ export const Reports: React.FC<ReportsProps> = ({
                     }))
                 : []);
 
-          const heightDisp = formatThermalHeight(evt.Height);
-          const genderAbbr = getThermalGenderAbbr(evt.Gender);
-
           return (
             <div 
               key={evt.Evt_No} 
               className="avoid-break pt-2 pb-2 border-b border-dashed border-black last:border-b-0 text-black leading-tight"
             >
-              {/* Header: same as Candidate list */}
               {renderThermalHeader()}
 
-              {/* Two-line Report Name and Event Details */}
-              <div className="text-center font-bold text-[10px] uppercase tracking-wider text-black">
+              <div className="text-center font-bold uppercase tracking-wider text-black">
                 FINAL LIST
               </div>
-              <div className="text-center font-bold text-[9px] uppercase pb-0.5 tracking-tight text-black break-words leading-tight">
-                EVT #{evt.Evt_No}: {evt.Evt_Name} ({heightDisp} • {genderAbbr})
+              <div className="thermal-event-details text-center font-normal uppercase pb-0.5 tracking-tight text-black break-words leading-tight">
+                <span className="thermal-event-no font-bold">EVT {evt.Evt_No}</span>{formatThermalEventSuffix(evt.Evt_Name, evt.Height, evt.Gender)}
               </div>
 
-              {/* Dashed Line */}
-              <div className="border-b border-dashed border-black my-1"></div>
+              <div className="w-full border-b border-dashed border-black my-1"></div>
 
-              {/* Table Column Headers */}
-              <div className="flex items-center text-[9px] font-bold text-black uppercase pt-1">
-                <span className="w-6 text-center">SL</span>
-                <span className="w-8 text-center">CH#</span>
-                <span className="flex-1 text-left pl-2">ATHLETE (CLUB)</span>
+              <div className="flex items-center font-normal text-black uppercase pt-1">
+                <span className="w-[1.8em] text-left shrink-0">SL</span>
+                <span className="w-[2.6em] text-left shrink-0">CH</span>
+                <span className="flex-1 text-left pl-1">ATHLETE (CLUB)</span>
               </div>
-              <div className="border-b-2 border-black mb-1 mt-0.5"></div>
+              <div className="w-full border-b-2 border-black mb-1 mt-0.5"></div>
 
-              {/* Athletes List with dotted separators */}
               <div className="space-y-0 text-black">
                 {finalistsList.map((f, idx) => {
                   const club = getClubInfo(f.club || '');
                   const clubNameStr = club?.name || f.club || 'BANDIPUR';
                   return (
                     <div key={f.chestNo}>
-                      <div className="flex items-center text-[9.5px] py-1 text-black leading-tight">
-                        <span className="w-6 text-center font-normal shrink-0">{idx + 1}</span>
-                        <span className="w-8 text-center font-bold shrink-0">{f.chestNo}</span>
-                        <span className="flex-1 text-left font-normal uppercase truncate pl-2">
-                          {f.candidateName} ({clubNameStr})
-                        </span>
+                      <div className="flex items-start py-1 text-black leading-tight">
+                        <span className="w-[1.8em] text-left font-normal shrink-0">{idx + 1}</span>
+                        <span className="w-[2.6em] text-left font-normal shrink-0 thermal-chest-no">{f.chestNo}</span>
+                        <div className="flex-1 min-w-0 text-left pl-1">
+                          <div className="font-normal uppercase thermal-record-clamp-1 thermal-athlete-name">
+                            {f.candidateName} ({clubNameStr})
+                          </div>
+                        </div>
                       </div>
-                      <div className="border-b border-dotted border-black/80"></div>
+                      <div className="w-full border-b border-dotted border-black/80"></div>
                     </div>
                   );
                 })}
               </div>
 
-              {/* Footer: same as Candidate list */}
               {renderThermalFooter()}
             </div>
           );
@@ -1305,27 +1589,11 @@ export const Reports: React.FC<ReportsProps> = ({
       return (
         <div className="text-center py-4">
           {renderThermalHeader()}
-          <p className="font-bold my-2 text-[10px]">NO RANKINGS RECORDED YET</p>
+          <p className="font-bold my-2">NO RANKINGS RECORDED YET</p>
           {renderThermalFooter()}
         </div>
       );
     }
-
-    const formatThermalHeight = (hStr?: string) => {
-      if (!hStr) return 'ALL';
-      const clean = hStr.trim().toUpperCase();
-      if (clean === 'ALL') return 'ALL';
-      return clean.replace(/[`']/g, "'").replace(/''|``|"/g, "''");
-    };
-
-    const getThermalGenderAbbr = (gender?: string) => {
-      if (!gender) return 'ALL';
-      const g = gender.trim().toUpperCase();
-      if (g.startsWith('BOY') || g === 'B') return 'B';
-      if (g.startsWith('GIRL') || g === 'G') return 'G';
-      if (g.startsWith('CHILD') || g === 'C') return 'C';
-      return 'ALL';
-    };
 
     const getRankPosLabel = (pos?: number, fallbackIdx?: number) => {
       const p = (pos && pos > 0) ? pos : ((fallbackIdx !== undefined) ? fallbackIdx + 1 : 1);
@@ -1335,20 +1603,14 @@ export const Reports: React.FC<ReportsProps> = ({
       return `${p}th`;
     };
 
-    const clubDisplayName = (settings.registeredClubName || settings.organizer || 'SASTHITALA AGRANI').toUpperCase();
-    const meetTitle = settings.ordinalTitle || '47th Annual Sports Meet 2027';
-    const clubLogo = settings.registeredClubLogo || '/icon.png';
-
     return (
-      <div className="space-y-4" style={{ fontFamily: 'Consolas, "Courier New", monospace' }}>
+      <div className="space-y-4" style={{ fontFamily: 'Arial, "Segoe UI", Helvetica, sans-serif' }}>
         {eventsToRender.map((evt) => {
           const res = results.find(r => Number(r.eventNo) === Number(evt.Evt_No));
           const ranked = (res?.winners && res.winners.length > 0 ? res.winners : (res?.finalists || []))
             .filter(f => (f.position || 0) > 0)
             .sort((a, b) => (a.position || 0) - (b.position || 0));
 
-          const heightDisp = formatThermalHeight(evt.Height);
-          const genderAbbr = getThermalGenderAbbr(evt.Gender);
           const isBroadJump = (evt.Evt_Name || '').toUpperCase().includes('BROAD JUMP');
 
           return (
@@ -1356,69 +1618,64 @@ export const Reports: React.FC<ReportsProps> = ({
               key={evt.Evt_No} 
               className="avoid-break pt-2 pb-2 border-b border-dashed border-black last:border-b-0 text-black leading-tight"
             >
-              {/* Header: same as Candidate list */}
               {renderThermalHeader()}
 
-              {/* Two-line Report Name and Event Details */}
-              <div className="text-center font-bold text-[10px] uppercase tracking-wider text-black">
+              <div className="text-center font-bold uppercase tracking-wider text-black">
                 RANKING LIST
               </div>
-              <div className="text-center font-bold text-[9px] uppercase pb-0.5 tracking-tight text-black break-words leading-tight">
-                EVT #{evt.Evt_No}: {evt.Evt_Name} ({heightDisp} • {genderAbbr})
+              <div className="thermal-event-details text-center font-normal uppercase pb-0.5 tracking-tight text-black break-words leading-tight">
+                <span className="thermal-event-no font-bold">EVT {evt.Evt_No}</span>{formatThermalEventSuffix(evt.Evt_Name, evt.Height, evt.Gender)}
               </div>
 
-              {/* Dashed Line */}
-              <div className="border-b border-dashed border-black my-1"></div>
+              <div className="w-full border-b border-dashed border-black my-1"></div>
 
-              {/* Table Column Headers */}
-              <div className="flex items-center text-[9px] font-bold text-black uppercase pt-1">
-                <span className={isBroadJump ? "w-7 text-center shrink-0" : "w-8 text-center shrink-0"}>Rank</span>
-                <span className={isBroadJump ? "w-7 text-center shrink-0" : "w-8 text-center shrink-0"}>CH#</span>
-                <span className={isBroadJump ? "flex-1 text-left pl-1" : "flex-1 text-left pl-2"}>ATHLETE (CLUB)</span>
+              <div className="flex items-center font-normal text-black uppercase pt-1">
+                <span className="w-[2.2em] text-left shrink-0">RK</span>
+                <span className="w-[2.6em] text-left shrink-0">CH</span>
+                <span className="flex-1 text-left pl-1">ATHLETE (CLUB)</span>
                 {isBroadJump && (
-                  <span className="w-14 text-right pr-0.5 shrink-0">Jump</span>
+                  <span className="text-right pl-1 shrink-0">JMP</span>
                 )}
               </div>
-              <div className="border-b-2 border-black mb-1 mt-0.5"></div>
+              <div className="w-full border-b-2 border-black mb-1 mt-0.5"></div>
 
-              {/* Ranked Athletes List with dotted separators */}
               <div className="space-y-0 text-black">
                 {ranked.length === 0 ? (
-                  <div className="py-2 text-center text-[9px] italic text-slate-600">
+                  <div className="py-2 text-center italic text-slate-600">
                     No rankings declared yet for this event.
                   </div>
                 ) : (
                   ranked.map((r, idx) => {
                     const club = getClubInfo(r.club || '');
                     const isSelf = (r.club || '').trim().toUpperCase() === 'SELF';
-                    const clubNameStr = isSelf ? '' : (club?.name || r.club || '');
+                    const clubNameStr = isSelf ? '' : (club?.name || r.club || '').trim();
                     const athleteDisplay = clubNameStr ? `${r.candidateName} (${clubNameStr})` : r.candidateName;
+                    const jumpVal = isBroadJump ? (r.jumpRecord || r.resultValue || '—') : undefined;
                     return (
                       <div key={r.chestNo}>
-                        <div className="flex items-center text-[9.5px] py-1 text-black leading-tight">
-                          <span className={isBroadJump ? "w-7 text-center font-normal shrink-0" : "w-8 text-center font-normal shrink-0"}>
+                        <div className="flex items-start py-1 text-black leading-tight">
+                          <span className="w-[2.2em] text-left font-normal shrink-0">
                             {getRankPosLabel(r.position, idx)}
                           </span>
-                          <span className={isBroadJump ? "w-7 text-center font-bold shrink-0" : "w-8 text-center font-bold shrink-0"}>
+                          <span className="w-[2.6em] text-left font-normal shrink-0 thermal-chest-no">
                             {r.chestNo}
                           </span>
-                          <span className={isBroadJump ? "flex-1 text-left font-normal uppercase truncate pl-1" : "flex-1 text-left font-normal uppercase truncate pl-2"}>
-                            {athleteDisplay}
-                          </span>
-                          {isBroadJump && (
-                            <span className="w-14 text-right font-mono text-[8.5px] font-normal shrink-0">
-                              {r.jumpRecord || r.resultValue || '—'}
-                            </span>
-                          )}
+                          <div className="flex-1 min-w-0 text-left font-normal uppercase pl-1">
+                            <ThermalTwoLineRecord
+                              text={athleteDisplay}
+                              rightText={jumpVal}
+                              rightClassName="thermal-jump-record whitespace-nowrap"
+                              deps={[thermalConfig.printableWidth, thermalConfig.fontSize, thermalConfig.lineSpacing, thermalConfig.marginHorizontal]}
+                            />
+                          </div>
                         </div>
-                        <div className="border-b border-dotted border-black/80"></div>
+                        <div className="w-full border-b border-dotted border-black/80"></div>
                       </div>
                     );
                   })
                 )}
               </div>
 
-              {/* Broad Jump Record Callout for Thermal Print */}
               {isBroadJump && (() => {
                 const prevRecord = settings.broadJumpPreviousRecords?.[Number(evt.Evt_No)] ||
                   (res?.highestRecord?.previousRecordValue ? {
@@ -1441,19 +1698,26 @@ export const Reports: React.FC<ReportsProps> = ({
                   if (hrInches > maxJumpInches) maxJumpInches = hrInches;
                 }
                 const isBroken = prevInches > 0 ? (maxJumpInches > prevInches) : (maxJumpInches > 0);
-                const recFlag = isBroken ? 'Y' : 'N';
                 const formattedPrev = formatJumpBenchmark(prevRecord.recordValue) || prevRecord.recordValue;
                 const holderClub = prevRecord.recordHolderClub ? ` (${prevRecord.recordHolderClub})` : '';
                 const holderYear = prevRecord.recordYear ? `, ${prevRecord.recordYear}` : '';
 
+                if (!isBroken) {
+                  return (
+                    <div className="thermal-new-record-callout py-1 font-normal text-center text-black leading-tight border-b border-dotted border-black/80 break-words">
+                      New Record: N
+                    </div>
+                  );
+                }
+
                 return (
-                  <div className="py-1 text-[8.5px] font-bold text-center text-black leading-tight border-b border-dotted border-black/80">
-                    New record: {recFlag} | Prev: {formattedPrev} by {prevRecord.recordHolderName}{holderClub}{holderYear}
+                  <div className="thermal-new-record-callout py-1 font-normal text-center text-black leading-tight border-b border-dotted border-black/80 break-words">
+                    <span className="font-bold">New Record: Y</span>
+                    <span> | Prev: {formattedPrev} by {prevRecord.recordHolderName}{holderClub}{holderYear}</span>
                   </div>
                 );
               })()}
 
-              {/* Footer: same as Candidate list */}
               {renderThermalFooter()}
             </div>
           );
@@ -1465,53 +1729,49 @@ export const Reports: React.FC<ReportsProps> = ({
   // 6. Thermal Club Championship Points (Max 3 Clubs)
   function renderThermalChampionship() {
     return (
-      <div style={{ fontFamily: 'Consolas, "Courier New", monospace' }}>
+      <div style={{ fontFamily: 'Arial, "Segoe UI", Helvetica, sans-serif' }}>
         {renderThermalHeader()}
 
         <div className="text-center mb-1 leading-tight">
-          <div className="font-bold text-[10px] uppercase tracking-wider">
-            TOP 3 CLUB CHAMPIONSHIP
-          </div>
-          <div className="text-[8.5px]">
-            OFFICIAL TEAM STANDINGS
+          <div className="font-bold tracking-wider">
+            Top 3 Clubs
           </div>
         </div>
 
-        {/* Minimal important info columns */}
-        <div className="border-b border-black pb-0.5 mb-0.5 font-bold flex justify-between items-center text-[8.5px]">
-          <span className="w-5 shrink-0">RK</span>
-          <span className="flex-1 text-left pr-1">CLUB</span>
-          <div className="flex items-center gap-1 shrink-0 text-center">
-            <span className="w-3">G</span>
-            <span className="w-3">S</span>
-            <span className="w-3">B</span>
-            <span className="w-4 text-right font-bold">T</span>
-          </div>
+        <div className="pb-0.5 font-normal flex items-center">
+          <span className="w-[2.7em] text-left shrink-0">RK</span>
+          <span className="flex-1 text-left pl-1 pr-1">CLUB</span>
+          <span className="w-[1.6em] text-center shrink-0">G</span>
+          <span className="w-[1.6em] text-center shrink-0">S</span>
+          <span className="w-[1.6em] text-center shrink-0">B</span>
+          <span className="w-[2.2em] text-right shrink-0">T</span>
         </div>
+        <div className="w-full border-b border-black mb-0.5"></div>
 
         <div className="space-y-1">
           {top3Clubs.map((team, idx) => {
             const rankLabel = idx === 0 ? '1ST' : idx === 1 ? '2ND' : '3RD';
+            const rowWeight = idx === 0 ? 'font-bold' : 'font-normal';
             return (
-              <div key={team.name} className="flex justify-between items-start text-[9.5px] leading-tight pb-0.5 border-b border-dotted border-black/50 last:border-b-0">
-                <span className="w-5 font-bold shrink-0">{rankLabel}</span>
-                <span className="flex-1 text-left font-bold pr-1 break-words uppercase">
-                  {team.name}
-                </span>
-                <div className="flex items-center gap-1 shrink-0">
-                  <span className="w-3 text-center shrink-0 font-normal">{team.gold}</span>
-                  <span className="w-3 text-center shrink-0 font-normal">{team.silver}</span>
-                  <span className="w-3 text-center shrink-0 font-normal">{team.bronze}</span>
-                  <span className="w-4 text-right font-bold shrink-0">{team.points}</span>
+              <div key={team.name} className="flex items-start leading-tight pb-0.5 border-b border-dotted border-black/50 last:border-b-0">
+                <span className={`w-[2.7em] text-left ${rowWeight} shrink-0`}>{rankLabel}</span>
+                <div className="flex-1 min-w-0 text-left pl-1 pr-1">
+                  <div className={`${rowWeight} uppercase thermal-record-clamp-2`}>
+                    {team.name}
+                  </div>
                 </div>
+                <span className={`w-[1.6em] text-center ${rowWeight} shrink-0 thermal-champ-g`}>{team.gold}</span>
+                <span className={`w-[1.6em] text-center ${rowWeight} shrink-0 thermal-champ-s`}>{team.silver}</span>
+                <span className={`w-[1.6em] text-center ${rowWeight} shrink-0 thermal-champ-b`}>{team.bronze}</span>
+                <span className={`w-[2.2em] text-right ${rowWeight} shrink-0 thermal-champ-t`}>{team.points}</span>
               </div>
             );
           })}
         </div>
 
         {top3Clubs.length > 0 && (
-          <div className="mt-1 pt-0.5 border-t border-dashed border-black text-center leading-tight">
-            <div className="font-bold text-[9.5px] uppercase">
+          <div className="w-full mt-1 pt-0.5 text-center leading-tight">
+            <div className="font-bold uppercase break-words">
               CHAMPION: {top3Clubs[0]?.name}
             </div>
           </div>
@@ -1855,113 +2115,71 @@ export const Reports: React.FC<ReportsProps> = ({
                 </div>
               </div>
 
-              {/* Table rendering: Heats or Enrolled Participants */}
-              {evtHeats.length > 0 ? (
-                <div className="space-y-6">
-                  {evtHeats.map((heat) => (
-                    <div key={heat.id}>
-                      {evtHeats.length > 1 && (
-                        <div className="text-xs font-black uppercase text-black mb-1">
-                          HEAT {heat.heatNumber} ({heat.participants?.length || 0} Runners)
-                        </div>
-                      )}
-                      <table className="w-full text-left border-collapse border border-black bg-white">
-                        <thead>
-                          <tr className="bg-white text-black font-bold">
-                            <th rowSpan={2} className="border border-black py-2 px-1 text-center text-xs uppercase" style={{ width: '40px' }}>
-                              SL.
-                            </th>
-                            <th rowSpan={2} className="border border-black py-2 px-1 text-center text-xs uppercase font-bold" style={{ width: '60px', minWidth: '60px' }}>
-                              CHEST NO.
-                            </th>
-                            <th rowSpan={2} className="border border-black py-2 px-3 text-left text-xs uppercase font-bold">
-                              NAME (CLUB NAME)
-                            </th>
-                            <th colSpan={4} className="border border-black py-1 px-1 text-center text-xs uppercase font-bold">
-                              POSITION / CHANCE
-                            </th>
-                          </tr>
-                          <tr className="bg-white text-black font-bold">
-                            <th className="border border-black py-1 px-1 text-center text-xs font-bold" style={{ width: '85px', minWidth: '85px' }}>1</th>
-                            <th className="border border-black py-1 px-1 text-center text-xs font-bold" style={{ width: '85px', minWidth: '85px' }}>2</th>
-                            <th className="border border-black py-1 px-1 text-center text-xs font-bold" style={{ width: '85px', minWidth: '85px' }}>3</th>
-                            <th className="border border-black py-1 px-1 text-center text-xs font-bold" style={{ width: '85px', minWidth: '85px' }}>4</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {(heat.participants || []).map((p, idx) => {
-                            const club = getClubInfo(p.club || '');
-                            const clubNameStr = club?.name || p.club || 'BANDIPUR';
-                            return (
-                              <tr key={p.chestNo} className="bg-white">
-                                <td className="border border-black py-2.5 px-1 text-center text-sm font-normal text-black" style={{ width: '40px' }}>
-                                  {idx + 1}
-                                </td>
-                                <td className="border border-black py-2.5 px-1 text-center text-sm font-bold text-black" style={{ width: '60px', minWidth: '60px' }}>
-                                  {p.chestNo}
-                                </td>
-                                <td className="border border-black py-2.5 px-3 text-left text-sm font-normal text-black uppercase">
-                                  {p.candidateName} ({clubNameStr})
-                                </td>
-                                <td className="border border-black py-2.5 px-1 text-center" style={{ width: '85px', minWidth: '85px' }}></td>
-                                <td className="border border-black py-2.5 px-1 text-center" style={{ width: '85px', minWidth: '85px' }}></td>
-                                <td className="border border-black py-2.5 px-1 text-center" style={{ width: '85px', minWidth: '85px' }}></td>
-                                <td className="border border-black py-2.5 px-1 text-center" style={{ width: '85px', minWidth: '85px' }}></td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div>
-                  <table className="w-full text-left border-collapse border border-black bg-white">
-                    <thead>
-                      <tr className="bg-white text-black font-bold">
-                        <th rowSpan={2} className="border border-black py-2 px-1 text-center text-xs uppercase" style={{ width: '40px' }}>
-                          SL.
-                        </th>
-                        <th rowSpan={2} className="border border-black py-2 px-1 text-center text-xs uppercase font-bold" style={{ width: '60px', minWidth: '60px' }}>
-                          CHEST NO.
-                        </th>
-                        <th rowSpan={2} className="border border-black py-2 px-3 text-left text-xs uppercase font-bold">
-                          NAME (CLUB NAME)
-                        </th>
-                        <th colSpan={4} className="border border-black py-1 px-1 text-center text-xs uppercase font-bold">
-                          POSITION / CHANCE
-                        </th>
-                      </tr>
-                      <tr className="bg-white text-black font-bold">
-                        <th className="border border-black py-1 px-1 text-center text-xs font-bold" style={{ width: '85px', minWidth: '85px' }}>1</th>
-                        <th className="border border-black py-1 px-1 text-center text-xs font-bold" style={{ width: '85px', minWidth: '85px' }}>2</th>
-                        <th className="border border-black py-1 px-1 text-center text-xs font-bold" style={{ width: '85px', minWidth: '85px' }}>3</th>
-                        <th className="border border-black py-1 px-1 text-center text-xs font-bold" style={{ width: '85px', minWidth: '85px' }}>4</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {enrolled.map((cand, idx) => (
-                        <tr key={cand.id || cand.chestNo} className="bg-white">
-                          <td className="border border-black py-2.5 px-1 text-center text-sm font-normal text-black" style={{ width: '40px' }}>
-                            {idx + 1}
-                          </td>
-                          <td className="border border-black py-2.5 px-1 text-center text-sm font-bold text-black" style={{ width: '60px', minWidth: '60px' }}>
-                            {cand.chestNo}
-                          </td>
-                          <td className="border border-black py-2.5 px-3 text-left text-sm font-normal text-black uppercase">
-                            {cand.name} ({cand.club || 'BANDIPUR'})
-                          </td>
-                          <td className="border border-black py-2.5 px-1 text-center" style={{ width: '85px', minWidth: '85px' }}></td>
-                          <td className="border border-black py-2.5 px-1 text-center" style={{ width: '85px', minWidth: '85px' }}></td>
-                          <td className="border border-black py-2.5 px-1 text-center" style={{ width: '85px', minWidth: '85px' }}></td>
-                          <td className="border border-black py-2.5 px-1 text-center" style={{ width: '85px', minWidth: '85px' }}></td>
+              {/* Continuous Table rendering (no heat segregation) */}
+              {(() => {
+                const continuousA4Participants = evtHeats.length > 0
+                  ? evtHeats
+                      .slice()
+                      .sort((a, b) => (a.heatNumber || 0) - (b.heatNumber || 0))
+                      .flatMap((heat) => heat.participants || [])
+                  : enrolled.map((cand) => ({
+                      chestNo: cand.chestNo,
+                      candidateName: cand.name,
+                      club: cand.club,
+                    }));
+
+                return (
+                  <div>
+                    <table className="w-full text-left border-collapse border border-black bg-white">
+                      <thead>
+                        <tr className="bg-white text-black font-bold">
+                          <th rowSpan={2} className="border border-black py-2 px-1 text-center text-xs uppercase" style={{ width: '40px' }}>
+                            SL.
+                          </th>
+                          <th rowSpan={2} className="border border-black py-2 px-1 text-center text-xs uppercase font-bold" style={{ width: '60px', minWidth: '60px' }}>
+                            CHEST NO.
+                          </th>
+                          <th rowSpan={2} className="border border-black py-2 px-3 text-left text-xs uppercase font-bold">
+                            NAME (CLUB NAME)
+                          </th>
+                          <th colSpan={4} className="border border-black py-1 px-1 text-center text-xs uppercase font-bold">
+                            POSITION / CHANCE
+                          </th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
+                        <tr className="bg-white text-black font-bold">
+                          <th className="border border-black py-1 px-1 text-center text-xs font-bold" style={{ width: '85px', minWidth: '85px' }}>1</th>
+                          <th className="border border-black py-1 px-1 text-center text-xs font-bold" style={{ width: '85px', minWidth: '85px' }}>2</th>
+                          <th className="border border-black py-1 px-1 text-center text-xs font-bold" style={{ width: '85px', minWidth: '85px' }}>3</th>
+                          <th className="border border-black py-1 px-1 text-center text-xs font-bold" style={{ width: '85px', minWidth: '85px' }}>4</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {continuousA4Participants.map((p, idx) => {
+                          const club = getClubInfo(p.club || '');
+                          const clubNameStr = club?.name || p.club || 'BANDIPUR';
+                          return (
+                            <tr key={`${p.chestNo}-${idx}`} className="bg-white">
+                              <td className="border border-black py-2.5 px-1 text-center text-sm font-normal text-black" style={{ width: '40px' }}>
+                                {idx + 1}
+                              </td>
+                              <td className="border border-black py-2.5 px-1 text-center text-sm font-bold text-black" style={{ width: '60px', minWidth: '60px' }}>
+                                {p.chestNo}
+                              </td>
+                              <td className="border border-black py-2.5 px-3 text-left text-sm font-normal text-black uppercase">
+                                {p.candidateName} ({clubNameStr})
+                              </td>
+                              <td className="border border-black py-2.5 px-1 text-center" style={{ width: '85px', minWidth: '85px' }}></td>
+                              <td className="border border-black py-2.5 px-1 text-center" style={{ width: '85px', minWidth: '85px' }}></td>
+                              <td className="border border-black py-2.5 px-1 text-center" style={{ width: '85px', minWidth: '85px' }}></td>
+                              <td className="border border-black py-2.5 px-1 text-center" style={{ width: '85px', minWidth: '85px' }}></td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              })()}
 
               {/* Footer as per HitListA4Reports.jpg */}
               <div className="flex items-center justify-between mt-2.5 pt-1 text-black">

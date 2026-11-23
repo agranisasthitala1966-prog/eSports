@@ -729,7 +729,11 @@ export function parseDatabaseBackupFromExcel(wb: XLSX.WorkBook): any {
       let selectedEvents: number[] = [];
       const evtVal = row.Evt || row.evt || row.Events;
       if (typeof evtVal === 'string') {
-        selectedEvents = evtVal.split(/[,;]/).map((s: string) => Number(s.trim())).filter((n: number) => !isNaN(n));
+        selectedEvents = evtVal
+          .split(/[,;]/)
+          .map((s: string) => s.trim())
+          .filter((s: string) => s !== '' && !isNaN(Number(s)))
+          .map(Number);
       } else if (typeof evtVal === 'number') {
         selectedEvents = [evtVal];
       }
@@ -743,16 +747,19 @@ export function parseDatabaseBackupFromExcel(wb: XLSX.WorkBook): any {
         totalFees = parseFloat(cleaned) || 0;
       }
 
+      const parsedFeeStatus = (row.Fees || row.feeStatus || 'Paid').toString().trim();
+      const isFreeFeeStatus = /free|exempt/i.test(parsedFeeStatus);
+
       return {
         id: `cand_import_${Date.now()}_${idx}`,
         chestNo: Number(row.Chest_No || row.chestNo) || (101 + idx),
         name: (row.Name_ || row.Name || row.name || '').toString().trim().toUpperCase(),
-        club: (row.Club_Name || row.Club || row.club || 'Independent').toString().trim(),
+        club: (row.Club_Name || row.Club || row.club || 'SELF').toString().trim(),
         gender: (row.Gndr || row.Gender || row.gender || 'ALL').toString().trim(),
         height: (row.Height || row.height || 'ALL').toString().trim(),
         selectedEvents,
-        totalFees,
-        feeStatus: (row.Fees || row.feeStatus || 'Paid').toString().trim(),
+        totalFees: isFreeFeeStatus ? 0 : totalFees,
+        feeStatus: parsedFeeStatus,
         isCancelled: false,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -762,4 +769,336 @@ export function parseDatabaseBackupFromExcel(wb: XLSX.WorkBook): any {
 
   return result;
 }
+
+const ATHLETES_GENERAL_HEADERS = ['Sl_No', 'Chest_No', 'Name_', 'Club_Name', 'Height', 'Gndr', 'Fees', 'Evt', '_Amt'];
+const ATHLETES_ALLOC_HEADERS = [
+  'Sl_No',
+  'Chest_No',
+  'Evt_No',
+  'Hit_Flag',
+  'Final_Flag',
+  'Awd',
+  'Prize_1st',
+  'Jump_1st',
+  'Prize_2nd',
+  'Jump_2nd',
+  'Prize_3rd',
+  'Jump_3rd',
+  'Prize_4th',
+  'Jump_4th',
+  'Prize_5th',
+  'Jump_5th',
+  'Prize_6th',
+  'Jump_6th',
+];
+
+function isExcelFlagTrue(val: any): boolean {
+  if (val === true || val === 1) return true;
+  const s = String(val ?? '').trim().toUpperCase();
+  return s === 'TRUE' || s === '1' || s === 'YES';
+}
+
+function isExcelFlagFalse(val: any): boolean {
+  if (val === false || val === 0) return true;
+  const s = String(val ?? '').trim().toUpperCase();
+  return s === 'FALSE' || s === '0' || s === 'NO';
+}
+
+function getRankPoints(pos: number): number {
+  switch (pos) {
+    case 1: return 7;
+    case 2: return 5;
+    case 3: return 4;
+    case 4: return 3;
+    case 5: return 2;
+    case 6: return 1;
+    default: return 0;
+  }
+}
+
+/**
+ * Strictly parses an XLSX workbook matching the "Download Athletes' Data" export format
+ * containing two required sheets: "General Entry" and "Event Allocation".
+ * Throws a descriptive error if the workbook structure or headers do not match.
+ */
+export function parseAthletesDataFromExcel(
+  wb: XLSX.WorkBook,
+  events: SportEvent[] = [],
+  settings?: SportsMeetSettings
+): { candidates: Candidate[]; heats: EventHeat[]; results: EventResult[] } {
+  const sheetNames = wb.SheetNames || [];
+
+  if (!sheetNames.includes('General Entry') || !sheetNames.includes('Event Allocation')) {
+    throw new Error(
+      "Incorrect file format! Please upload an .xlsx file exported via \"Backup Athletes' Data (.xlsx)\" with 'General Entry' and 'Event Allocation' sheets."
+    );
+  }
+
+  const wsGeneral = wb.Sheets['General Entry'];
+  const wsAlloc = wb.Sheets['Event Allocation'];
+
+  const generalHeaderRow = (XLSX.utils.sheet_to_json(wsGeneral, { header: 1 })[0] as any[]) || [];
+  const allocHeaderRow = (XLSX.utils.sheet_to_json(wsAlloc, { header: 1 })[0] as any[]) || [];
+
+  const generalHeadersSet = new Set(generalHeaderRow.map((h) => String(h ?? '').trim()));
+  const allocHeadersSet = new Set(allocHeaderRow.map((h) => String(h ?? '').trim()));
+
+  const hasValidGeneralHeaders = ATHLETES_GENERAL_HEADERS.every((h) => generalHeadersSet.has(h));
+  const hasValidAllocHeaders = ATHLETES_ALLOC_HEADERS.every((h) => allocHeadersSet.has(h));
+
+  if (!hasValidGeneralHeaders || !hasValidAllocHeaders) {
+    throw new Error(
+      "Incorrect file format! Sheet columns must match the exact \"Backup Athletes' Data (.xlsx)\" format ('General Entry' & 'Event Allocation')."
+    );
+  }
+
+  const rawGeneralRows: any[] = XLSX.utils.sheet_to_json(wsGeneral);
+  const rawAllocRows: any[] = XLSX.utils.sheet_to_json(wsAlloc);
+
+  const now = new Date().toISOString();
+  const eventsMap = new Map<number, SportEvent>();
+  events.forEach((e) => eventsMap.set(Number(e.Evt_No), e));
+
+  // 1. Parse Event Allocation rows grouped by Chest_No and by Evt_No
+  interface ParsedAllocRow {
+    chestNo: number;
+    evtNo: number;
+    hitFlag: boolean;
+    hitExplicitFalse: boolean;
+    finalFlag: boolean;
+    awdFlag: boolean;
+    position?: number;
+    jumpRecord?: string;
+  }
+
+  const eventsByChest = new Map<number, Set<number>>();
+  const allocsByEvent = new Map<number, ParsedAllocRow[]>();
+
+  rawAllocRows.forEach((row) => {
+    const chestRaw = row.Chest_No;
+    const evtRaw = row.Evt_No;
+    if (
+      chestRaw === undefined || chestRaw === null || String(chestRaw).trim() === '' ||
+      evtRaw === undefined || evtRaw === null || String(evtRaw).trim() === ''
+    ) {
+      return;
+    }
+
+    const chestNo = Number(chestRaw);
+    const evtNo = Number(evtRaw);
+    if (isNaN(chestNo) || chestNo <= 0 || isNaN(evtNo) || evtNo < 0) return;
+
+    if (!eventsByChest.has(chestNo)) {
+      eventsByChest.set(chestNo, new Set<number>());
+    }
+    eventsByChest.get(chestNo)!.add(evtNo);
+
+    const prizeCols: Array<{ pos: number; prizeKey: string; jumpKey: string }> = [
+      { pos: 1, prizeKey: 'Prize_1st', jumpKey: 'Jump_1st' },
+      { pos: 2, prizeKey: 'Prize_2nd', jumpKey: 'Jump_2nd' },
+      { pos: 3, prizeKey: 'Prize_3rd', jumpKey: 'Jump_3rd' },
+      { pos: 4, prizeKey: 'Prize_4th', jumpKey: 'Jump_4th' },
+      { pos: 5, prizeKey: 'Prize_5th', jumpKey: 'Jump_5th' },
+      { pos: 6, prizeKey: 'Prize_6th', jumpKey: 'Jump_6th' },
+    ];
+
+    let position: number | undefined = undefined;
+    let jumpRecord: string | undefined = undefined;
+    for (const p of prizeCols) {
+      if (isExcelFlagTrue(row[p.prizeKey])) {
+        position = p.pos;
+        const jVal = String(row[p.jumpKey] ?? '').trim();
+        if (jVal) jumpRecord = jVal;
+        break;
+      }
+    }
+
+    const hitExplicitFalse = isExcelFlagFalse(row.Hit_Flag);
+    const parsedRow: ParsedAllocRow = {
+      chestNo,
+      evtNo,
+      hitFlag: !hitExplicitFalse,
+      hitExplicitFalse,
+      finalFlag: isExcelFlagTrue(row.Final_Flag),
+      awdFlag: isExcelFlagTrue(row.Awd) || position !== undefined,
+      position,
+      jumpRecord,
+    };
+
+    if (!allocsByEvent.has(evtNo)) {
+      allocsByEvent.set(evtNo, []);
+    }
+    allocsByEvent.get(evtNo)!.push(parsedRow);
+  });
+
+  // 2. Parse General Entry rows into Candidate objects
+  const candidates: Candidate[] = [];
+  const candidateByChest = new Map<number, Candidate>();
+
+  rawGeneralRows.forEach((row, idx) => {
+    const rawName = String(row.Name_ ?? '').trim().toUpperCase();
+    const rawChest = row.Chest_No;
+    if (!rawName && (rawChest === undefined || rawChest === null || String(rawChest).trim() === '')) {
+      return;
+    }
+
+    const chestNo = Number(rawChest) || (101 + idx);
+
+    let evtFromGeneral: number[] = [];
+    const evtVal = row.Evt;
+    if (typeof evtVal === 'string') {
+      evtFromGeneral = evtVal
+        .split(/[,;]/)
+        .map((s: string) => s.trim())
+        .filter((s: string) => s !== '' && !isNaN(Number(s)))
+        .map(Number);
+    } else if (typeof evtVal === 'number' && !isNaN(evtVal)) {
+      evtFromGeneral = [evtVal];
+    }
+
+    const evtFromAlloc = eventsByChest.get(chestNo) ? Array.from(eventsByChest.get(chestNo)!) : [];
+    const mergedEvents = Array.from(new Set([...evtFromGeneral, ...evtFromAlloc])).sort((a, b) => a - b);
+
+    const rawFeeStatus = String(row.Fees ?? 'Due').trim();
+    const feeStatus = rawFeeStatus || 'Due';
+    const isFreeFeeStatus = /free|exempt/i.test(feeStatus);
+
+    let totalFees = 0;
+    if (!isFreeFeeStatus) {
+      const amtVal = row._Amt;
+      if (typeof amtVal === 'number' && !isNaN(amtVal)) {
+        totalFees = amtVal;
+      } else if (typeof amtVal === 'string') {
+        const cleaned = amtVal.replace(/[^0-9.]/g, '');
+        totalFees = parseFloat(cleaned) || 0;
+      }
+      if (totalFees === 0 && mergedEvents.length > 0 && eventsMap.size > 0) {
+        totalFees = mergedEvents.reduce((sum, eNo) => sum + (Number(eventsMap.get(eNo)?.Fees) || 0), 0);
+      }
+    }
+
+    const cand: Candidate = {
+      id: `cand_chest_${chestNo}`,
+      chestNo,
+      name: rawName || `ATHLETE #${chestNo}`,
+      club: String(row.Club_Name || 'SELF').trim().toUpperCase() || 'SELF',
+      gender: String(row.Gndr || 'ALL').trim().toUpperCase() || 'ALL',
+      height: String(row.Height || 'ALL').trim() || 'ALL',
+      selectedEvents: mergedEvents,
+      totalFees,
+      feeStatus: feeStatus as any,
+      isCancelled: false,
+      synced: true,
+      isDirty: false,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    candidates.push(cand);
+    candidateByChest.set(chestNo, cand);
+  });
+
+  if (candidates.length === 0) {
+    throw new Error("No valid athlete rows found in the 'General Entry' sheet.");
+  }
+
+  // 3. Rebuild Heats & Results from Event Allocation sheet
+  const heats: EventHeat[] = [];
+  const results: EventResult[] = [];
+
+  Array.from(allocsByEvent.keys())
+    .sort((a, b) => a - b)
+    .forEach((evtNo) => {
+      const evtObj = eventsMap.get(evtNo);
+      const evtName = evtObj?.Evt_Name || `Event #${evtNo}`;
+      const requiresHit = evtObj ? evtObj.requiredHit !== false : true;
+      const isBroadJump = evtName.toUpperCase().includes('BROAD JUMP');
+
+      const rowsForEvt = (allocsByEvent.get(evtNo) || [])
+        .filter((r) => candidateByChest.has(r.chestNo))
+        .sort((a, b) => a.chestNo - b.chestNo);
+
+      if (rowsForEvt.length === 0) return;
+
+      const hasAnyHeatOrFinalActivity = rowsForEvt.some(
+        (r) => r.hitExplicitFalse || r.awdFlag || r.position !== undefined || (requiresHit && r.finalFlag)
+      );
+
+      // Reconstruct a single all-at-once heat if the event uses heats and shows heat/final progression
+      if (requiresHit && hasAnyHeatOrFinalActivity) {
+        heats.push({
+          id: `heat_evt_${evtNo}_h1`,
+          eventNo: evtNo,
+          heatNumber: 1,
+          participants: rowsForEvt.map((r, lIdx) => {
+            const cand = candidateByChest.get(r.chestNo)!;
+            return {
+              chestNo: r.chestNo,
+              candidateName: cand.name,
+              club: cand.club,
+              lane: lIdx + 1,
+              heatNumber: 1,
+              qualified: r.finalFlag || r.awdFlag || r.position !== undefined,
+              ...(r.hitExplicitFalse ? { remarks: 'Absent' } : {}),
+            };
+          }),
+          status: 'completed',
+        });
+      }
+
+      // Reconstruct finals & results if event has finalists promoted or podium positions awarded
+      const hasResults = requiresHit
+        ? rowsForEvt.some((r) => r.finalFlag || r.awdFlag || r.position !== undefined)
+        : rowsForEvt.some((r) => r.awdFlag || r.position !== undefined);
+
+      if (hasResults) {
+        const finalistRows = rowsForEvt.filter(
+          (r) => r.finalFlag || r.awdFlag || r.position !== undefined
+        );
+        const finalists = finalistRows.map((r, idx) => {
+          const cand = candidateByChest.get(r.chestNo)!;
+          const isSelf = (cand.club || '').trim().toUpperCase() === 'SELF';
+          const points = r.position ? (isSelf ? 0 : getRankPoints(r.position)) : 0;
+          return {
+            chestNo: r.chestNo,
+            candidateName: cand.name,
+            club: cand.club,
+            heatNumber: 1,
+            lane: idx + 1,
+            ...(r.position ? { position: r.position } : {}),
+            points,
+            ...(r.jumpRecord ? { jumpRecord: r.jumpRecord, resultValue: r.jumpRecord } : {}),
+          };
+        });
+
+        const hasAwards = finalists.some((f) => f.position && f.position >= 1 && f.position <= 6);
+        let highestRecord: any = undefined;
+        if (isBroadJump) {
+          const withJumps = finalists.filter((f) => f.jumpRecord);
+          if (withJumps.length > 0) {
+            const best = withJumps.find((f) => f.position === 1) || withJumps[0];
+            highestRecord = {
+              candidateName: best.candidateName,
+              chestNo: best.chestNo,
+              club: best.club,
+              recordValue: best.jumpRecord!,
+              isRecordBroken: false,
+            };
+          }
+        }
+
+        results.push({
+          id: `res_evt_${evtNo}`,
+          eventNo: evtNo,
+          finalists,
+          completed: hasAwards,
+          recordedAt: now,
+          ...(highestRecord ? { highestRecord } : {}),
+        });
+      }
+    });
+
+  return { candidates, heats, results };
+}
+
 

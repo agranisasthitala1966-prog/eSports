@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { 
   Database, 
   Table, 
@@ -33,7 +33,8 @@ import { api } from '../services/api';
 import { 
   downloadSportsMeetExcel, 
   downloadFullDatabaseExcel, 
-  parseDatabaseBackupFromExcel 
+  parseDatabaseBackupFromExcel,
+  parseAthletesDataFromExcel
 } from '../services/excelExport';
 
 interface DbExplorerProps {
@@ -69,9 +70,11 @@ export const DbExplorer: React.FC<DbExplorerProps> = ({
   const [copied, setCopied] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isPurging, setIsPurging] = useState(false);
+  const [isRestoringAthletes, setIsRestoringAthletes] = useState(false);
   const [isBackupExpanded, setIsBackupExpanded] = useState(false);
   const [isRawDbExpanded, setIsRawDbExpanded] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
 
   // In-app Confirmation Modal State (replaces blocked window.confirm)
   const [confirmModal, setConfirmModal] = useState<{
@@ -79,7 +82,8 @@ export const DbExplorer: React.FC<DbExplorerProps> = ({
     title: string;
     message: string;
     confirmText: string;
-    action: 'purge' | 'factoryReset';
+    action: 'purge' | 'factoryReset' | 'deleteAllTable' | 'deleteSingleRow';
+    record?: any;
   } | null>(null);
   const [isExecutingAction, setIsExecutingAction] = useState(false);
 
@@ -105,9 +109,23 @@ export const DbExplorer: React.FC<DbExplorerProps> = ({
     }
   }, [data.settings]);
 
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) {
+        window.clearTimeout(toastTimerRef.current);
+      }
+    };
+  }, []);
+
   const showToast = (type: 'success' | 'error', message: string) => {
+    if (toastTimerRef.current) {
+      window.clearTimeout(toastTimerRef.current);
+    }
     setFeedback({ type, message });
-    setTimeout(() => setFeedback(null), 4000);
+    toastTimerRef.current = window.setTimeout(() => {
+      setFeedback(null);
+      toastTimerRef.current = null;
+    }, 4500);
   };
 
   const tables = [
@@ -334,21 +352,18 @@ export const DbExplorer: React.FC<DbExplorerProps> = ({
     }
   };
 
-  // Delete Record
-  const handleDeleteRecord = async (record: any) => {
+  // Delete Record (in-app confirmation modal)
+  const handleDeleteRecord = (record: any) => {
     const id = getRecordId(record, activeTable);
-    const confirmName = record.name || record.Evt_Name || record.candidateName || `Record #${id}`;
-    if (!window.confirm(`Are you sure you want to permanently delete '${confirmName}' (ID: ${id}) from table '${activeTable}'?`)) {
-      return;
-    }
-
-    try {
-      await api.deleteRawRow(activeTable, id);
-      showToast('success', `Record #${id} deleted from '${activeTable}'`);
-      await onRefresh(true);
-    } catch (err: any) {
-      showToast('error', err.message || 'Failed to delete record');
-    }
+    const confirmName = record.name || record.Evt_Name || record.Reg_Club || record.candidateName || `Record #${id}`;
+    setConfirmModal({
+      isOpen: true,
+      title: `Delete Record from '${activeTable}'`,
+      message: `Are you sure you want to permanently delete '${confirmName}' (ID: ${id}) from table '${activeTable}'?`,
+      confirmText: 'Yes, Delete Record',
+      action: 'deleteSingleRow',
+      record,
+    });
   };
 
   // In-line Quick Toggle for Booleans in Grid
@@ -446,6 +461,44 @@ export const DbExplorer: React.FC<DbExplorerProps> = ({
     }
   };
 
+  // Restore Athletes' Data & Event Allocation strictly from 'Backup Athletes' Data (.xlsx)' format
+  const handleAthletesExcelRestore = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsRestoringAthletes(true);
+    try {
+      if (!file.name.toLowerCase().endsWith('.xlsx')) {
+        throw new Error("Incorrect file format! Please choose a valid .xlsx file downloaded via \"Backup Athletes' Data (.xlsx)\".");
+      }
+
+      const arrayBuffer = await file.arrayBuffer();
+      let wb: XLSX.WorkBook;
+      try {
+        wb = XLSX.read(arrayBuffer, { type: 'array' });
+      } catch {
+        throw new Error("Incorrect file format! Could not read as a valid .xlsx workbook.");
+      }
+
+      const parsed = parseAthletesDataFromExcel(wb, data.events || [], data.settings);
+      const res = await api.restoreAthletesData(parsed);
+      await onRefresh(true);
+      showToast(
+        'success',
+        res?.message ||
+          `Restored ${parsed.candidates.length} athlete(s) and their event allocations from 'General Entry' & 'Event Allocation'!`
+      );
+    } catch (err: any) {
+      showToast(
+        'error',
+        err?.message || "Incorrect file format! Only .xlsx files matching \"Backup Athletes' Data (.xlsx)\" are allowed."
+      );
+    } finally {
+      setIsRestoringAthletes(false);
+      e.target.value = '';
+    }
+  };
+
   // Restore Database from .xlsx file
   const handleExcelFileRestore = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -509,6 +562,25 @@ export const DbExplorer: React.FC<DbExplorerProps> = ({
     });
   };
 
+  // Delete all records of currently selected raw database table
+  const handleDeleteAllTable = () => {
+    if (activeTable === 'settings') return;
+    const tableInfo = tables.find((t) => t.id === activeTable);
+    const tableLabel = tableInfo?.label || activeTable;
+    const totalCount = Array.isArray(data[activeTable]) ? data[activeTable].length : 0;
+    if (totalCount === 0) {
+      showToast('error', `Table '${tableLabel}' is already empty.`);
+      return;
+    }
+    setConfirmModal({
+      isOpen: true,
+      title: `Delete All '${tableLabel}' Data`,
+      message: `Are you sure you want to permanently delete ALL ${totalCount} record(s) from the '${tableLabel}' table as a whole?\n\nThis will permanently erase the entire '${tableLabel}' table from the live database.`,
+      confirmText: `Yes, Delete All (${totalCount})`,
+      action: 'deleteAllTable',
+    });
+  };
+
   // Factory reset
   const handleResetFactory = () => {
     setConfirmModal({
@@ -530,7 +602,7 @@ export const DbExplorer: React.FC<DbExplorerProps> = ({
           await onPurgeExceptEvents();
         } else {
           await api.purgeAllExceptEvents();
-          await onRefresh();
+          await onRefresh(true);
         }
         showToast('success', 'All database data deleted! Event list master data preserved.');
       } else if (confirmModal.action === 'factoryReset') {
@@ -538,9 +610,21 @@ export const DbExplorer: React.FC<DbExplorerProps> = ({
           await onResetAllData();
         } else {
           await api.resetToDefaults();
-          await onRefresh();
+          await onRefresh(true);
         }
         showToast('success', 'Database reset to factory defaults successfully!');
+      } else if (confirmModal.action === 'deleteAllTable') {
+        if (activeTable !== 'settings') {
+          const tableLabel = tables.find((t) => t.id === activeTable)?.label || activeTable;
+          await api.clearRawTable(activeTable);
+          await onRefresh(true);
+          showToast('success', `All records in '${tableLabel}' deleted successfully!`);
+        }
+      } else if (confirmModal.action === 'deleteSingleRow' && confirmModal.record) {
+        const id = getRecordId(confirmModal.record, activeTable);
+        await api.deleteRawRow(activeTable, id);
+        await onRefresh(true);
+        showToast('success', `Record #${id} deleted from '${activeTable}'`);
       }
       setConfirmModal(null);
     } catch (err: any) {
@@ -574,19 +658,22 @@ export const DbExplorer: React.FC<DbExplorerProps> = ({
         </div>
       </div>
 
-      {/* Global Feedback Banner */}
+      {/* Global Auto-Disappearing Flash Banner */}
       {feedback && (
-        <div className={`p-4 rounded-xl text-sm font-bold flex items-center gap-2 animate-in fade-in ${
-          feedback.type === 'success' 
-            ? 'bg-emerald-50 border border-emerald-300 text-emerald-900' 
-            : 'bg-rose-50 border border-rose-300 text-rose-900'
-        }`}>
+        <div
+          role="alert"
+          className={`fixed top-5 right-5 z-50 max-w-md p-3.5 rounded-xl text-sm font-bold flex items-center gap-2.5 shadow-xl border animate-in fade-in ${
+            feedback.type === 'success'
+              ? 'bg-emerald-50 border-emerald-300 text-emerald-900'
+              : 'bg-rose-50 border-rose-300 text-rose-900'
+          }`}
+        >
           {feedback.type === 'success' ? (
             <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
           ) : (
             <AlertTriangle className="w-5 h-5 text-rose-600 shrink-0" />
           )}
-          <span>{feedback.message}</span>
+          <span className="leading-snug">{feedback.message}</span>
         </div>
       )}
 
@@ -597,22 +684,22 @@ export const DbExplorer: React.FC<DbExplorerProps> = ({
         {/* Expand / Minimize Header */}
         <div
           onClick={() => setIsBackupExpanded(!isBackupExpanded)}
-          className="py-2 px-3 sm:px-4 flex items-center justify-between gap-3 cursor-pointer hover:bg-slate-50/70 transition-colors select-none"
+          className="min-h-[60px] py-3 px-3.5 sm:px-4 flex items-center justify-between gap-3 cursor-pointer hover:bg-slate-50/70 transition-colors select-none"
         >
-          <div className="flex items-center gap-2.5 min-w-0">
-            <div className="w-6 h-6 rounded-md bg-blue-50 text-blue-600 border border-blue-200 flex items-center justify-center shrink-0">
-              <Database className="w-3.5 h-3.5" />
+          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
+            <div className="w-8 h-8 rounded-lg bg-blue-50 text-blue-600 border border-blue-200 flex items-center justify-center shrink-0">
+              <Database className="w-4 h-4" />
             </div>
             <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <h2 className="text-xs sm:text-sm font-bold text-slate-900 truncate">
-                  Database Backup, Restore &amp; Maintenance
+                <h2 className="text-sm sm:text-base font-bold text-slate-900 leading-snug">
+                  DB Backup, Restore &amp; Reset
                 </h2>
-                <span className="hidden sm:inline-block text-[10px] font-semibold px-1.5 py-0.2 rounded-full bg-slate-100 text-slate-600 border border-slate-200 shrink-0">
+                <span className="hidden md:inline-block text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200 shrink-0">
                   Direct Operations
                 </span>
               </div>
-              <p className="text-[11px] text-slate-500 truncate leading-tight">
+              <p className="text-[11px] sm:text-xs text-slate-500 truncate leading-tight mt-0.5">
                 {isBackupExpanded
                   ? 'Backup exports, file restore, selective data deletion, or factory reset.'
                   : 'Click to expand backup, restore, and maintenance operations.'}
@@ -626,18 +713,14 @@ export const DbExplorer: React.FC<DbExplorerProps> = ({
               e.stopPropagation();
               setIsBackupExpanded(!isBackupExpanded);
             }}
-            className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 transition-colors shrink-0 cursor-pointer"
+            aria-label={isBackupExpanded ? 'Minimize DB Backup, Restore & Reset' : 'Expand DB Backup, Restore & Reset'}
+            title={isBackupExpanded ? 'Minimize' : 'Expand'}
+            className="w-8 h-8 rounded-lg flex items-center justify-center text-blue-600 bg-blue-50 hover:bg-blue-100 active:scale-95 transition-colors shrink-0 cursor-pointer ml-auto"
           >
             {isBackupExpanded ? (
-              <>
-                <ChevronUp className="w-3.5 h-3.5" />
-                <span>Minimize</span>
-              </>
+              <ChevronUp className="w-4 h-4" />
             ) : (
-              <>
-                <ChevronDown className="w-3.5 h-3.5" />
-                <span>Expand</span>
-              </>
+              <ChevronDown className="w-4 h-4" />
             )}
           </button>
         </div>
@@ -647,14 +730,14 @@ export const DbExplorer: React.FC<DbExplorerProps> = ({
           <div className="p-3 sm:p-4 pt-0 border-t border-slate-100 space-y-3 animate-in fade-in duration-150">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-2.5 pt-3">
               
-              {/* Miniature Thumbnail 1: Export Backup */}
+              {/* Miniature Thumbnail 1: Backup Database */}
               <div className="p-2.5 rounded-lg border border-slate-200 bg-slate-50 flex flex-col justify-between gap-2 hover:border-slate-300 transition-all shadow-2xs">
                 <div className="space-y-1">
                   <div className="flex items-center gap-1.5">
                     <div className="w-6 h-6 rounded-md bg-emerald-100 text-emerald-800 flex items-center justify-center shrink-0">
                       <Download className="w-3.5 h-3.5" />
                     </div>
-                    <span className="text-xs font-bold text-slate-900 truncate">Export Backup</span>
+                    <span className="text-xs font-bold text-slate-900 truncate">Backup Database</span>
                   </div>
                   <p className="text-[11px] text-slate-500 leading-tight">
                     Athletes data or full database snapshot in JSON &amp; XLSX.
@@ -669,7 +752,7 @@ export const DbExplorer: React.FC<DbExplorerProps> = ({
                     title="Export Athletes' Data with 'General Entry' & 'Event Allocation' sheets"
                   >
                     <FileSpreadsheet className="w-3 h-3 text-emerald-200" />
-                    <span>Download Athletes' Data</span>
+                    <span>Backup Athletes' Data (.xlsx)</span>
                   </button>
 
                   <div className="flex items-center gap-1.5">
@@ -696,32 +779,60 @@ export const DbExplorer: React.FC<DbExplorerProps> = ({
                 </div>
               </div>
 
-              {/* Miniature Thumbnail 2: Restore Backup */}
+              {/* Miniature Thumbnail 2: Restore Database */}
               <div className="p-2.5 rounded-lg border border-slate-200 bg-slate-50 flex flex-col justify-between gap-2 hover:border-slate-300 transition-all shadow-2xs">
                 <div className="space-y-1">
                   <div className="flex items-center gap-1.5">
                     <div className="w-6 h-6 rounded-md bg-blue-100 text-blue-800 flex items-center justify-center shrink-0">
                       <Upload className="w-3.5 h-3.5" />
                     </div>
-                    <span className="text-xs font-bold text-slate-900 truncate">Restore File</span>
+                    <span className="text-xs font-bold text-slate-900 truncate">Restore Database</span>
                   </div>
                   <p className="text-[11px] text-slate-500 leading-tight">
-                    Upload .xlsx or .json backup file to overwrite database.
+                    Upload athletes' data (.xlsx) or full database in JSON &amp; XLSX.
                   </p>
                 </div>
 
                 <div className="flex flex-col gap-1.5">
-                  <label className="w-full py-1.5 px-2 bg-emerald-700 hover:bg-emerald-800 active:scale-98 text-white rounded-md text-[11px] font-bold flex items-center justify-center gap-1.5 cursor-pointer transition-colors shadow-2xs text-center">
-                    <FileSpreadsheet className="w-3 h-3 text-emerald-200" />
-                    <span>Restore Database (.xlsx)</span>
-                    <input type="file" accept=".xlsx,.xls" onChange={handleExcelFileRestore} className="hidden" />
+                  <label
+                    className={`w-full py-1.5 px-2 bg-emerald-700 hover:bg-emerald-800 active:scale-98 text-white rounded-md text-[11px] font-bold flex items-center justify-center gap-1.5 cursor-pointer transition-colors shadow-2xs text-center ${
+                      isRestoringAthletes ? 'opacity-60 pointer-events-none' : ''
+                    }`}
+                    title="Upload .xlsx file exported via Backup Athletes' Data (.xlsx) ('General Entry' & 'Event Allocation' sheets)"
+                  >
+                    {isRestoringAthletes ? (
+                      <RefreshCw className="w-3 h-3 animate-spin shrink-0" />
+                    ) : (
+                      <FileSpreadsheet className="w-3 h-3 text-emerald-200 shrink-0" />
+                    )}
+                    <span>{isRestoringAthletes ? 'Restoring...' : "Restore Athletes' Data (.xlsx)"}</span>
+                    <input
+                      type="file"
+                      onChange={handleAthletesExcelRestore}
+                      disabled={isRestoringAthletes}
+                      className="hidden"
+                    />
                   </label>
 
-                  <label className="w-full py-1.5 px-2 bg-blue-600 hover:bg-blue-700 active:scale-98 text-white rounded-md text-[11px] font-bold flex items-center justify-center gap-1.5 cursor-pointer transition-colors shadow-2xs text-center">
-                    <Upload className="w-3 h-3" />
-                    <span>Select &amp; Restore</span>
-                    <input type="file" accept=".json" onChange={handleFileRestore} className="hidden" />
-                  </label>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <label
+                      className="w-full py-1.5 px-2 bg-blue-600 hover:bg-blue-700 active:scale-98 text-white rounded-md text-[11px] font-bold flex items-center justify-center gap-1.5 cursor-pointer transition-colors shadow-2xs text-center"
+                      title="Restore full database backup from .json file"
+                    >
+                      <Upload className="w-3 h-3 shrink-0" />
+                      <span>Restore JSON</span>
+                      <input type="file" accept=".json" onChange={handleFileRestore} className="hidden" />
+                    </label>
+
+                    <label
+                      className="w-full py-1.5 px-2 bg-emerald-700 hover:bg-emerald-800 active:scale-98 text-white rounded-md text-[11px] font-bold flex items-center justify-center gap-1.5 cursor-pointer transition-colors shadow-2xs text-center"
+                      title="Restore full database backup from .xlsx file"
+                    >
+                      <FileSpreadsheet className="w-3 h-3 text-emerald-200 shrink-0" />
+                      <span>Restore XLSX</span>
+                      <input type="file" accept=".xlsx,.xls" onChange={handleExcelFileRestore} className="hidden" />
+                    </label>
+                  </div>
                 </div>
               </div>
 
@@ -797,31 +908,19 @@ export const DbExplorer: React.FC<DbExplorerProps> = ({
       {/* ========================================================================= */}
       {/* RAW DATABASE OPERATION (EXPAND & MINIMIZE FORM)                           */}
       {/* ========================================================================= */}
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden transition-all">
+      <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden transition-all">
         {/* Expand / Minimize Section Header */}
         <div
           onClick={() => setIsRawDbExpanded(!isRawDbExpanded)}
-          className="p-4 sm:p-5 flex items-center justify-between gap-4 cursor-pointer hover:bg-slate-50/70 transition-colors select-none"
+          className="min-h-[60px] py-3 px-3.5 sm:px-4 flex items-center justify-between gap-3 cursor-pointer hover:bg-slate-50/70 transition-colors select-none"
         >
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="w-8 h-8 rounded-xl bg-blue-50 text-blue-600 border border-blue-200 flex items-center justify-center shrink-0">
+          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
+            <div className="w-8 h-8 rounded-lg bg-blue-50 text-blue-600 border border-blue-200 flex items-center justify-center shrink-0">
               <Table className="w-4 h-4" />
             </div>
-            <div className="min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <h2 className="text-base font-bold text-slate-900">
-                  Raw Database Operation
-                </h2>
-                <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
-                  Tables &amp; Records Viewer
-                </span>
-              </div>
-              <p className="text-xs text-slate-500 mt-0.5">
-                {isRawDbExpanded
-                  ? `Active table: ${activeTable} (${tables.find((t) => t.id === activeTable)?.count || 0} records). Switch table tabs, search records, and inspect data.`
-                  : 'Click to expand table navigation, search records, and view raw database.'}
-              </p>
-            </div>
+            <h2 className="text-sm sm:text-base font-bold text-slate-900 leading-snug">
+              Raw Database Operation
+            </h2>
           </div>
 
           <button
@@ -830,18 +929,14 @@ export const DbExplorer: React.FC<DbExplorerProps> = ({
               e.stopPropagation();
               setIsRawDbExpanded(!isRawDbExpanded);
             }}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 transition-colors shrink-0 cursor-pointer"
+            aria-label={isRawDbExpanded ? 'Minimize Raw Database Operation' : 'Expand Raw Database Operation'}
+            title={isRawDbExpanded ? 'Minimize' : 'Expand'}
+            className="w-8 h-8 rounded-lg flex items-center justify-center text-blue-600 bg-blue-50 hover:bg-blue-100 active:scale-95 transition-colors shrink-0 cursor-pointer ml-auto"
           >
             {isRawDbExpanded ? (
-              <>
-                <ChevronUp className="w-4 h-4" />
-                <span>Minimize</span>
-              </>
+              <ChevronUp className="w-4 h-4" />
             ) : (
-              <>
-                <ChevronDown className="w-4 h-4" />
-                <span>Expand</span>
-              </>
+              <ChevronDown className="w-4 h-4" />
             )}
           </button>
         </div>
@@ -914,14 +1009,26 @@ export const DbExplorer: React.FC<DbExplorerProps> = ({
                   </span>
 
                   {activeTable !== 'settings' && (
-                    <button
-                      type="button"
-                      onClick={handleStartCreate}
-                      className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-2xs transition-colors cursor-pointer"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                      <span>Add Record</span>
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        onClick={handleStartCreate}
+                        className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-2xs transition-colors cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Add Record</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleDeleteAllTable}
+                        disabled={!Array.isArray(data[activeTable]) || data[activeTable].length === 0}
+                        title={`Delete all records in ${tables.find((t) => t.id === activeTable)?.label || activeTable}`}
+                        className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-2xs transition-colors cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Delete All</span>
+                      </button>
+                    </>
                   )}
 
                   {activeTable !== 'settings' && (

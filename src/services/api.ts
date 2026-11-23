@@ -1,8 +1,10 @@
 import { SportEvent, Candidate, Club, SportsMeetSettings, EventHeat, EventResult, DatabaseDump, ClientUpload } from '../types';
 import { firestoreSync, sanitizeForFirestore, isFirestoreQuotaExhausted } from './firestoreSync';
 import { clientStorage } from './clientStorage';
-import { collection, getDocs, doc, setDoc, deleteDoc } from 'firebase/firestore';
+import { collection, getDocs, getDocsFromServer, doc, setDoc, deleteDoc } from 'firebase/firestore';
 import { db } from './firebase';
+import { INITIAL_EVENTS } from '../constants/initialData';
+import { clearFirstPrintWarned } from '../utils/qualificationRules';
 
 // Dynamic API Base calculation: Always use same-origin '/api' (or origin + '/api').
 // NEVER rewrite ais-pre to ais-dev; doing so causes cross-origin fetch failures and Google Auth redirects.
@@ -54,7 +56,7 @@ export const api = {
       }).catch(() => {});
       return res;
     } catch (err: any) {
-      if (err.isAlreadyLoggedIn) throw err;
+      if (err.isAlreadyLoggedIn || err.isLockedOut || err.isPinRejected) throw err;
       const res = await fetch(`${API_BASE}/auth/verify-pin`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -66,15 +68,55 @@ export const api = {
         const error: any = new Error(data.error || 'Incorrect PIN');
         error.isAlreadyLoggedIn = data.isAlreadyLoggedIn;
         error.activeDevice = data.activeDevice;
+        error.isLockedOut = data.isLockedOut;
+        error.lockedUntil = data.lockedUntil;
+        error.remainingMs = data.remainingMs;
+        error.failedAttempts = data.failedAttempts;
+        error.isPinRejected = data.isPinRejected;
+        error.remainingAttempts = data.remainingAttempts;
         throw error;
       }
       return data;
     }
   },
 
+  async getPinLockoutStatus(): Promise<{
+    isLocked: boolean;
+    lockedUntil: number | null;
+    remainingMs: number;
+    failedAttempts: number;
+  }> {
+    try {
+      const cloudStatus = await firestoreSync.getPinLockoutStatus();
+      if (cloudStatus.isLocked || cloudStatus.failedAttempts > 0) {
+        return cloudStatus;
+      }
+    } catch {}
+    try {
+      const deviceId = getDeviceId();
+      const res = await fetch(`${API_BASE}/auth/session-status?deviceId=${encodeURIComponent(deviceId)}&t=${Date.now()}`, {
+        cache: 'no-store',
+      }).catch(() => null);
+      if (res && res.ok) {
+        const data = await res.json();
+        if (data?.lockout) {
+          return data.lockout;
+        }
+      }
+    } catch {}
+    return { isLocked: false, lockedUntil: null, remainingMs: 0, failedAttempts: 0 };
+  },
+
+  subscribeToPinLockout(
+    callback: (status: { isLocked: boolean; lockedUntil: number | null; remainingMs: number; failedAttempts: number }) => void
+  ) {
+    return firestoreSync.subscribeToPinLockout(callback);
+  },
+
   async getSessionStatus(): Promise<{
     isServerLoggedIn: boolean;
     isCurrentDevice?: boolean;
+    lockout?: { isLocked: boolean; lockedUntil: number | null; remainingMs: number; failedAttempts: number };
     activeDevice?: { label: string; loggedInAt: string; lastActiveAt: string };
   }> {
     try {
@@ -136,17 +178,18 @@ export const api = {
 
   // Client Uploads & Staging (Direct Cloud Firestore sync ensures ais-pre and ais-dev share same queue)
   async getUploads(): Promise<ClientUpload[]> {
-    try {
-      const snap = await getDocs(collection(db, 'uploads'));
-      const items: ClientUpload[] = [];
-      snap.forEach((d) => items.push({ id: d.id, ...(d.data() as any) }));
-      items.sort((a, b) => new Date(b.uploadedAt || 0).getTime() - new Date(a.uploadedAt || 0).getTime());
-      return items;
-    } catch {
-      const res = await fetch(`${API_BASE}/uploads?t=${Date.now()}`, { cache: 'no-store' });
-      if (!res.ok) throw new Error('Failed to fetch client uploads');
-      return res.json();
+    if (!isFirestoreQuotaExhausted()) {
+      try {
+        const snap = await getDocs(collection(db, 'uploads'));
+        const items: ClientUpload[] = [];
+        snap.forEach((d) => items.push({ ...(d.data() as any), id: d.id }));
+        items.sort((a, b) => new Date(b.uploadedAt || 0).getTime() - new Date(a.uploadedAt || 0).getTime());
+        return items;
+      } catch {}
     }
+    const res = await fetch(`${API_BASE}/uploads?t=${Date.now()}`, { cache: 'no-store' });
+    if (!res.ok) throw new Error('Failed to fetch client uploads');
+    return res.json();
   },
 
   async submitUpload(data: {
@@ -165,11 +208,11 @@ export const api = {
     try {
       // 1. Write to Cloud Firestore so any device/container in the world sees it instantly
       const cloudRes = await firestoreSync.submitUpload(data);
-      // 2. Also forward to local backend as background replicate
-      fetch(`${API_BASE}/uploads`, {
+      // 2. Forward to Express backend with the exact same upload ID
+      await fetch(`${API_BASE}/uploads`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
+        body: JSON.stringify({ ...data, id: cloudRes.upload.id }),
       }).catch(() => {});
       return cloudRes;
     } catch (firestoreErr) {
@@ -188,110 +231,140 @@ export const api = {
   },
 
   async mergeUpload(id: string): Promise<{ success: boolean; message: string; mergedCandidates: Candidate[]; totalServerCandidates: number; upload: ClientUpload }> {
+    let cloudRes: any = null;
     try {
-      const cloudRes = await firestoreSync.mergeUpload(id);
-      fetch(`${API_BASE}/uploads/${id}/merge`, { method: 'POST' }).catch(() => {});
+      cloudRes = await firestoreSync.mergeUpload(id);
+    } catch {}
+
+    const res = await fetch(`${API_BASE}/uploads/${encodeURIComponent(id)}/merge`, { method: 'POST' }).catch(() => null);
+    if (cloudRes) {
       return {
         ...cloudRes,
         mergedCandidates: cloudRes.upload.candidates,
         totalServerCandidates: cloudRes.upload.candidates.length,
       };
-    } catch {
-      const res = await fetch(`${API_BASE}/uploads/${id}/merge`, { method: 'POST' });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: 'Failed to merge upload' }));
-        throw new Error(err.error || 'Failed to merge upload');
-      }
-      return res.json();
     }
+    if (!res || !res.ok) {
+      const err = res ? await res.json().catch(() => ({ error: 'Failed to merge upload' })) : { error: 'Failed to merge upload' };
+      throw new Error(err.error || 'Failed to merge upload');
+    }
+    return res.json();
   },
 
   async rejectUpload(id: string, reason?: string): Promise<{ success: boolean; message: string; upload: ClientUpload }> {
+    let cloudRes: { success: boolean; message: string; upload: ClientUpload } | null = null;
+    let cloudErr: any = null;
     try {
-      const cloudRes = await firestoreSync.rejectUpload(id, reason);
-      fetch(`${API_BASE}/uploads/${id}/reject`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reason }),
-      }).catch(() => {});
-      return cloudRes;
-    } catch {
-      const res = await fetch(`${API_BASE}/uploads/${id}/reject`, {
+      cloudRes = await firestoreSync.rejectUpload(id, reason);
+    } catch (err) {
+      cloudErr = err;
+    }
+
+    let expressRes: any = null;
+    let expressErr: any = null;
+    try {
+      const res = await fetch(`${API_BASE}/uploads/${encodeURIComponent(id)}/reject`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ reason }),
       });
-      if (!res.ok) throw new Error('Failed to reject upload');
-      return res.json();
+      if (res.ok) {
+        expressRes = await res.json();
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        expressErr = new Error(errData.error || 'Failed to reject upload');
+      }
+    } catch (err) {
+      expressErr = err;
     }
+
+    if (cloudRes) return cloudRes;
+    if (expressRes) return expressRes;
+    throw expressErr || cloudErr || new Error('Failed to reject upload');
   },
 
   async deleteUpload(id: string): Promise<{ success: boolean; message: string }> {
+    let cloudOk = false;
+    let cloudErr: any = null;
     try {
       await firestoreSync.deleteUpload(id);
-      fetch(`${API_BASE}/uploads/${id}`, { method: 'DELETE' }).catch(() => {});
-      return { success: true, message: 'Upload batch removed' };
-    } catch {
-      const res = await fetch(`${API_BASE}/uploads/${id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error('Failed to delete upload');
-      return res.json();
+      cloudOk = true;
+    } catch (err) {
+      cloudErr = err;
     }
+
+    let expressOk = false;
+    let expressErr: any = null;
+    try {
+      const res = await fetch(`${API_BASE}/uploads/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      if (res.ok) {
+        expressOk = true;
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        expressErr = new Error(errData.error || 'Failed to delete upload');
+      }
+    } catch (err) {
+      expressErr = err;
+    }
+
+    if (cloudOk || expressOk) {
+      return { success: true, message: 'Upload batch removed' };
+    }
+    throw expressErr || cloudErr || new Error('Failed to delete upload');
   },
 
   async editUploadCandidate(id: string, candId: string, updates: Partial<Candidate>): Promise<{ success: boolean; candidate: Candidate }> {
+    let cloudRes: any = null;
     try {
-      const cloudRes = await firestoreSync.editUploadCandidate(id, candId, updates);
-      fetch(`${API_BASE}/uploads/${id}/candidate/${candId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updates),
-      }).catch(() => {});
-      return cloudRes;
-    } catch {
-      const res = await fetch(`${API_BASE}/uploads/${id}/candidate/${candId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updates),
-      });
-      if (!res.ok) throw new Error('Failed to update candidate in upload');
-      return res.json();
-    }
+      cloudRes = await firestoreSync.editUploadCandidate(id, candId, updates);
+    } catch {}
+
+    const res = await fetch(`${API_BASE}/uploads/${encodeURIComponent(id)}/candidate/${encodeURIComponent(candId)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    }).catch(() => null);
+
+    if (cloudRes) return cloudRes;
+    if (!res || !res.ok) throw new Error('Failed to update candidate in upload');
+    return res.json();
   },
 
   async mergeSingleUploadCandidate(id: string, candId: string): Promise<{ success: boolean; message: string; candidate: Candidate }> {
+    let cloudRes: any = null;
     try {
-      const cloudRes = await firestoreSync.mergeSingleUploadCandidate(id, candId);
-      fetch(`${API_BASE}/uploads/${id}/merge-single/${candId}`, { method: 'POST' }).catch(() => {});
-      return cloudRes;
-    } catch {
-      const res = await fetch(`${API_BASE}/uploads/${id}/merge-single/${candId}`, { method: 'POST' });
-      if (!res.ok) throw new Error('Failed to merge candidate');
-      return res.json();
-    }
+      cloudRes = await firestoreSync.mergeSingleUploadCandidate(id, candId);
+    } catch {}
+
+    const res = await fetch(`${API_BASE}/uploads/${encodeURIComponent(id)}/merge-single/${encodeURIComponent(candId)}`, {
+      method: 'POST',
+    }).catch(() => null);
+
+    if (cloudRes) return cloudRes;
+    if (!res || !res.ok) throw new Error('Failed to merge candidate');
+    return res.json();
   },
 
   async rejectSingleUploadCandidate(id: string, candId: string, reason?: string): Promise<{ success: boolean; message: string; candidate: Candidate }> {
+    let cloudRes: any = null;
     try {
-      const cloudRes = await firestoreSync.rejectSingleUploadCandidate(id, candId, reason);
-      fetch(`${API_BASE}/uploads/${id}/reject-single/${candId}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reason }),
-      }).catch(() => {});
-      return { ...cloudRes, message: 'Candidate rejected' };
-    } catch {
-      const res = await fetch(`${API_BASE}/uploads/${id}/reject-single/${candId}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reason }),
-      });
-      if (!res.ok) throw new Error('Failed to reject candidate');
-      return res.json();
-    }
+      cloudRes = await firestoreSync.rejectSingleUploadCandidate(id, candId, reason);
+    } catch {}
+
+    const res = await fetch(`${API_BASE}/uploads/${encodeURIComponent(id)}/reject-single/${encodeURIComponent(candId)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason }),
+    }).catch(() => null);
+
+    if (cloudRes) return { ...cloudRes, message: 'Candidate rejected' };
+    if (!res || !res.ok) throw new Error('Failed to reject candidate');
+    return res.json();
   },
 
   async deleteUploadCandidateGlobally(candId: string): Promise<{ success: boolean }> {
     try {
+      await firestoreSync.deleteUploadCandidateGlobally(candId).catch(() => {});
       fetch(`${API_BASE}/uploads/candidate/${candId}`, { method: 'DELETE' }).catch(() => {});
       return { success: true };
     } catch {
@@ -305,11 +378,21 @@ export const api = {
     return res.json();
   },
 
-  // Single Consolidated Bootstrap
+  // Single Consolidated Bootstrap: Always load directly from Live Cloud Firestore first
+  // so Google AI Studio preview, live app, desktop, and mobile always share identical live records.
   async getBootstrap() {
-    const res = await fetch(`${API_BASE}/bootstrap?t=${Date.now()}`, { cache: 'no-store' });
-    if (!res.ok) throw new Error('Failed to fetch app bootstrap state');
-    return res.json();
+    try {
+      const live = await firestoreSync.fetchLiveBootstrap();
+      return {
+        ...live,
+        lastUpdated: new Date().toISOString(),
+      };
+    } catch (err) {
+      console.warn('[Firestore] Live bootstrap fallback to server API:', err);
+      const res = await fetch(`${API_BASE}/bootstrap?t=${Date.now()}`, { cache: 'no-store' });
+      if (!res.ok) throw new Error('Failed to fetch app bootstrap state');
+      return res.json();
+    }
   },
 
   // Lightweight Sync Summary
@@ -322,13 +405,24 @@ export const api = {
   // Events
   async getEvents(): Promise<SportEvent[]> {
     try {
-      const snap = await getDocs(collection(db, 'events'));
-      if (!snap.empty) {
-        const items: SportEvent[] = [];
-        snap.forEach((d) => items.push(d.data() as SportEvent));
-        items.sort((a, b) => Number(a.Evt_No) - Number(b.Evt_No));
-        return items;
-      }
+      const snap = await getDocsFromServer(collection(db, 'events')).catch(() => getDocs(collection(db, 'events')));
+      const itemsMap = new Map<number, SportEvent>();
+      snap.forEach((d) => {
+        const raw = d.data() as SportEvent;
+        if (raw && raw.Evt_No !== undefined) {
+          const evtNo = Number(raw.Evt_No);
+          if (!itemsMap.has(evtNo) || d.id === `evt_${evtNo}`) {
+            itemsMap.set(evtNo, {
+              ...raw,
+              Evt_No: evtNo,
+              Fees: Number(raw.Fees ?? 0),
+              requiredHit: raw.requiredHit !== undefined ? raw.requiredHit : (evtNo === 15 ? false : true),
+              requiredFinal: raw.requiredFinal !== undefined ? raw.requiredFinal : true,
+            });
+          }
+        }
+      });
+      return Array.from(itemsMap.values()).sort((a, b) => Number(a.Evt_No) - Number(b.Evt_No));
     } catch {}
     const res = await fetch(`${API_BASE}/events?t=${Date.now()}`, { cache: 'no-store' });
     if (!res.ok) throw new Error('Failed to fetch events');
@@ -372,6 +466,9 @@ export const api = {
   },
 
   async resetEvents(): Promise<SportEvent[]> {
+    try {
+      await firestoreSync.replaceCollection('events', INITIAL_EVENTS);
+    } catch {}
     const res = await fetch(`${API_BASE}/events/reset`, { method: 'POST' });
     if (!res.ok) throw new Error('Failed to reset events');
     const data = await res.json();
@@ -381,13 +478,11 @@ export const api = {
   // Candidates
   async getCandidates(): Promise<Candidate[]> {
     try {
-      const snap = await getDocs(collection(db, 'candidates'));
-      if (!snap.empty) {
-        const items: Candidate[] = [];
-        snap.forEach((d) => items.push({ id: d.id, ...(d.data() as any) }));
-        items.sort((a, b) => (Number(a.chestNo) || 0) - (Number(b.chestNo) || 0));
-        return items;
-      }
+      const snap = await getDocsFromServer(collection(db, 'candidates')).catch(() => getDocs(collection(db, 'candidates')));
+      const items: Candidate[] = [];
+      snap.forEach((d) => items.push({ id: d.id, ...(d.data() as any) }));
+      items.sort((a, b) => (Number(a.chestNo) || 0) - (Number(b.chestNo) || 0));
+      return items;
     } catch {}
     const res = await fetch(`${API_BASE}/candidates?t=${Date.now()}`, { cache: 'no-store' });
     if (!res.ok) throw new Error('Failed to fetch candidates from server');
@@ -487,24 +582,62 @@ export const api = {
 
   // Clubs
   async getClubs(): Promise<Club[]> {
+    const dedupeClubs = (list: Club[]): Club[] => {
+      const map = new Map<string, Club>();
+      list.forEach((raw) => {
+        const regClub = String(raw.Reg_Club || raw.name || '').trim().toUpperCase();
+        if (!regClub) return;
+        const existing = map.get(regClub);
+        const mob = String(raw.Mob || raw.mobile || raw.phone || '').trim();
+        if (!existing) {
+          map.set(regClub, {
+            ...raw,
+            Reg_Club: regClub,
+            name: regClub,
+            Mob: mob,
+            mobile: mob,
+          });
+        } else {
+          const existingMob = String(existing.Mob || existing.mobile || '').trim();
+          map.set(regClub, {
+            ...existing,
+            ...raw,
+            id: existing.id || raw.id,
+            Reg_Club: regClub,
+            name: regClub,
+            Mob: mob || existingMob,
+            mobile: mob || existingMob,
+          });
+        }
+      });
+      return Array.from(map.values()).map((c, idx) => ({ ...c, Sl: c.Sl || idx + 1 }));
+    };
+
     try {
-      const snap = await getDocs(collection(db, 'clubs'));
-      if (!snap.empty) {
-        const items: Club[] = [];
-        snap.forEach((d) => items.push(d.data() as Club));
-        return items;
-      }
+      const snap = await getDocsFromServer(collection(db, 'clubs')).catch(() => getDocs(collection(db, 'clubs')));
+      const items: Club[] = [];
+      snap.forEach((d) => {
+        const raw = d.data() as any;
+        const regClub = String(raw?.Reg_Club || raw?.name || '').trim().toUpperCase();
+        if (!regClub || regClub === 'SELF') return;
+        items.push({ ...(raw as Club), id: raw?.id || d.id });
+      });
+      return dedupeClubs(items);
     } catch {}
     const res = await fetch(`${API_BASE}/clubs`);
     if (!res.ok) throw new Error('Failed to fetch clubs');
-    return res.json();
+    return dedupeClubs(await res.json());
   },
 
   async saveClub(club: Partial<Club>): Promise<Club> {
-    const clubId = club.id || `club_${Date.now()}`;
-    const cleanClub = { ...club, id: clubId } as Club;
+    const regClub = String(club.Reg_Club || club.name || '').trim().toUpperCase();
+    const cleanClub = {
+      ...club,
+      ...(regClub ? { Reg_Club: regClub, name: regClub } : {}),
+    } as Club;
     try {
-      await firestoreSync.saveClub(cleanClub);
+      const saved = await firestoreSync.saveClub(cleanClub);
+      cleanClub.id = saved.id;
     } catch {}
     const res = await fetch(`${API_BASE}/clubs`, {
       method: 'POST',
@@ -537,6 +670,40 @@ export const api = {
     } catch {}
     const res = await fetch(`${API_BASE}/clubs/${id}`, { method: 'DELETE' });
     if (!res.ok) throw new Error('Failed to delete club');
+  },
+
+  async markClubsPaid(
+    clubNames: string[],
+    candidatesToMark: Candidate[]
+  ): Promise<{ success: boolean; updatedCount: number }> {
+    const now = new Date().toISOString();
+    for (const cand of candidatesToMark) {
+      await firestoreSync
+        .saveCandidate({
+          ...cand,
+          feeStatus: 'Paid',
+          updatedAt: now,
+          synced: true,
+          isDirty: false,
+        })
+        .catch(() => {});
+    }
+
+    const res = await fetch(`${API_BASE}/clubs/mark-paid`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clubNames }),
+    }).catch(() => null);
+
+    if (res && !res.ok && candidatesToMark.length === 0) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Failed to mark selected club payments as Paid');
+    }
+
+    return {
+      success: true,
+      updatedCount: candidatesToMark.length,
+    };
   },
 
   // Settings
@@ -574,12 +741,10 @@ export const api = {
   // Heats
   async getHeats(): Promise<EventHeat[]> {
     try {
-      const snap = await getDocs(collection(db, 'heats'));
-      if (!snap.empty) {
-        const items: EventHeat[] = [];
-        snap.forEach((d) => items.push({ id: d.id, ...(d.data() as any) }));
-        return items;
-      }
+      const snap = await getDocsFromServer(collection(db, 'heats')).catch(() => getDocs(collection(db, 'heats')));
+      const items: EventHeat[] = [];
+      snap.forEach((d) => items.push({ id: d.id, ...(d.data() as any) }));
+      return items;
     } catch {}
     const res = await fetch(`${API_BASE}/heats`);
     if (!res.ok) throw new Error('Failed to fetch heats');
@@ -617,12 +782,10 @@ export const api = {
   // Results
   async getResults(): Promise<EventResult[]> {
     try {
-      const snap = await getDocs(collection(db, 'results'));
-      if (!snap.empty) {
-        const items: EventResult[] = [];
-        snap.forEach((d) => items.push({ id: d.id, ...(d.data() as any) }));
-        return items;
-      }
+      const snap = await getDocsFromServer(collection(db, 'results')).catch(() => getDocs(collection(db, 'results')));
+      const items: EventResult[] = [];
+      snap.forEach((d) => items.push({ id: d.id, ...(d.data() as any) }));
+      return items;
     } catch {}
     const res = await fetch(`${API_BASE}/results`);
     if (!res.ok) throw new Error('Failed to fetch results');
@@ -652,6 +815,22 @@ export const api = {
 
   // Database Ops
   async exportDatabase(): Promise<DatabaseDump> {
+    try {
+      const live = await firestoreSync.fetchLiveBootstrap();
+      return {
+        events: live.events,
+        candidates: live.candidates,
+        clubs: live.clubs,
+        results: live.results,
+        heats: live.heats,
+        settings: live.settings,
+        clientUploads: live.uploads,
+        lastUpdated: new Date().toISOString(),
+        exportedAt: new Date().toISOString(),
+        version: '1.0.0',
+        system: 'eSports Sports Management System',
+      } as unknown as DatabaseDump;
+    } catch {}
     const res = await fetch(`${API_BASE}/db/export`);
     if (!res.ok) throw new Error('Failed to export database');
     return res.json();
@@ -664,6 +843,20 @@ export const api = {
   },
 
   async restoreDatabase(dump: any): Promise<{ success: boolean; message: string; stats: any }> {
+    try {
+      if (Array.isArray(dump?.events)) await firestoreSync.replaceCollection('events', dump.events);
+      if (Array.isArray(dump?.candidates)) await firestoreSync.replaceCollection('candidates', dump.candidates);
+      if (Array.isArray(dump?.clubs)) await firestoreSync.replaceCollection('clubs', dump.clubs);
+      if (Array.isArray(dump?.heats)) await firestoreSync.replaceCollection('heats', dump.heats);
+      if (Array.isArray(dump?.results)) await firestoreSync.replaceCollection('results', dump.results);
+      if (Array.isArray(dump?.clientUploads || dump?.uploads)) {
+        await firestoreSync.replaceCollection('clientUploads', dump.clientUploads || dump.uploads);
+      }
+      if (dump?.settings) await firestoreSync.saveSettings(dump.settings);
+    } catch (err) {
+      console.warn('[Firestore] restoreDatabase sync warning:', err);
+    }
+
     const res = await fetch(`${API_BASE}/db/restore`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -676,13 +869,96 @@ export const api = {
     return res.json();
   },
 
+  async restoreAthletesData(data: {
+    candidates: Candidate[];
+    heats: EventHeat[];
+    results: EventResult[];
+  }): Promise<{ success: boolean; message: string; stats: any }> {
+    let canonicalCandidates = data.candidates;
+    let rebuiltClubs: Club[] = [];
+    let expressResult: any = null;
+
+    const res = await fetch(`${API_BASE}/db/restore-athletes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }).catch(() => null);
+
+    if (res && res.ok) {
+      expressResult = await res.json();
+      if (Array.isArray(expressResult.candidates)) {
+        canonicalCandidates = expressResult.candidates;
+      }
+      if (Array.isArray(expressResult.clubs)) {
+        rebuiltClubs = expressResult.clubs;
+      }
+    } else if (res && !res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || "Failed to restore athletes' data");
+    }
+
+    // Build fallback clubs if Express was unreachable
+    if (rebuiltClubs.length === 0 && canonicalCandidates.length > 0) {
+      const clubNames = Array.from(
+        new Set(canonicalCandidates.map((c) => (c.club || 'SELF').trim().toUpperCase()).filter(Boolean))
+      );
+      rebuiltClubs = clubNames.map((name, i) => ({
+        id: `club_${name.toLowerCase().replace(/[^a-z0-9]/g, '_')}`,
+        Sl: i + 1,
+        Reg_Club: name,
+        Mob: '',
+        Count_1stPlace: 0,
+        Count_2ndPlace: 0,
+        Count_3rdPlace: 0,
+        TotPoints: 0,
+        name,
+        mobile: '',
+      }));
+    }
+
+    try {
+      await firestoreSync.restoreAthletesData({
+        candidates: canonicalCandidates,
+        heats: data.heats,
+        results: data.results,
+        clubs: rebuiltClubs,
+      });
+    } catch (err) {
+      console.warn("[Firestore] Athletes' data restore warning:", err);
+      if (!expressResult) {
+        throw err;
+      }
+    }
+
+    return {
+      success: true,
+      message:
+        expressResult?.message ||
+        `Restored ${canonicalCandidates.length} athlete(s), ${data.heats.length} heat(s), and ${data.results.length} event result(s).`,
+      stats: expressResult?.stats || {
+        candidates: canonicalCandidates.length,
+        heats: data.heats.length,
+        results: data.results.length,
+        clubs: rebuiltClubs.length,
+      },
+    };
+  },
+
   async seedSampleData(): Promise<{ success: boolean; message: string; count: number; candidates: Candidate[] }> {
     const res = await fetch(`${API_BASE}/db/sample-data`, { method: 'POST' });
     if (!res.ok) throw new Error('Failed to seed sample data');
-    return res.json();
+    const data = await res.json();
+    if (Array.isArray(data?.candidates)) {
+      await firestoreSync.replaceCollection('candidates', data.candidates).catch(() => {});
+    }
+    return data;
   },
 
   async clearDatabase(): Promise<void> {
+    try {
+      await firestoreSync.purgeAllExceptEvents();
+    } catch {}
+    clientStorage.clearCandidates();
     const res = await fetch(`${API_BASE}/db/clear`, { method: 'POST' });
     if (!res.ok) throw new Error('Failed to clear database');
   },
@@ -721,7 +997,15 @@ export const api = {
 
   // Direct Table Ops for DB Explorer
   async getRawTable(table: string): Promise<any[]> {
-    const res = await fetch(`${API_BASE}/db/raw/${table}`);
+    try {
+      if (table === 'candidates') return await this.getCandidates();
+      if (table === 'events') return await this.getEvents();
+      if (table === 'clubs') return await this.getClubs();
+      if (table === 'heats') return await this.getHeats();
+      if (table === 'results') return await this.getResults();
+      if (table === 'clientUploads') return await this.getUploads();
+    } catch {}
+    const res = await fetch(`${API_BASE}/db/raw/${table}?t=${Date.now()}`, { cache: 'no-store' });
     if (!res.ok) throw new Error(`Failed to load table ${table}`);
     return res.json();
   },
@@ -740,6 +1024,9 @@ export const api = {
         await firestoreSync.saveEvent(data);
       } else if (table === 'clubs') {
         await firestoreSync.saveClub(data);
+      } else if (table === 'clientUploads') {
+        const upId = String(data.id || `upload_${Date.now()}`);
+        await setDoc(doc(db, 'uploads', upId), sanitizeForFirestore({ ...data, id: upId }), { merge: true });
       }
     } catch (err) {
       console.warn('[Firestore] Raw row create warning:', err);
@@ -766,15 +1053,18 @@ export const api = {
       if (table === 'candidates') {
         await firestoreSync.saveCandidate({ ...data, id: data.id || id });
       } else if (table === 'heats') {
-        await firestoreSync.saveHeat(data);
+        await firestoreSync.saveHeat({ ...data, id: data.id || id });
       } else if (table === 'results') {
-        await firestoreSync.saveResult(data);
+        await firestoreSync.saveResult({ ...data, id: data.id || id });
       } else if (table === 'settings') {
         await firestoreSync.saveSettings(data);
       } else if (table === 'events') {
         await firestoreSync.saveEvent({ ...data, Evt_No: data.Evt_No !== undefined ? data.Evt_No : id });
       } else if (table === 'clubs') {
         await firestoreSync.saveClub({ ...data, id: data.id || id });
+      } else if (table === 'clientUploads') {
+        const upId = String(data.id || id);
+        await setDoc(doc(db, 'uploads', upId), sanitizeForFirestore({ ...data, id: upId }), { merge: true });
       }
     } catch (err) {
       console.warn('[Firestore] Raw row update warning:', err);
@@ -811,6 +1101,8 @@ export const api = {
         await firestoreSync.deleteCandidate(id);
       } else if (table === 'heats') {
         await firestoreSync.deleteHeat(id);
+      } else if (table === 'results') {
+        await firestoreSync.deleteResult(id);
       } else if (table === 'events') {
         await firestoreSync.deleteEvent(Number(id));
       } else if (table === 'clubs') {
@@ -835,11 +1127,45 @@ export const api = {
     return res.json();
   },
 
+  async clearRawTable(table: 'candidates' | 'events' | 'clubs' | 'heats' | 'results' | 'clientUploads'): Promise<{ success: boolean; deletedCount?: number }> {
+    let cloudDeleted = 0;
+    try {
+      cloudDeleted = await firestoreSync.clearCollection(table);
+    } catch (err) {
+      console.warn(`[Firestore] Clear table '${table}' warning:`, err);
+    }
+
+    if (table === 'candidates') {
+      clientStorage.clearCandidates();
+    } else if (table === 'events') {
+      clientStorage.saveEventsCache([]);
+    } else if (table === 'clubs') {
+      clientStorage.saveClubsCache([]);
+    }
+
+    const res = await fetch(`${API_BASE}/db/raw/${table}`, {
+      method: 'DELETE',
+    }).catch(() => null);
+
+    if (res && !res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `Failed to clear table ${table}`);
+    }
+
+    const serverJson = res ? await res.json().catch(() => ({})) : {};
+    return {
+      success: true,
+      deletedCount: Math.max(cloudDeleted, Number(serverJson?.deletedCount || 0)),
+    };
+  },
+
   async updateRawTable(table: string, data: any): Promise<any> {
-    if (table === 'events' && Array.isArray(data)) {
+    if (Array.isArray(data) && ['events', 'candidates', 'clubs', 'heats', 'results', 'clientUploads'].includes(table)) {
       try {
-        await firestoreSync.saveEventsBulk(data);
-      } catch {}
+        await firestoreSync.replaceCollection(table as any, data);
+      } catch (err) {
+        console.warn(`[Firestore] Replace table '${table}' warning:`, err);
+      }
     }
     const res = await fetch(`${API_BASE}/db/raw/${table}`, {
       method: 'PUT',
@@ -912,13 +1238,19 @@ export const api = {
 
   async resetToDefaults(): Promise<any> {
     clientStorage.clearCandidates();
+    clearFirstPrintWarned();
+    try {
+      await firestoreSync.resetToDefaults();
+    } catch (err) {
+      console.warn('[Firestore] resetToDefaults warning:', err);
+    }
     try {
       const res = await fetch(`${API_BASE}/db/factory-reset`, { method: 'POST' });
       if (!res.ok) throw new Error('Failed to reset database');
       return res.json();
     } catch (e) {
-      console.warn('[API] /api/db/factory-reset fallback to purgeAll:', e);
-      return this.purgeAllExceptEvents();
+      console.warn('[API] /api/db/factory-reset fallback notice:', e);
+      return { success: true, message: 'Database reset to factory defaults.' };
     }
   },
 };

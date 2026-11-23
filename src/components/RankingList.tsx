@@ -14,14 +14,32 @@ import {
   Sparkles,
   Receipt,
   FileText,
-  Sliders
+  Sliders,
+  AlertTriangle,
+  Layers,
+  RefreshCw,
+  Bluetooth
 } from 'lucide-react';
 import { ThermalPageSetupModal } from './ThermalPageSetupModal';
 import { 
   ThermalPrintSettings, 
   getThermalSettings, 
-  generateThermalPrintCSS 
+  generateThermalPrintCSS,
+  formatThermalEventSuffix 
 } from '../utils/thermalSettings';
+import { 
+  printDirectlyToThermalPrinter, 
+  isWebBluetoothSupported, 
+  isMobileClient 
+} from '../utils/thermalBluetoothPrint';
+import { ThermalLogo } from './ThermalLogo';
+import { ThermalTwoLineRecord } from './ThermalTwoLineRecord';
+import {
+  WhatsAppIcon,
+  generateRankListWhatsAppText,
+  openWhatsAppWithText,
+} from '../utils/whatsappThermalReport';
+import { isExcludedClubForRanking } from '../utils/clubRankingFilter';
 
 // Helper to parse jump measurement strings like "16`-02``", "16'-02\"", "14' 5\"", "14 ft 5 in", "4.45m", "16.5" into numeric inches for accurate comparison
 export function parseJumpToInches(val?: string | null): number {
@@ -273,13 +291,14 @@ export const RankingList: React.FC<RankingListProps> = ({
     if (!bestChestNo) return null;
 
     const candidateObj = candidates.find((c) => Number(c.chestNo) === Number(bestChestNo));
+    const finalistObj = eligibleFinalists.find((f) => Number(f.chestNo) === Number(bestChestNo));
     const isRecordBroken = prevInches > 0 ? maxInches > prevInches : maxInches > 0;
     const comparison = prevInches > 0 ? (maxInches > prevInches ? 'greater' : maxInches < prevInches ? 'less' : 'equal') : 'none';
 
     return {
-      candidateName: candidateObj?.name || `Chest #${bestChestNo}`,
+      candidateName: candidateObj?.name || finalistObj?.candidateName || `Chest #${bestChestNo}`,
       chestNo: bestChestNo,
-      club: candidateObj?.club || '',
+      club: candidateObj?.club || finalistObj?.club || '',
       recordValue: formatJumpBenchmark(bestValueStr) || bestValueStr,
       isRecordBroken,
       inches: maxInches,
@@ -288,13 +307,27 @@ export const RankingList: React.FC<RankingListProps> = ({
       previousRecordHolder: previousRecord?.recordHolderName,
       previousRecordYear: previousRecord?.recordYear,
     };
-  }, [isBroadJump, rankedMap, jumpRecords, candidates, currentResult, previousRecord]);
+  }, [isBroadJump, rankedMap, jumpRecords, candidates, eligibleFinalists, currentResult, previousRecord]);
 
   // Toggle for additional ordinals (4th, 5th, 6th)
   const [showAdditionalOrdinals, setShowAdditionalOrdinals] = useState<boolean>(false);
 
+  // Cancellation and sequential shift-up states
+  const [targetRankCount, setTargetRankCount] = useState<number>(0);
+  const [cancelledChestNos, setCancelledChestNos] = useState<number[]>([]);
+  const [hasCancellationOccurred, setHasCancellationOccurred] = useState<boolean>(false);
+  const [newlyAddedPositions, setNewlyAddedPositions] = useState<Set<number>>(new Set());
+  const [cancellationTarget, setCancellationTarget] = useState<{
+    pos: number;
+    chestNo: number;
+    candidateName: string;
+    club: string;
+  } | null>(null);
+  const [isProcessingBatchCancel, setIsProcessingBatchCancel] = useState<boolean>(false);
+
   // Feedback banner
   const [saveSuccess, setSaveSuccess] = useState<boolean>(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState<boolean>(false);
 
   // Track if user has unsaved modifications in the current event's ranking map
@@ -385,11 +418,13 @@ export const RankingList: React.FC<RankingListProps> = ({
       6: null,
     };
     const initialJumpMap: Record<number, string> = {};
+    let initialCount = 0;
 
     if (currentResult?.finalists) {
       currentResult.finalists.forEach((f) => {
         if (f.position && f.position >= 1 && f.position <= 6) {
           initialMap[f.position] = f.chestNo;
+          initialCount++;
         }
         if (f.jumpRecord) {
           initialJumpMap[f.chestNo] = f.jumpRecord;
@@ -402,15 +437,35 @@ export const RankingList: React.FC<RankingListProps> = ({
     setRankedMap(initialMap);
     setJumpRecords(initialJumpMap);
     setSaveSuccess(false);
+    setSaveError(null);
 
-    // If 4th, 5th or 6th already has data, auto expand
-    if (initialMap[4] || initialMap[5] || initialMap[6]) {
+    if (isEventSwitched) {
+      const persistedCancelled = currentResult?.cancelledChestNos || [];
+      const persistedQuota = currentResult?.targetRankCount || initialCount;
+      const hadCancellation = persistedCancelled.length > 0 && persistedQuota > initialCount;
+
+      setHasCancellationOccurred(hadCancellation);
+      setCancelledChestNos(persistedCancelled);
+      setNewlyAddedPositions(new Set());
+      setTargetRankCount(persistedQuota);
+    } else if (!isDirtyRef.current) {
+      const persistedCancelled = currentResult?.cancelledChestNos || [];
+      const persistedQuota = currentResult?.targetRankCount || initialCount;
+      if (persistedCancelled.length > 0 && persistedQuota > initialCount) {
+        setHasCancellationOccurred(true);
+        setCancelledChestNos(persistedCancelled);
+      }
+      setTargetRankCount(persistedQuota);
+    }
+
+    // If 4th, 5th or 6th already has data or recorded quota is >= 4, auto expand
+    if (initialMap[4] || initialMap[5] || initialMap[6] || initialCount >= 4) {
       setShowAdditionalOrdinals(true);
     }
   }, [currentResult, selectedEvtNo]);
 
   // Helper to get available candidates for a specific position dropdown:
-  // Excludes candidates already chosen in any other position slot
+  // Excludes candidates already chosen in any other position slot and any candidate cancelled from rankings
   const getOptionsForPosition = (position: number) => {
     const selectedElsewhere = new Set<number>();
     Object.entries(rankedMap).forEach(([posKey, chestNo]) => {
@@ -420,15 +475,255 @@ export const RankingList: React.FC<RankingListProps> = ({
       }
     });
 
-    return eligibleFinalists.filter((f) => !selectedElsewhere.has(f.chestNo));
+    return eligibleFinalists.filter(
+      (f) => !selectedElsewhere.has(f.chestNo) && !cancelledChestNos.includes(f.chestNo)
+    );
+  };
+
+  // Compute other events where cancellationTarget is currently ranked
+  const otherRankedEvents = useMemo(() => {
+    if (!cancellationTarget) return [];
+    const targetChest = Number(cancellationTarget.chestNo);
+    const list: Array<{
+      eventNo: number;
+      eventName: string;
+      position: number;
+      points: number;
+    }> = [];
+
+    results.forEach((r) => {
+      if (Number(r.eventNo) === Number(selectedEvtNo)) return;
+      const rankedFinalist = (r.finalists || []).find(
+        (f) => Number(f.chestNo) === targetChest && f.position && f.position >= 1 && f.position <= 6
+      );
+      if (rankedFinalist) {
+        const evtObj = events.find((e) => Number(e.Evt_No) === Number(r.eventNo));
+        list.push({
+          eventNo: r.eventNo,
+          eventName: evtObj?.Evt_Name || `Event #${r.eventNo}`,
+          position: rankedFinalist.position!,
+          points: rankedFinalist.points ?? getPointsForPosition(rankedFinalist.position!),
+        });
+      }
+    });
+
+    return list.sort((a, b) => Number(a.eventNo) - Number(b.eventNo));
+  }, [cancellationTarget, results, selectedEvtNo, events]);
+
+  // Open cancellation modal to ask whether to cancel for this event only or all events
+  const handleCancelRankedCandidate = (posToCancel: number) => {
+    const chestToCancel = rankedMap[posToCancel];
+    if (!chestToCancel) return;
+
+    const candObj = candidates.find((c) => Number(c.chestNo) === Number(chestToCancel));
+    const candName = candObj?.name || `Chest #${chestToCancel}`;
+    const candClub = candObj?.club || '';
+
+    setCancellationTarget({
+      pos: posToCancel,
+      chestNo: chestToCancel,
+      candidateName: candName,
+      club: candClub,
+    });
+  };
+
+  // Execute sequential shift-up for the current event
+  const executeCancelForCurrentEvent = (posToCancel: number, chestToCancel: number) => {
+    // Establish pre-cancellation ranking count to strictly maintain
+    const existingCount = Object.values(rankedMap).filter((c) => c !== null).length;
+    const currentQuota = targetRankCount > 0 ? targetRankCount : (existingCount > 0 ? existingCount : 4);
+
+    isDirtyRef.current = true;
+    setTargetRankCount(currentQuota);
+    setHasCancellationOccurred(true);
+    setCancelledChestNos((prev) => Array.from(new Set([...prev, chestToCancel])));
+
+    // Collect remaining assigned candidates in order 1..6, excluding the cancelled position
+    const remaining: number[] = [];
+    for (let p = 1; p <= 6; p++) {
+      const c = rankedMap[p];
+      if (c !== null && p !== posToCancel) {
+        remaining.push(c);
+      }
+    }
+
+    // Shift-up sequentially into ranks 1, 2, 3...
+    const nextMap: Record<number, number | null> = {
+      1: null,
+      2: null,
+      3: null,
+      4: null,
+      5: null,
+      6: null,
+    };
+    remaining.forEach((chest, idx) => {
+      nextMap[idx + 1] = chest;
+    });
+
+    setRankedMap(nextMap);
+
+    // Reset newly added positions since list shifted
+    setNewlyAddedPositions(new Set());
+
+    // Clean jump records for cancelled candidate
+    setJumpRecords((prev) => {
+      const nextJump = { ...prev };
+      delete nextJump[chestToCancel];
+      return nextJump;
+    });
+
+    // Auto-expand 4th-6th slots if quota is 4 or higher
+    if (currentQuota >= 4) {
+      setShowAdditionalOrdinals(true);
+    }
+  };
+
+  // Option 1: Cancel rank for this one event only
+  const handleConfirmCancelThisEventOnly = () => {
+    if (!cancellationTarget) return;
+    executeCancelForCurrentEvent(cancellationTarget.pos, cancellationTarget.chestNo);
+    setCancellationTarget(null);
+  };
+
+  // Option 2: Cancel rank for this candidate from all other events' rank list (if ranked so) including current event
+  const handleConfirmCancelAllEvents = async () => {
+    if (!cancellationTarget) return;
+    const { pos, chestNo, candidateName } = cancellationTarget;
+    setIsProcessingBatchCancel(true);
+
+    try {
+      // 1. First shift-up and open replacement for the current event in memory
+      executeCancelForCurrentEvent(pos, chestNo);
+
+      // 2. Locate all other events where this candidate is currently ranked
+      const otherRankedResults = results.filter((r) => {
+        if (Number(r.eventNo) === Number(selectedEvtNo)) return false;
+        return (r.finalists || []).some(
+          (f) => Number(f.chestNo) === Number(chestNo) && f.position && f.position >= 1 && f.position <= 6
+        );
+      });
+
+      // 3. For each other event, cancel the candidate and shift up lower ranks
+      for (const res of otherRankedResults) {
+        const finalists = [...(res.finalists || [])];
+
+        const rankedFinalists = finalists
+          .filter((f) => f.position && f.position >= 1 && f.position <= 6)
+          .sort((a, b) => (a.position || 0) - (b.position || 0));
+
+        const originalQuota = res.targetRankCount || rankedFinalists.length;
+        const targetFinalist = rankedFinalists.find((f) => Number(f.chestNo) === Number(chestNo));
+        const cancelledRank = targetFinalist?.position || 999;
+
+        const updatedFinalists = finalists.map((f) => {
+          if (Number(f.chestNo) === Number(chestNo)) {
+            return {
+              ...f,
+              position: undefined,
+              points: 0,
+            };
+          }
+
+          if (f.position && f.position >= 1 && f.position <= 6) {
+            let newPos = f.position;
+            if (f.position > cancelledRank) {
+              newPos = f.position - 1;
+            }
+            const isSelf = (f.club || '').trim().toUpperCase() === 'SELF';
+            const newPoints = isSelf ? 0 : getPointsForPosition(newPos);
+            return {
+              ...f,
+              position: newPos,
+              points: newPoints,
+            };
+          }
+
+          return f;
+        });
+
+        // Broad Jump highest record recalculation
+        const evtObj = events.find((e) => Number(e.Evt_No) === Number(res.eventNo));
+        const isEvtBroadJump = (evtObj?.Evt_Name || '').toUpperCase().includes('BROAD JUMP');
+        let newHighestRecord = res.highestRecord;
+
+        if (isEvtBroadJump && res.highestRecord?.chestNo === chestNo) {
+          let bestVal = '';
+          let maxInches = 0;
+          let bestF: FinalParticipant | undefined = undefined;
+
+          for (const f of updatedFinalists) {
+            if (f.position && f.position >= 1 && f.position <= 6) {
+              const jump = f.jumpRecord || f.resultValue || '';
+              const inches = parseJumpToInches(jump);
+              if (inches > maxInches) {
+                maxInches = inches;
+                bestVal = jump;
+                bestF = f;
+              }
+            }
+          }
+
+          if (bestF && maxInches > 0) {
+            const prevRec = settings.broadJumpPreviousRecords?.[res.eventNo];
+            const prevInches = prevRec ? parseJumpToInches(prevRec.recordValue) : 0;
+            const isBroken = prevInches > 0 ? maxInches > prevInches : maxInches > 0;
+            newHighestRecord = {
+              candidateName: bestF.candidateName,
+              chestNo: bestF.chestNo,
+              club: bestF.club,
+              recordValue: formatJumpBenchmark(bestVal) || bestVal,
+              isRecordBroken: isBroken,
+              previousRecordValue: prevRec ? formatJumpBenchmark(prevRec.recordValue) : undefined,
+              previousRecordHolder: prevRec?.recordHolderName,
+              previousRecordYear: prevRec?.recordYear,
+            };
+          } else {
+            newHighestRecord = undefined;
+          }
+        }
+
+        const nextCancelledList = Array.from(new Set([...(res.cancelledChestNos || []), chestNo]));
+
+        await onSaveResult({
+          id: res.id,
+          eventNo: res.eventNo,
+          finalists: updatedFinalists,
+          completed: true,
+          recordedAt: new Date().toISOString(),
+          targetRankCount: originalQuota,
+          cancelledChestNos: nextCancelledList,
+          highestRecord: newHighestRecord,
+        });
+      }
+
+      setCancellationTarget(null);
+      if (otherRankedResults.length > 0) {
+        alert(
+          `Candidate #${chestNo} (${candidateName}) has been cancelled from official rankings in current Event #${selectedEvtNo} AND ${otherRankedResults.length} other event(s): ${otherRankedResults.map((r) => `#${r.eventNo}`).join(', ')}.\n\n` +
+          `• Lower ranked candidates in those events have been sequentially shifted up.\n` +
+          `• In current Event #${selectedEvtNo}, a replacement finalist slot has opened at the bottom.`
+        );
+      }
+    } catch (err) {
+      console.error('Error during batch rank cancellation:', err);
+      alert('Encountered an issue updating all ranked events. Please try again.');
+    } finally {
+      setIsProcessingBatchCancel(false);
+    }
   };
 
   // Assign candidate to rank position
   const handleAssignCandidate = (position: number, chestNoStr: string) => {
-    if (isAlreadyRanked) {
+    if (isAlreadyRanked && !hasCancellationOccurred) {
       alert(`Event #${selectedEvtNo} official rankings are already completed and finalized. Modifications are restricted.`);
       return;
     }
+
+    if (hasCancellationOccurred && targetRankCount > 0 && position > targetRankCount) {
+      alert(`Cannot add candidates beyond the ${targetRankCount} recorded ranking slots.`);
+      return;
+    }
+
     isDirtyRef.current = true;
     const chestNo = chestNoStr ? Number(chestNoStr) : null;
     setRankedMap((prev) => {
@@ -444,19 +739,35 @@ export const RankingList: React.FC<RankingListProps> = ({
       next[position] = chestNo;
       return next;
     });
+
+    if (hasCancellationOccurred && chestNo !== null) {
+      setNewlyAddedPositions((prev) => new Set(prev).add(position));
+    }
   };
 
   // Deselect candidate from a specific rank
   const handleDeselect = (position: number) => {
-    if (isAlreadyRanked) {
+    if (isAlreadyRanked && !hasCancellationOccurred) {
       alert(`Event #${selectedEvtNo} official rankings are already completed and finalized. Modifications are restricted.`);
       return;
     }
+
+    // In cancellation mode, existing non-cancelled candidates must be removed via Cancel Rank (with shift-up)
+    if (hasCancellationOccurred && !newlyAddedPositions.has(position)) {
+      handleCancelRankedCandidate(position);
+      return;
+    }
+
     isDirtyRef.current = true;
     setRankedMap((prev) => ({
       ...prev,
       [position]: null,
     }));
+    setNewlyAddedPositions((prev) => {
+      const next = new Set(prev);
+      next.delete(position);
+      return next;
+    });
   };
 
   // Standard points mapping matching sports meet standard
@@ -479,10 +790,100 @@ export const RankingList: React.FC<RankingListProps> = ({
     }
   };
 
+  // Broad Jump order validation: ensure 1st > 2nd > 3rd > 4th > 5th > 6th whenever jump records are entered
+  const jumpOrderValidation = useMemo(() => {
+    const slotErrors: Record<number, string> = {};
+    let summaryError: string | null = null;
+    if (!isBroadJump || (isAlreadyRanked && !hasCancellationOccurred)) {
+      return { slotErrors, summaryError, isValid: true };
+    }
+
+    const getPosLabel = (pos: number) => {
+      switch (pos) {
+        case 1:
+          return '1st place';
+        case 2:
+          return '2nd place';
+        case 3:
+          return '3rd place';
+        default:
+          return `${pos}th place`;
+      }
+    };
+
+    const rankedEntries: Array<{ pos: number; chestNo: number; raw: string; inches: number }> = [];
+    for (let pos = 1; pos <= 6; pos++) {
+      const chestNo = rankedMap[pos];
+      if (chestNo !== null && chestNo !== undefined) {
+        const raw = (jumpRecords[chestNo] || '').trim();
+        const inches = raw ? parseJumpToInches(raw) : 0;
+        rankedEntries.push({ pos, chestNo, raw, inches });
+        if (raw && inches <= 0) {
+          const msg = `Invalid jump measurement for ${getPosLabel(pos)}. Use format like 16\`-02\`\`.`;
+          slotErrors[pos] = 'Invalid format';
+          if (!summaryError) summaryError = msg;
+        }
+      }
+    }
+
+    for (let i = 0; i < rankedEntries.length; i++) {
+      const higher = rankedEntries[i];
+      for (let j = i + 1; j < rankedEntries.length; j++) {
+        const lower = rankedEntries[j];
+        if (lower.raw && !higher.raw) {
+          const msg = `Enter a jump record for ${getPosLabel(higher.pos)} (must be higher than ${getPosLabel(lower.pos)}).`;
+          if (!slotErrors[higher.pos]) {
+            slotErrors[higher.pos] = `Required (> ${getPosLabel(lower.pos)})`;
+          }
+          if (!summaryError) summaryError = msg;
+        } else if (higher.inches > 0 && lower.inches > 0 && lower.inches >= higher.inches) {
+          const higherFmt = formatJumpBenchmark(higher.raw) || higher.raw;
+          const lowerFmt = formatJumpBenchmark(lower.raw) || lower.raw;
+          const msg = `${getPosLabel(higher.pos).replace(/^./, (c) => c.toUpperCase())} jump (${higherFmt}) must be higher than ${getPosLabel(lower.pos)} jump (${lowerFmt}).`;
+          slotErrors[lower.pos] = `Must be < ${getPosLabel(higher.pos)} (${higherFmt})`;
+          if (!summaryError) summaryError = msg;
+        }
+      }
+    }
+
+    return {
+      slotErrors,
+      summaryError,
+      isValid: Object.keys(slotErrors).length === 0,
+    };
+  }, [isBroadJump, isAlreadyRanked, hasCancellationOccurred, rankedMap, jumpRecords]);
+
+  // Clear save error automatically once broad jump validation passes or user edits inputs
+  useEffect(() => {
+    if (jumpOrderValidation.isValid) {
+      setSaveError((prev) => (prev && prev.includes('jump') ? null : prev));
+    }
+  }, [jumpOrderValidation.isValid]);
+
   // Save official rankings
   const handleSaveRankings = async () => {
-    if (isAlreadyRanked) {
-      alert(`Event #${selectedEvtNo} official rankings are already completed and finalized. Further modifications are locked.`);
+    setSaveError(null);
+    if (isAlreadyRanked && !hasCancellationOccurred) {
+      setSaveError(`Event #${selectedEvtNo} official rankings are already completed and finalized. Further modifications are locked.`);
+      return;
+    }
+
+    const currentRankedCount = Object.values(rankedMap).filter((c) => c !== null).length;
+
+    // Enforce: maintain total number of candidate recorded before cancellation <= total number of candidate recorded after cancellation
+    if (hasCancellationOccurred && targetRankCount > 0 && currentRankedCount < targetRankCount) {
+      setSaveError(
+        `Ranking list currently has ${currentRankedCount} candidate(s), but ${targetRankCount} were recorded before cancellation. Please select a replacement candidate for position #${currentRankedCount + 1}.`
+      );
+      return;
+    }
+
+    // Enforce: Broad Jump descending order (1st > 2nd > 3rd > ...)
+    if (isBroadJump && !jumpOrderValidation.isValid) {
+      setSaveError(
+        jumpOrderValidation.summaryError ||
+          'Broad Jump validation failed: 1st place jump must be higher than 2nd place, 2nd higher than 3rd, and so on.'
+      );
       return;
     }
 
@@ -533,33 +934,39 @@ export const RankingList: React.FC<RankingListProps> = ({
         finalists: updatedFinalists,
         completed: true,
         recordedAt: new Date().toISOString(),
+        targetRankCount: targetRankCount || currentRankedCount,
+        cancelledChestNos: cancelledChestNos,
         highestRecord: highestRecordToSave,
       });
 
       isDirtyRef.current = false;
+      setHasCancellationOccurred(false);
+      setCancelledChestNos([]);
+      setNewlyAddedPositions(new Set());
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 3500);
     } catch (err) {
       console.error('Failed to save rankings', err);
+      alert('Failed to save updated rankings. Please try again.');
     } finally {
       setIsSaving(false);
     }
   };
 
-  // Club Championship Standings calculation (excludes SELF and Independent)
+  // Club Championship Standings calculation (excludes NA, Self, Individual, blank/null)
   const clubChampionshipTable = useMemo(() => {
     const clubMap: Record<string, { name: string; gold: number; silver: number; bronze: number; points: number }> = {};
 
     clubs.forEach((c) => {
       if (!c.name) return;
       const cleanName = c.name.trim();
-      if (!cleanName || cleanName.toUpperCase() === 'SELF' || cleanName === 'Independent' || cleanName === 'Independent / Unattached') return;
+      if (isExcludedClubForRanking(cleanName)) return;
       clubMap[cleanName] = { name: cleanName, gold: 0, silver: 0, bronze: 0, points: 0 };
     });
 
     candidates.forEach((c) => {
       const cClub = (c.club || '').trim();
-      if (!cClub || cClub.toUpperCase() === 'SELF' || cClub === 'Independent' || cClub === 'Independent / Unattached') return;
+      if (isExcludedClubForRanking(cClub)) return;
       if (!clubMap[cClub]) {
         clubMap[cClub] = { name: cClub, gold: 0, silver: 0, bronze: 0, points: 0 };
       }
@@ -569,7 +976,7 @@ export const RankingList: React.FC<RankingListProps> = ({
       const participants = res.winners && res.winners.length > 0 ? res.winners : (res.finalists || []);
       participants.forEach((f) => {
         const fClub = (f.club || '').trim();
-        if (!fClub || fClub.toUpperCase() === 'SELF' || fClub === 'Independent' || fClub === 'Independent / Unattached') return;
+        if (isExcludedClubForRanking(fClub)) return;
         if (!clubMap[fClub]) {
           clubMap[fClub] = { name: fClub, gold: 0, silver: 0, bronze: 0, points: 0 };
         }
@@ -622,9 +1029,58 @@ export const RankingList: React.FC<RankingListProps> = ({
     return baseEvents;
   }, [printScope, singlePrintEvt, rangeStart, rangeEnd, customCsvInput, eventsWithFinalList]);
 
-  // Trigger browser print
-  const handleExecutePrint = () => {
+  const [isDirectPrinting, setIsDirectPrinting] = useState<boolean>(false);
+  const [directPrintStatus, setDirectPrintStatus] = useState<string | null>(null);
+
+  // Trigger print: Direct Bluetooth thermal on mobile when in thermal mode, or window.print() for A4
+  const handleExecutePrint = async () => {
+    if (modalFormat === 'thermal') {
+      const receiptEl = document.querySelector('.receipt') as HTMLElement | null;
+
+      if (isWebBluetoothSupported() || isMobileClient()) {
+        try {
+          setIsDirectPrinting(true);
+          setDirectPrintStatus('Connecting directly to thermal printer...');
+          const result = await printDirectlyToThermalPrinter(receiptEl, thermalConfig);
+          if (result.success) {
+            setDirectPrintStatus(result.message);
+            setTimeout(() => setDirectPrintStatus(null), 4000);
+          } else {
+            setDirectPrintStatus(result.message);
+            setTimeout(() => setDirectPrintStatus(null), 3000);
+          }
+        } catch (err: any) {
+          console.warn('Bluetooth thermal print fallback:', err?.message || err);
+          window.print();
+          setDirectPrintStatus('Printed via print dialog (Bluetooth unavailable in this frame)');
+          setTimeout(() => setDirectPrintStatus(null), 4000);
+        } finally {
+          setIsDirectPrinting(false);
+        }
+        return;
+      }
+    }
+
+    // Default system print for desktop or A4 mode
     window.print();
+  };
+
+  // Trigger WhatsApp share for Ranking thermal report
+  const handleWhatsAppShareRanking = () => {
+    if (eventsToPrint.length === 0) return;
+    const textBlocks: string[] = [];
+    eventsToPrint.forEach((evt) => {
+      const evtRes = results.find((r) => Number(r.eventNo) === Number(evt.Evt_No));
+      const rankedFinalists = (evtRes?.winners && evtRes.winners.length > 0 ? evtRes.winners : (evtRes?.finalists || []))
+        .filter((f) => (f.position || 0) > 0)
+        .sort((a, b) => (a.position || 0) - (b.position || 0));
+      const text = generateRankListWhatsAppText(evt, rankedFinalists, settings);
+      textBlocks.push(text);
+    });
+    const fullText = textBlocks.join('\n\n');
+    const res = openWhatsAppWithText(fullText);
+    setDirectPrintStatus(res.message);
+    setTimeout(() => setDirectPrintStatus(null), 4000);
   };
 
   // Helper to find club info
@@ -653,47 +1109,47 @@ export const RankingList: React.FC<RankingListProps> = ({
     return settings.registeredClubName || settings.organizer || 'Agrani Sasthitala Sangha';
   };
 
-  // Thermal header: Same as Candidate List thermal report (inline logo beside club name, ordinal below centered)
+  // Thermal header: inline logo beside club name, ordinal below centered
   const renderThermalHeader = (specificClubName?: string) => {
     const clubDisplayName = getThermalClubName(specificClubName);
     const clubLogo = getThermalClubLogo(specificClubName);
 
     return (
-      <div className="pb-1 mb-1 border-b border-dashed border-black pt-1">
-        <div className="flex items-center justify-center gap-1.5 leading-tight">
-          <img
+      <div className="w-full pb-1 mb-1 border-b border-dashed border-black pt-1">
+        <div className="flex items-center justify-center gap-1.5 leading-tight flex-wrap text-center">
+          <ThermalLogo
             src={clubLogo}
             alt="Club Logo"
-            className="w-5 h-5 shrink-0 object-contain filter grayscale contrast-200"
-            style={{ filter: 'grayscale(100%) contrast(200%)' }}
+            className="thermal-header-logo w-5 h-5 shrink-0 object-contain"
+            rasterSizePx={64}
           />
-          <span className="font-bold text-[10.5px] uppercase tracking-tight text-black truncate max-w-[36mm]">
+          <span className="thermal-header-club font-bold uppercase tracking-tight text-black break-words">
             {clubDisplayName}
           </span>
         </div>
-        <div className="text-[8.5px] font-semibold text-black leading-tight mt-0.5 whitespace-nowrap overflow-hidden text-ellipsis max-w-[46mm] mx-auto text-center">
+        <div className="thermal-ordinal-title font-normal text-black leading-tight mt-0.5 break-words text-center">
           {settings.ordinalTitle || '47th Annual Sports Meet 2027'}
         </div>
       </div>
     );
   };
 
-  // Thermal footer: Same as Candidate List thermal report
+  // Thermal footer: Brand logo and brand name + timestamp (no top dashed border)
   const renderThermalFooter = () => {
     return (
-      <div className="text-center pt-1 mt-1 border-t border-dashed border-black text-black">
-        <div className="flex items-center justify-center gap-1 leading-none max-w-[46mm] mx-auto whitespace-nowrap overflow-hidden">
-          <img
+      <div className="w-full text-center pt-1.5 mt-1 text-black">
+        <div className="flex items-center justify-center gap-1 leading-tight flex-wrap">
+          <ThermalLogo
             src="/icon.png"
             alt="eSports Logo"
-            className="w-3.5 h-3.5 shrink-0 object-contain filter grayscale contrast-200"
-            style={{ filter: 'grayscale(100%) contrast(200%)' }}
+            className="thermal-footer-logo w-3.5 h-3.5 shrink-0 object-contain"
+            rasterSizePx={48}
           />
-          <span className="font-semibold text-[8px] tracking-tight text-black whitespace-nowrap truncate">
-            eSports (Sport Management System)
+          <span className="thermal-footer-brand font-semibold tracking-tight text-black break-words">
+            eSports-Sport Management
           </span>
         </div>
-        <div className="text-[7.5px] text-black leading-none mt-0.5 font-mono whitespace-nowrap">
+        <div className="thermal-footer-time text-black leading-tight mt-0.5 break-words">
           {currentTimestamp}
         </div>
       </div>
@@ -754,6 +1210,269 @@ export const RankingList: React.FC<RankingListProps> = ({
       borderColor: 'focus:border-slate-500',
     },
   ];
+
+  // Render an individual rank slot (1st through 6th) with locked credentials, shift-up indicators, and replacement combo box
+  const renderRankSlot = (slot: typeof rankSlots[0]) => {
+    const assignedChestNo = rankedMap[slot.pos];
+    const availableOptions = getOptionsForPosition(slot.pos);
+
+    // Status checks: an entry is only an existing/locked candidate if the event was already ranked
+    // or is in cancellation-shift mode (and wasn't newly selected in this session).
+    const isExistingCandidate =
+      assignedChestNo !== null &&
+      (isAlreadyRanked || hasCancellationOccurred) &&
+      !newlyAddedPositions.has(slot.pos);
+    const isNewlyAdded = assignedChestNo !== null && newlyAddedPositions.has(slot.pos);
+    const isOpenReplacement =
+      hasCancellationOccurred &&
+      assignedChestNo === null &&
+      slot.pos <= targetRankCount &&
+      (slot.pos === 1 || rankedMap[slot.pos - 1] !== null);
+    const isExceededQuota = hasCancellationOccurred && targetRankCount > 0 && slot.pos > targetRankCount;
+
+    // A slot select is disabled if:
+    // - Event is already ranked and no cancellation occurred
+    // - Candidate is an existing locked candidate (credentials must remain locked & non-editable)
+    // - Slot exceeds quota (targetRankCount)
+    // - Previous sequential slot is not yet filled
+    const isSelectDisabled =
+      (!hasCancellationOccurred && isAlreadyRanked) ||
+      (hasCancellationOccurred && isExistingCandidate) ||
+      isExceededQuota ||
+      (hasCancellationOccurred && assignedChestNo === null && !isOpenReplacement);
+
+    const placeholderText = isExceededQuota
+      ? `-- Quota reached (Max ${targetRankCount} ranks) --`
+      : isOpenReplacement
+      ? `-- Select Replacement Finalist (${slot.label}) --`
+      : isAlreadyRanked
+      ? '-- No placement awarded --'
+      : '-- Select Finalist Candidate --';
+
+    return (
+      <div
+        key={slot.pos}
+        className={`relative bg-[#f1f5f9] border ${
+          isOpenReplacement
+            ? 'border-amber-400 ring-2 ring-amber-300/40 bg-amber-50/40'
+            : 'border-[#cbd5e1]'
+        } rounded-lg sm:rounded-xl p-2 sm:p-2.5 pl-3 sm:pl-3.5 shadow-2xs transition-all`}
+      >
+        {/* Accent bar */}
+        <div className={`absolute left-0 top-1.5 bottom-1.5 w-1.5 ${slot.barColor} rounded-r-md`}></div>
+
+        {/* Mobile: stacked or responsive row */}
+        <div className="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-3">
+          
+          {/* Badge & Action Buttons on Mobile */}
+          <div className="flex items-center justify-between sm:justify-start gap-2">
+            <div className={`px-2.5 py-1 rounded-full border ${slot.badgeBg} font-black text-xs flex items-center gap-1 shrink-0 shadow-2xs`}>
+              <span>{slot.medal}</span>
+              <span>{slot.label}</span>
+            </div>
+
+            {/* Mobile status / action button */}
+            <div className="sm:hidden flex items-center gap-1">
+              {assignedChestNo !== null ? (
+                isExistingCandidate && (isAlreadyRanked || hasCancellationOccurred) ? (
+                  <button
+                    type="button"
+                    onClick={() => handleCancelRankedCandidate(slot.pos)}
+                    className="px-2 py-0.5 rounded text-[11px] font-bold bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200 cursor-pointer flex items-center gap-0.5 shadow-2xs active:scale-95"
+                    title="Cancel this candidate from rankings. Lower ranks will shift up automatically."
+                  >
+                    <X className="w-3 h-3 text-rose-600" />
+                    <span>Cancel</span>
+                  </button>
+                ) : isNewlyAdded ? (
+                  <button
+                    type="button"
+                    onClick={() => handleDeselect(slot.pos)}
+                    className="px-2 py-0.5 rounded text-[11px] font-bold bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-300 cursor-pointer"
+                  >
+                    ✕ Clear
+                  </button>
+                ) : !isAlreadyRanked ? (
+                  <button
+                    type="button"
+                    onClick={() => handleDeselect(slot.pos)}
+                    className="px-2 py-0.5 rounded text-[11px] font-bold bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200 cursor-pointer"
+                  >
+                    ✕ Clear
+                  </button>
+                ) : null
+              ) : isOpenReplacement ? (
+                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300 animate-pulse">
+                  Open
+                </span>
+              ) : null}
+            </div>
+          </div>
+
+          {/* Candidate Dropdown */}
+          <div className="flex-1 min-w-0 relative">
+            <select
+              value={assignedChestNo || ''}
+              onChange={(e) => handleAssignCandidate(slot.pos, e.target.value)}
+              disabled={isSelectDisabled}
+              className={`w-full ${
+                isSelectDisabled
+                  ? 'bg-slate-100 text-slate-800 border-slate-300 cursor-not-allowed opacity-90'
+                  : isOpenReplacement
+                  ? 'bg-white border-amber-400 text-slate-950 font-black cursor-pointer shadow-sm'
+                  : 'bg-white cursor-pointer'
+              } border border-[#94a3b8] rounded-lg px-2.5 py-1.5 text-xs sm:text-sm font-bold text-slate-900 focus:outline-hidden ${slot.borderColor} appearance-none pr-8 truncate shadow-2xs`}
+            >
+              <option value="" className="text-slate-400">
+                {placeholderText}
+              </option>
+              {availableOptions.map((f) => (
+                <option key={f.chestNo} value={f.chestNo}>
+                  #{f.chestNo} - {f.candidateName} ({f.club || 'Independent'})
+                </option>
+              ))}
+            </select>
+            {isSelectDisabled ? (
+              <Lock className="w-3.5 h-3.5 text-slate-500 absolute right-2.5 top-2.5 pointer-events-none" />
+            ) : (
+              <ChevronDown className="w-3.5 h-3.5 text-slate-500 absolute right-2.5 top-2.5 pointer-events-none" />
+            )}
+          </div>
+
+          {/* Jump Record Input for Broad Jump */}
+          {isBroadJump && (assignedChestNo !== null || (!isAlreadyRanked && !isExceededQuota)) && (() => {
+            const candidateJumpRaw = assignedChestNo !== null ? (jumpRecords[assignedChestNo] || '').trim() : '';
+            const enteredJumpInches = candidateJumpRaw ? parseJumpToInches(candidateJumpRaw) : 0;
+            const benchmarkInches = previousRecord ? parseJumpToInches(previousRecord.recordValue) : 0;
+            const isCandidateRecordBroken =
+              assignedChestNo !== null &&
+              enteredJumpInches > 0 &&
+              benchmarkInches > 0 &&
+              enteredJumpInches > benchmarkInches;
+            const slotJumpError = (!isAlreadyRanked || hasCancellationOccurred) ? jumpOrderValidation.slotErrors[slot.pos] : undefined;
+
+            return (
+              <div className="flex flex-col gap-0.5 shrink-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] font-bold text-slate-600 uppercase whitespace-nowrap">
+                    Jump:
+                  </span>
+                  {isExistingCandidate && assignedChestNo !== null ? (
+                    <span
+                      className={`px-2 py-1 rounded-md font-mono font-black text-xs border ${
+                        isCandidateRecordBroken
+                          ? 'bg-emerald-50 text-emerald-950 border-emerald-400'
+                          : 'bg-amber-100 text-amber-950 border-amber-300'
+                      }`}
+                    >
+                      {formatJumpBenchmark(jumpRecords[assignedChestNo]) || jumpRecords[assignedChestNo] || '—'}
+                    </span>
+                  ) : (
+                    <input
+                      type="text"
+                      disabled={assignedChestNo === null}
+                      placeholder={assignedChestNo === null ? 'Select finalist...' : 'e.g. 16`-02``'}
+                      value={assignedChestNo !== null ? (jumpRecords[assignedChestNo] || '') : ''}
+                      onChange={(e) => {
+                        if (assignedChestNo === null) return;
+                        isDirtyRef.current = true;
+                        setSaveError(null);
+                        setJumpRecords((prev) => ({
+                          ...prev,
+                          [assignedChestNo]: e.target.value,
+                        }));
+                      }}
+                      className={`w-28 sm:w-32 px-2 py-1 text-xs font-mono font-bold border rounded-md focus:outline-hidden shadow-2xs transition-colors ${
+                        assignedChestNo === null
+                          ? 'bg-slate-200/70 border-slate-300 text-slate-400 cursor-not-allowed'
+                          : slotJumpError
+                          ? 'bg-rose-50 border-rose-500 text-rose-900 focus:border-rose-600 ring-1 ring-rose-300'
+                          : isCandidateRecordBroken
+                          ? 'bg-emerald-50 border-emerald-400 text-emerald-950 focus:border-emerald-600 ring-1 ring-emerald-300/70'
+                          : 'bg-white border-[#94a3b8] text-slate-900 focus:border-blue-600'
+                      }`}
+                      title={
+                        assignedChestNo === null
+                          ? 'Select a finalist candidate first to enter their jump record'
+                          : isCandidateRecordBroken
+                          ? 'Record broken! Candidate jump exceeds previous meet benchmark.'
+                          : 'Enter candidate jump measurement in 16`-02`` format (e.g. 16`-02``)'
+                      }
+                    />
+                  )}
+                </div>
+                {slotJumpError && (
+                  <span className="text-[10px] font-bold text-rose-700 leading-tight pl-9">
+                    {slotJumpError}
+                  </span>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* Desktop Buttons & Badges */}
+          <div className="hidden sm:flex items-center gap-1.5 shrink-0">
+            {assignedChestNo !== null ? (
+              <>
+                {/* Badge */}
+                {isExistingCandidate ? (
+                  <span className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold border shadow-2xs ${
+                    hasCancellationOccurred
+                      ? 'bg-blue-50 text-blue-900 border-blue-300'
+                      : 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                  }`}>
+                    <CheckCircle2 className={`w-3.5 h-3.5 ${hasCancellationOccurred ? 'text-blue-600' : 'text-emerald-600'}`} />
+                    <span>{hasCancellationOccurred ? 'Shifted (Locked)' : 'Official Winner'}</span>
+                  </span>
+                ) : isNewlyAdded ? (
+                  <span className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-amber-100 text-amber-950 text-xs font-bold border border-amber-300 shadow-2xs">
+                    <span>★</span>
+                    <span>New Replacement</span>
+                  </span>
+                ) : null}
+
+                {/* Action Button: Cancel Rank for existing candidates, or Clear for newly added replacement */}
+                {(isAlreadyRanked || hasCancellationOccurred) && isExistingCandidate ? (
+                  <button
+                    type="button"
+                    onClick={() => handleCancelRankedCandidate(slot.pos)}
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 hover:text-rose-900 text-xs font-bold transition-colors cursor-pointer shrink-0 border border-rose-200 shadow-2xs active:scale-95"
+                    title="Cancel this candidate from rankings. Lower ranks will shift up automatically."
+                  >
+                    <X className="w-3.5 h-3.5 text-rose-600" />
+                    <span>Cancel Rank</span>
+                  </button>
+                ) : isNewlyAdded ? (
+                  <button
+                    type="button"
+                    onClick={() => handleDeselect(slot.pos)}
+                    className="inline-flex items-center px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 hover:text-slate-900 text-xs font-bold transition-colors cursor-pointer shrink-0 border border-slate-300 shadow-2xs"
+                    title="Clear this replacement selection"
+                  >
+                    ✕ Clear
+                  </button>
+                ) : !isAlreadyRanked ? (
+                  <button
+                    type="button"
+                    onClick={() => handleDeselect(slot.pos)}
+                    className="inline-flex items-center px-2.5 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 hover:text-rose-900 text-xs font-bold transition-colors cursor-pointer shrink-0 border border-rose-200 shadow-2xs"
+                  >
+                    ✕ Deselect
+                  </button>
+                ) : null}
+              </>
+            ) : isOpenReplacement ? (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-amber-100 text-amber-950 text-xs font-bold border border-amber-300 shadow-2xs animate-pulse">
+                <span>⬇</span>
+                <span>Select Finalist</span>
+              </span>
+            ) : null}
+          </div>
+
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="relative">
@@ -866,41 +1585,41 @@ export const RankingList: React.FC<RankingListProps> = ({
         {/* ========================================================================= */}
         {/* PRINT CONTROLS BAR: Compact, wrap-safe layout for phones                  */}
         {/* ========================================================================= */}
-        <div className="bg-[#d5e0ee] rounded-lg sm:rounded-xl p-2.5 sm:p-3.5 border border-[#baccdb] shadow-2xs">
-          <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 sm:gap-3 items-end">
+        <div className="bg-[#d5e0ee] rounded-lg sm:rounded-xl px-2.5 py-1.5 sm:px-3 sm:py-2 border border-[#baccdb] shadow-2xs">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-2.5">
             
             {/* 1. Print Scope Dropdown */}
-            <div className="sm:col-span-4 space-y-1">
-              <label className="block text-[11px] font-bold text-slate-700">
+            <div className="flex items-center gap-1.5 shrink-0">
+              <label className="text-[11px] font-bold text-slate-700 whitespace-nowrap">
                 Print Scope:
               </label>
-              <div className="relative">
+              <div className="relative flex-1 sm:w-36">
                 <select
                   value={printScope}
                   onChange={(e) => setPrintScope(e.target.value as PrintScopeType)}
-                  className="w-full bg-white border border-[#94a3b8] rounded-lg px-2.5 py-1.5 text-xs font-bold text-slate-800 focus:outline-hidden focus:border-blue-600 cursor-pointer appearance-none pr-7 shadow-2xs"
+                  className="w-full bg-white border border-[#94a3b8] rounded-md px-2 py-1 text-xs font-bold text-slate-800 focus:outline-hidden focus:border-blue-600 cursor-pointer appearance-none pr-6 shadow-2xs"
                 >
                   <option value="single">Single Event</option>
                   <option value="range">Range of Events</option>
                   <option value="custom">Comma Separated (#)</option>
                 </select>
-                <ChevronDown className="w-3.5 h-3.5 text-slate-500 absolute right-2 top-2 pointer-events-none" />
+                <ChevronDown className="w-3.5 h-3.5 text-slate-500 absolute right-1.5 top-1.5 pointer-events-none" />
               </div>
             </div>
 
-            {/* 2. Scope Inputs */}
-            <div className="sm:col-span-5 space-y-1">
+            {/* 2. Scope Inputs (Compact inline layout) */}
+            <div className="flex-1 min-w-0">
               {printScope === 'single' && (
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-700">
+                <div className="flex items-center gap-1.5">
+                  <label className="text-[11px] font-bold text-slate-700 whitespace-nowrap">
                     Event Number:
                   </label>
-                  <div className="relative">
+                  <div className="relative flex-1 min-w-0">
                     <select
                       value={eventsWithFinalList.some(e => Number(e.Evt_No) === Number(singlePrintEvt)) ? singlePrintEvt : (eventsWithFinalList[0]?.Evt_No ?? '')}
                       onChange={(e) => setSinglePrintEvt(Number(e.target.value))}
                       disabled={eventsWithFinalList.length === 0}
-                      className="w-full bg-white border border-[#94a3b8] rounded-lg px-2.5 py-1.5 text-xs font-bold text-slate-800 focus:outline-hidden focus:border-blue-600 cursor-pointer appearance-none pr-7 truncate shadow-2xs disabled:bg-slate-100 disabled:text-slate-400"
+                      className="w-full bg-white border border-[#94a3b8] rounded-md px-2 py-1 text-xs font-bold text-slate-800 focus:outline-hidden focus:border-blue-600 cursor-pointer appearance-none pr-6 truncate shadow-2xs disabled:bg-slate-100 disabled:text-slate-400"
                     >
                       {eventsWithFinalList.length === 0 ? (
                         <option value="">No events with final list</option>
@@ -912,23 +1631,23 @@ export const RankingList: React.FC<RankingListProps> = ({
                         ))
                       )}
                     </select>
-                    <ChevronDown className="w-3.5 h-3.5 text-slate-500 absolute right-2 top-2 pointer-events-none" />
+                    <ChevronDown className="w-3.5 h-3.5 text-slate-500 absolute right-1.5 top-1.5 pointer-events-none" />
                   </div>
                 </div>
               )}
 
               {printScope === 'range' && (
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-700">
+                <div className="flex items-center gap-1.5">
+                  <label className="text-[11px] font-bold text-slate-700 whitespace-nowrap">
                     Event Range:
                   </label>
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-1 flex-1">
                     <input
                       type="number"
                       min="1"
                       value={rangeStart}
                       onChange={(e) => setRangeStart(parseInt(e.target.value, 10) || 0)}
-                      className="w-full bg-white border border-[#94a3b8] rounded-lg px-2 py-1.5 text-xs font-mono font-bold text-slate-800 text-center focus:outline-hidden focus:border-blue-600 shadow-2xs"
+                      className="w-full bg-white border border-[#94a3b8] rounded-md px-2 py-1 text-xs font-mono font-bold text-slate-800 text-center focus:outline-hidden focus:border-blue-600 shadow-2xs"
                       placeholder="Start"
                     />
                     <span className="text-[11px] text-slate-600 font-bold px-0.5">to</span>
@@ -937,7 +1656,7 @@ export const RankingList: React.FC<RankingListProps> = ({
                       min="1"
                       value={rangeEnd}
                       onChange={(e) => setRangeEnd(parseInt(e.target.value, 10) || 0)}
-                      className="w-full bg-white border border-[#94a3b8] rounded-lg px-2 py-1.5 text-xs font-mono font-bold text-slate-800 text-center focus:outline-hidden focus:border-blue-600 shadow-2xs"
+                      className="w-full bg-white border border-[#94a3b8] rounded-md px-2 py-1 text-xs font-mono font-bold text-slate-800 text-center focus:outline-hidden focus:border-blue-600 shadow-2xs"
                       placeholder="End"
                     />
                   </div>
@@ -945,8 +1664,8 @@ export const RankingList: React.FC<RankingListProps> = ({
               )}
 
               {printScope === 'custom' && (
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-700">
+                <div className="flex items-center gap-1.5">
+                  <label className="text-[11px] font-bold text-slate-700 whitespace-nowrap">
                     Events (CSV):
                   </label>
                   <input
@@ -954,14 +1673,14 @@ export const RankingList: React.FC<RankingListProps> = ({
                     placeholder="1, 2, 3, 5"
                     value={customCsvInput}
                     onChange={(e) => setCustomCsvInput(e.target.value)}
-                    className="w-full bg-white border border-[#94a3b8] rounded-lg px-2.5 py-1.5 text-xs font-mono font-bold text-slate-800 focus:outline-hidden focus:border-blue-600 shadow-2xs"
+                    className="w-full bg-white border border-[#94a3b8] rounded-md px-2 py-1 text-xs font-mono font-bold text-slate-800 focus:outline-hidden focus:border-blue-600 shadow-2xs"
                   />
                 </div>
               )}
             </div>
 
-            {/* 3. Print Buttons (Plain A4 & 2" Thermal) */}
-            <div className="sm:col-span-3 pt-1 sm:pt-0 flex items-center gap-1.5">
+            {/* 3. Print & Share Buttons (Plain A4, 2" Thermal, Icon-Only WhatsApp) */}
+            <div className="flex items-center justify-end gap-1.5 shrink-0">
               <button
                 type="button"
                 id="btn-print-ranking-sheets"
@@ -969,10 +1688,10 @@ export const RankingList: React.FC<RankingListProps> = ({
                   setModalFormat('a4');
                   setShowPrintModal(true);
                 }}
-                className="flex-1 py-2 px-2.5 rounded-lg bg-slate-800 hover:bg-slate-900 active:scale-98 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-all shadow-md cursor-pointer whitespace-nowrap"
+                className="flex-1 sm:flex-initial py-1.5 px-2.5 rounded-md bg-slate-800 hover:bg-slate-900 active:scale-98 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-all shadow-sm cursor-pointer whitespace-nowrap"
                 title="Print Official Rankings Report on Plain A4 Paper"
               >
-                <Printer className="w-3.5 h-3.5 text-amber-300" />
+                <Printer className="w-3.5 h-3.5 text-amber-300 shrink-0" />
                 <span>Plain A4</span>
               </button>
               <button
@@ -982,11 +1701,21 @@ export const RankingList: React.FC<RankingListProps> = ({
                   setModalFormat('thermal');
                   setShowPrintModal(true);
                 }}
-                className="py-2 px-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 active:scale-98 text-slate-950 font-black text-xs flex items-center justify-center gap-1 transition-all shadow-md cursor-pointer whitespace-nowrap"
+                className="flex-1 sm:flex-initial py-1.5 px-2.5 rounded-md bg-amber-500 hover:bg-amber-400 active:scale-98 text-slate-950 font-black text-xs flex items-center justify-center gap-1 transition-all shadow-sm cursor-pointer whitespace-nowrap"
                 title="Print Official Rankings on 2&quot; Roll Thermal Printer"
               >
                 <Receipt className="w-3.5 h-3.5 shrink-0" />
-                <span className="text-[11px] font-black hidden md:inline">2" Thermal</span>
+                <span className="text-[11px] font-black">2" Thermal</span>
+              </button>
+              <button
+                type="button"
+                id="btn-whatsapp-ranking-sheets"
+                onClick={handleWhatsAppShareRanking}
+                className="p-1.5 rounded-md bg-emerald-600 hover:bg-emerald-500 active:scale-98 text-white flex items-center justify-center transition-all shadow-sm cursor-pointer shrink-0"
+                title={`Share (Event: ${eventsToPrint[0]?.Evt_No || singlePrintEvt} Rank) to WhatsApp`}
+                aria-label="Share Rankings to WhatsApp"
+              >
+                <WhatsAppIcon className="w-4 h-4 shrink-0" />
               </button>
             </div>
 
@@ -1188,308 +1917,44 @@ export const RankingList: React.FC<RankingListProps> = ({
         {/* PODIUM SLOTS (Concise & Mobile-Responsive Grid/Flex Rows)                 */}
         {/* ========================================================================= */}
         <div className="space-y-2 pt-1">
-          
-          {/* Main 1st, 2nd, 3rd Slots */}
-          {rankSlots.map((slot) => {
-            const assignedChestNo = rankedMap[slot.pos];
-            const availableOptions = getOptionsForPosition(slot.pos);
-
-            return (
-              <div 
-                key={slot.pos} 
-                className="relative bg-[#f1f5f9] border border-[#cbd5e1] rounded-lg sm:rounded-xl p-2 sm:p-2.5 pl-3 sm:pl-3.5 shadow-2xs"
-              >
-                {/* Accent bar */}
-                <div className={`absolute left-0 top-1.5 bottom-1.5 w-1.5 ${slot.barColor} rounded-r-md`}></div>
-
-                {/* Mobile: stacked or responsive row */}
-                <div className="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-3">
-                  
-                  {/* Badge & Quick Deselect on mobile */}
-                  <div className="flex items-center justify-between sm:justify-start gap-2">
-                    <div className={`px-2.5 py-1 rounded-full border ${slot.badgeBg} font-black text-xs flex items-center gap-1 shrink-0 shadow-2xs`}>
-                      <span>{slot.medal}</span>
-                      <span>{slot.label}</span>
-                    </div>
-
-                    {/* Mobile deselect button or locked badge */}
-                    {isAlreadyRanked ? (
-                      assignedChestNo !== null && (
-                        <span className="sm:hidden px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-0.5">
-                          <CheckCircle2 className="w-2.5 h-2.5 text-emerald-600" />
-                          <span>Locked</span>
-                        </span>
-                      )
-                    ) : (
-                      assignedChestNo !== null && (
-                        <button
-                          type="button"
-                          onClick={() => handleDeselect(slot.pos)}
-                          className="sm:hidden px-2 py-0.5 rounded text-[11px] font-bold bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200 cursor-pointer"
-                        >
-                          ✕ Clear
-                        </button>
-                      )
-                    )}
-                  </div>
-
-                  {/* Candidate Dropdown */}
-                  <div className="flex-1 min-w-0 relative">
-                    <select
-                      value={assignedChestNo || ''}
-                      onChange={(e) => handleAssignCandidate(slot.pos, e.target.value)}
-                      disabled={isAlreadyRanked}
-                      className={`w-full ${
-                        isAlreadyRanked 
-                          ? 'bg-slate-100 text-slate-800 border-slate-300 cursor-not-allowed opacity-90' 
-                          : 'bg-white cursor-pointer'
-                      } border border-[#94a3b8] rounded-lg px-2.5 py-1.5 text-xs sm:text-sm font-bold text-slate-900 focus:outline-hidden ${slot.borderColor} appearance-none pr-8 truncate shadow-2xs`}
-                    >
-                      <option value="" className="text-slate-400">
-                        {isAlreadyRanked ? '-- No placement awarded --' : '-- Select Finalist Candidate --'}
-                      </option>
-                      {availableOptions.map((f) => (
-                        <option key={f.chestNo} value={f.chestNo}>
-                          #{f.chestNo} - {f.candidateName} ({f.club || 'Independent'})
-                        </option>
-                      ))}
-                    </select>
-                    {isAlreadyRanked ? (
-                      <Lock className="w-3.5 h-3.5 text-slate-500 absolute right-2.5 top-2.5 pointer-events-none" />
-                    ) : (
-                      <ChevronDown className="w-3.5 h-3.5 text-slate-500 absolute right-2.5 top-2.5 pointer-events-none" />
-                    )}
-                  </div>
-
-                  {/* Jump Record Input for Broad Jump */}
-                  {isBroadJump && assignedChestNo !== null && (
-                    <div className="flex flex-col sm:flex-row sm:items-center gap-1 shrink-0">
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-[10px] font-bold text-slate-600 uppercase whitespace-nowrap">
-                          Jump:
-                        </span>
-                        {isAlreadyRanked ? (
-                          <span className="px-2 py-1 rounded-md bg-amber-100 text-amber-950 font-mono font-black text-xs border border-amber-300">
-                            {formatJumpBenchmark(jumpRecords[assignedChestNo]) || jumpRecords[assignedChestNo] || '—'}
-                          </span>
-                        ) : (
-                          <input
-                            type="text"
-                            placeholder="e.g. 16`-02``"
-                            value={jumpRecords[assignedChestNo] || ''}
-                            onChange={(e) => {
-                              isDirtyRef.current = true;
-                              setJumpRecords((prev) => ({
-                                ...prev,
-                                [assignedChestNo]: e.target.value,
-                              }));
-                            }}
-                            className="w-24 sm:w-28 px-2 py-1 text-xs font-mono font-bold bg-white border border-[#94a3b8] rounded-md text-slate-900 focus:outline-hidden focus:border-blue-600 shadow-2xs"
-                            title="Enter candidate jump measurement in 16`-02`` format (e.g. 16`-02``)"
-                          />
-                        )}
-                      </div>
-                      {jumpRecords[assignedChestNo] && previousRecord && (() => {
-                        const enteredInches = parseJumpToInches(jumpRecords[assignedChestNo]);
-                        const benchmarkInches = parseJumpToInches(previousRecord.recordValue);
-                        if (enteredInches <= 0 || benchmarkInches <= 0) return null;
-                        if (enteredInches > benchmarkInches) {
-                          return (
-                            <span className="text-[10px] font-black text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded border border-emerald-300 whitespace-nowrap">
-                              &gt; {formatJumpBenchmark(previousRecord.recordValue)} (Record Broken)
-                            </span>
-                          );
-                        } else if (enteredInches < benchmarkInches) {
-                          return (
-                            <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-300 whitespace-nowrap">
-                              &lt; {formatJumpBenchmark(previousRecord.recordValue)}
-                            </span>
-                          );
-                        } else {
-                          return (
-                            <span className="text-[10px] font-bold text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded border border-amber-300 whitespace-nowrap">
-                              = {formatJumpBenchmark(previousRecord.recordValue)} (Tied)
-                            </span>
-                          );
-                        }
-                      })()}
-                    </div>
-                  )}
-
-                  {/* Desktop Deselect Button or locked badge */}
-                  {isAlreadyRanked ? (
-                    assignedChestNo !== null && (
-                      <span className="hidden sm:inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-50 text-emerald-800 text-xs font-bold border border-emerald-200 shadow-2xs">
-                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                        <span>Official Winner</span>
-                      </span>
-                    )
-                  ) : (
-                    assignedChestNo !== null && (
-                      <button
-                        type="button"
-                        onClick={() => handleDeselect(slot.pos)}
-                        className="hidden sm:inline-flex px-2.5 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 hover:text-rose-900 text-xs font-bold transition-colors cursor-pointer shrink-0 border border-rose-200 shadow-2xs"
-                      >
-                        ✕ Deselect
-                      </button>
-                    )
-                  )}
-
+          {/* Cancellation Notice Banner */}
+          {hasCancellationOccurred && (
+            <div className="p-3 rounded-xl bg-amber-50 border border-amber-300 text-amber-950 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2 shadow-2xs animate-in fade-in">
+              <div className="flex items-center gap-2">
+                <span className="text-base shrink-0">ℹ️</span>
+                <div>
+                  <span className="font-black">Ranking Cancellation in Progress:</span>{' '}
+                  <span>
+                    Rankings shifted up automatically. Please select a replacement finalist candidate from the combo box
+                    to maintain the {targetRankCount} recorded rankings, then click <strong>"Save Updated Rankings"</strong>.
+                  </span>
                 </div>
               </div>
-            );
-          })}
+              <button
+                type="button"
+                onClick={() => {
+                  if (window.confirm('Discard cancellation changes and restore previously saved rankings?')) {
+                    setHasCancellationOccurred(false);
+                    setCancelledChestNos([]);
+                    setNewlyAddedPositions(new Set());
+                    isDirtyRef.current = false;
+                    setSelectedEvtNo((prev) => prev);
+                  }
+                }}
+                className="px-2.5 py-1 rounded-md bg-amber-200 hover:bg-amber-300 text-amber-900 font-bold text-xs shrink-0 cursor-pointer transition-colors self-end sm:self-auto"
+              >
+                Reset Changes
+              </button>
+            </div>
+          )}
+
+          {/* Main 1st, 2nd, 3rd Slots */}
+          {rankSlots.map(renderRankSlot)}
 
           {/* ADDITIONAL ORDINALS (4th, 5th, 6th Places) */}
           {showAdditionalOrdinals && (
             <div className="space-y-2 pt-1 animate-in fade-in">
-              {additionalSlots.map((slot) => {
-                const assignedChestNo = rankedMap[slot.pos];
-                const availableOptions = getOptionsForPosition(slot.pos);
-
-                return (
-                  <div 
-                    key={slot.pos} 
-                    className="relative bg-[#f1f5f9] border border-[#cbd5e1] rounded-lg sm:rounded-xl p-2 sm:p-2.5 pl-3 sm:pl-3.5 shadow-2xs"
-                  >
-                    <div className={`absolute left-0 top-1.5 bottom-1.5 w-1.5 ${slot.barColor} rounded-r-md`}></div>
-
-                    <div className="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-3">
-                      
-                      <div className="flex items-center justify-between sm:justify-start gap-2">
-                        <div className={`px-2.5 py-1 rounded-full border ${slot.badgeBg} font-black text-xs flex items-center gap-1 shrink-0 shadow-2xs`}>
-                          <span>{slot.medal}</span>
-                          <span>{slot.label}</span>
-                        </div>
-
-                        {/* Mobile deselect button or locked badge */}
-                        {isAlreadyRanked ? (
-                          assignedChestNo !== null && (
-                            <span className="sm:hidden px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-0.5">
-                              <CheckCircle2 className="w-2.5 h-2.5 text-emerald-600" />
-                              <span>Locked</span>
-                            </span>
-                          )
-                        ) : (
-                          assignedChestNo !== null && (
-                            <button
-                              type="button"
-                              onClick={() => handleDeselect(slot.pos)}
-                              className="sm:hidden px-2 py-0.5 rounded text-[11px] font-bold bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200 cursor-pointer"
-                            >
-                              ✕ Clear
-                            </button>
-                          )
-                        )}
-                      </div>
-
-                      <div className="flex-1 min-w-0 relative">
-                        <select
-                          value={assignedChestNo || ''}
-                          onChange={(e) => handleAssignCandidate(slot.pos, e.target.value)}
-                          disabled={isAlreadyRanked}
-                          className={`w-full ${
-                            isAlreadyRanked 
-                              ? 'bg-slate-100 text-slate-800 border-slate-300 cursor-not-allowed opacity-90' 
-                              : 'bg-white cursor-pointer'
-                          } border border-[#94a3b8] rounded-lg px-2.5 py-1.5 text-xs sm:text-sm font-bold text-slate-900 focus:outline-hidden ${slot.borderColor} appearance-none pr-8 truncate shadow-2xs`}
-                        >
-                          <option value="" className="text-slate-400">
-                            {isAlreadyRanked ? '-- No placement awarded --' : '-- Select Finalist Candidate --'}
-                          </option>
-                          {availableOptions.map((f) => (
-                            <option key={f.chestNo} value={f.chestNo}>
-                              #{f.chestNo} - {f.candidateName} ({f.club || 'Independent'})
-                            </option>
-                          ))}
-                        </select>
-                        {isAlreadyRanked ? (
-                          <Lock className="w-3.5 h-3.5 text-slate-500 absolute right-2.5 top-2.5 pointer-events-none" />
-                        ) : (
-                          <ChevronDown className="w-3.5 h-3.5 text-slate-500 absolute right-2.5 top-2.5 pointer-events-none" />
-                        )}
-                      </div>
-
-                      {/* Jump Record Input for Broad Jump */}
-                      {isBroadJump && assignedChestNo !== null && (
-                        <div className="flex flex-col sm:flex-row sm:items-center gap-1 shrink-0">
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-[10px] font-bold text-slate-600 uppercase whitespace-nowrap">
-                              Jump:
-                            </span>
-                            {isAlreadyRanked ? (
-                              <span className="px-2 py-1 rounded-md bg-amber-100 text-amber-950 font-mono font-black text-xs border border-amber-300">
-                                {formatJumpBenchmark(jumpRecords[assignedChestNo]) || jumpRecords[assignedChestNo] || '—'}
-                              </span>
-                            ) : (
-                              <input
-                                type="text"
-                                placeholder="e.g. 16`-02``"
-                                value={jumpRecords[assignedChestNo] || ''}
-                                onChange={(e) => {
-                                  isDirtyRef.current = true;
-                                  setJumpRecords((prev) => ({
-                                    ...prev,
-                                    [assignedChestNo]: e.target.value,
-                                  }));
-                                }}
-                                className="w-24 sm:w-28 px-2 py-1 text-xs font-mono font-bold bg-white border border-[#94a3b8] rounded-md text-slate-900 focus:outline-hidden focus:border-blue-600 shadow-2xs"
-                                title="Enter candidate jump measurement in 16`-02`` format (e.g. 16`-02``)"
-                              />
-                            )}
-                          </div>
-                          {jumpRecords[assignedChestNo] && previousRecord && (() => {
-                            const enteredInches = parseJumpToInches(jumpRecords[assignedChestNo]);
-                            const benchmarkInches = parseJumpToInches(previousRecord.recordValue);
-                            if (enteredInches <= 0 || benchmarkInches <= 0) return null;
-                            if (enteredInches > benchmarkInches) {
-                              return (
-                                <span className="text-[10px] font-black text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded border border-emerald-300 whitespace-nowrap">
-                                  &gt; {formatJumpBenchmark(previousRecord.recordValue)} (Record Broken)
-                                </span>
-                              );
-                            } else if (enteredInches < benchmarkInches) {
-                              return (
-                                <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-300 whitespace-nowrap">
-                                  &lt; {formatJumpBenchmark(previousRecord.recordValue)}
-                                </span>
-                              );
-                            } else {
-                              return (
-                                <span className="text-[10px] font-bold text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded border border-amber-300 whitespace-nowrap">
-                                  = {formatJumpBenchmark(previousRecord.recordValue)} (Tied)
-                                </span>
-                              );
-                            }
-                          })()}
-                        </div>
-                      )}
-
-                      {/* Desktop Deselect Button or locked badge */}
-                      {isAlreadyRanked ? (
-                        assignedChestNo !== null && (
-                          <span className="hidden sm:inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-50 text-emerald-800 text-xs font-bold border border-emerald-200 shadow-2xs">
-                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                            <span>Official Winner</span>
-                          </span>
-                        )
-                      ) : (
-                        assignedChestNo !== null && (
-                          <button
-                            type="button"
-                            onClick={() => handleDeselect(slot.pos)}
-                            className="hidden sm:inline-flex px-2.5 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 hover:text-rose-900 text-xs font-bold transition-colors cursor-pointer shrink-0 border border-rose-200 shadow-2xs"
-                          >
-                            ✕ Deselect
-                          </button>
-                        )
-                      )}
-
-                    </div>
-                  </div>
-                );
-              })}
+              {additionalSlots.map(renderRankSlot)}
             </div>
           )}
 
@@ -1513,15 +1978,29 @@ export const RankingList: React.FC<RankingListProps> = ({
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2 pt-2 border-t border-[#cbd5e1]">
           
           <div className="min-h-[20px]">
-            {isAlreadyRanked ? (
-              <span className="text-emerald-800 text-xs font-bold flex items-center gap-1.5">
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                <span>Event #{selectedEvtNo} rankings are finalized. Modifications are restricted.</span>
+            {saveError || (isBroadJump && !jumpOrderValidation.isValid && jumpOrderValidation.summaryError) ? (
+              <span className="text-rose-700 text-xs font-bold animate-in fade-in flex items-center gap-1.5">
+                <AlertTriangle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                <span>{saveError || jumpOrderValidation.summaryError}</span>
               </span>
             ) : saveSuccess ? (
               <span className="text-emerald-700 text-xs font-bold animate-in fade-in flex items-center gap-1">
                 <span>✓</span>
                 <span>Rankings saved! Points recalculated.</span>
+              </span>
+            ) : hasCancellationOccurred ? (
+              <span className="text-amber-800 text-xs font-bold flex items-center gap-1.5 animate-pulse">
+                <span>⚠️</span>
+                <span>
+                  {Object.values(rankedMap).filter((c) => c !== null).length < targetRankCount
+                    ? `Please fill replacement candidate (${Object.values(rankedMap).filter((c) => c !== null).length}/${targetRankCount} Ranked)`
+                    : `Ready to save! Total ${targetRankCount} rankings filled.`}
+                </span>
+              </span>
+            ) : isAlreadyRanked ? (
+              <span className="text-emerald-800 text-xs font-bold flex items-center gap-1.5">
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                <span>Event #{selectedEvtNo} rankings are finalized. Click "Cancel Rank" on any row to adjust.</span>
               </span>
             ) : null}
           </div>
@@ -1530,14 +2009,20 @@ export const RankingList: React.FC<RankingListProps> = ({
             type="button"
             id="btn-save-official-rankings"
             onClick={handleSaveRankings}
-            disabled={isAlreadyRanked || isSaving}
+            disabled={(!hasCancellationOccurred && isAlreadyRanked) || isSaving || (isBroadJump && !jumpOrderValidation.isValid)}
             className={`w-full sm:w-auto px-5 py-2.5 rounded-lg font-black text-xs sm:text-sm transition-all shadow-md text-center ${
-              isAlreadyRanked
+              (!hasCancellationOccurred && isAlreadyRanked) || (isBroadJump && !jumpOrderValidation.isValid)
                 ? 'bg-slate-700 text-slate-400 border border-slate-600 cursor-not-allowed'
                 : 'bg-amber-500 hover:bg-amber-400 active:scale-98 text-slate-950 cursor-pointer disabled:opacity-50'
             }`}
           >
-            {isAlreadyRanked ? 'Rankings Finalized (Locked)' : isSaving ? 'Saving...' : 'Save Official Rankings'}
+            {isSaving
+              ? 'Saving...'
+              : hasCancellationOccurred
+              ? `Save Updated Rankings (${Object.values(rankedMap).filter((c) => c !== null).length}/${targetRankCount || 4})`
+              : isAlreadyRanked
+              ? 'Rankings Finalized (Locked)'
+              : 'Save Official Rankings'}
           </button>
 
           </div>
@@ -1636,35 +2121,47 @@ export const RankingList: React.FC<RankingListProps> = ({
             
             {/* Modal Actions Bar (Hidden on print) */}
             <div className="sticky top-0 z-30 px-3 sm:px-6 py-2.5 sm:py-3.5 bg-slate-900 text-white flex flex-col gap-2.5 border-b border-slate-800 print:hidden shrink-0">
-              {/* Row 1: Title and Prominent Top-Right Highlighted 'X' Close Button */}
-              <div className="flex items-center justify-between gap-3">
+              {/* Row 1: Title + Thermal Setup & Close 'X' Buttons */}
+              <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 min-w-0">
                   <Trophy className="w-4 h-4 text-amber-400 shrink-0" />
                   <div className="min-w-0">
-                    <h3 className="font-bold text-xs sm:text-base truncate">Official Event Rankings Preview</h3>
+                    <h3 className="font-bold text-xs sm:text-base truncate">Rankings</h3>
                     <p className="text-[10px] sm:text-[11px] text-slate-400 truncate">
                       Scope: {printScope === 'single' ? `Event #${singlePrintEvt}` : printScope === 'range' ? `Events #${rangeStart} to #${rangeEnd}` : `Events: ${customCsvInput}`} ({eventsToPrint.length} Event(s))
                     </p>
                   </div>
                 </div>
 
-                {/* Highlighted 'X' Close Button situated at top right corner */}
-                <button
-                  type="button"
-                  id="btn-close-ranking-preview"
-                  onClick={() => setShowPrintModal(false)}
-                  className="flex items-center justify-center p-1.5 sm:p-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white border border-rose-400 shadow-md transition-all cursor-pointer active:scale-95 shrink-0"
-                  title="Close Preview (X)"
-                  aria-label="Close Print Preview"
-                >
-                  <X className="w-5 h-5 stroke-[2.5]" />
-                </button>
+                <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setShowThermalSetup(true)}
+                    className="px-2 sm:px-2.5 py-1.5 rounded-xl border border-amber-500/40 transition-all flex items-center gap-1.5 text-xs font-bold text-amber-200 hover:text-white bg-slate-800 hover:bg-slate-700 active:scale-95 cursor-pointer shrink-0"
+                    title="Thermal Printer Setup"
+                    aria-label="Thermal Printer Setup"
+                  >
+                    <Sliders className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                    <span className="hidden xs:inline sm:inline">Setup</span>
+                  </button>
+
+                  {/* Highlighted 'X' Close Button situated at top right corner */}
+                  <button
+                    type="button"
+                    id="btn-close-ranking-preview"
+                    onClick={() => setShowPrintModal(false)}
+                    className="flex items-center justify-center p-1.5 sm:p-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white border border-rose-400 shadow-md transition-all cursor-pointer active:scale-95 shrink-0"
+                    title="Close Preview (X)"
+                    aria-label="Close Print Preview"
+                  >
+                    <X className="w-5 h-5 stroke-[2.5]" />
+                  </button>
+                </div>
               </div>
 
-              {/* Row 2: Left-aligned (Normal, Thermal, Print) | Right-aligned (58mm Thermal Page Setup) */}
-              <div className="flex items-center justify-between gap-2 w-full">
-                {/* Left Aligned: Normal, Thermal, Print */}
-                <div className="flex items-center gap-1.5 sm:gap-2">
+              {/* Row 2: Format Switcher (Normal, Thermal), Print, WhatsApp */}
+              <div className="flex items-center justify-between gap-2 w-full flex-wrap">
+                <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
                   {/* Format Switcher */}
                   <div className="flex items-center bg-slate-800 p-0.5 rounded-lg border border-slate-700">
                     <button
@@ -1698,61 +2195,86 @@ export const RankingList: React.FC<RankingListProps> = ({
                   {/* Print Trigger */}
                   <button
                     type="button"
+                    disabled={isDirectPrinting}
                     onClick={handleExecutePrint}
-                    className={`px-2.5 sm:px-4 py-1.5 rounded-lg font-bold text-xs sm:text-sm flex items-center gap-1.5 transition-all shadow-md cursor-pointer ${
+                    className={`px-2.5 sm:px-4 py-1.5 rounded-lg font-bold text-xs sm:text-sm flex items-center gap-1.5 transition-all shadow-md cursor-pointer disabled:opacity-60 active:scale-95 ${
                       modalFormat === 'thermal'
                         ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 font-black'
                         : 'bg-blue-600 hover:bg-blue-500 text-white'
                     }`}
-                    title="Print"
+                    title="Print directly to thermal printer"
                   >
-                    <Printer className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-                    <span>Print</span>
+                    {isDirectPrinting ? (
+                      <RefreshCw className="w-3.5 h-3.5 sm:w-4 sm:h-4 animate-spin text-slate-950" />
+                    ) : (
+                      <Printer className={`w-3.5 h-3.5 sm:w-4 sm:h-4 ${modalFormat === 'thermal' ? 'text-slate-950' : 'text-white'}`} />
+                    )}
+                    <span>{isDirectPrinting ? 'Printing...' : 'Print'}</span>
+                  </button>
+
+                  {/* Share Thermal Data to WhatsApp */}
+                  <button
+                    type="button"
+                    id="btn-whatsapp-share-ranking-modal"
+                    onClick={handleWhatsAppShareRanking}
+                    className="px-2.5 sm:px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-xs cursor-pointer shrink-0"
+                    title={`Share (Event: ${eventsToPrint[0]?.Evt_No || singlePrintEvt} Rank) to WhatsApp`}
+                  >
+                    <WhatsAppIcon className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-white shrink-0" />
+                    <span className="hidden xs:inline sm:inline">WhatsApp</span>
                   </button>
                 </div>
-
-                {/* Right Aligned: 58mm Thermal Page Setup Button */}
-                <button
-                  type="button"
-                  disabled={modalFormat === 'a4'}
-                  onClick={() => setShowThermalSetup(true)}
-                  className={`px-2 sm:px-2.5 py-1.5 rounded-lg border border-slate-700 transition-all flex items-center gap-1.5 text-xs font-bold ${
-                    modalFormat === 'a4'
-                      ? 'opacity-40 cursor-not-allowed bg-slate-800/60 text-slate-500'
-                      : 'text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 active:scale-98 cursor-pointer'
-                  }`}
-                  title={modalFormat === 'a4' ? "Thermal setup only available in Thermal mode" : "58mm Thermal Printer Page Setup"}
-                >
-                  <Sliders className={`w-3.5 h-3.5 ${modalFormat === 'a4' ? 'text-slate-500' : 'text-amber-400'}`} />
-                  <span className="hidden sm:inline">58mm Setup</span>
-                </button>
               </div>
+
+              {/* Direct Mobile Printing Status Alert */}
+              {directPrintStatus && (
+                <div className="w-full text-xs font-semibold px-2.5 py-1.5 rounded-lg bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center justify-between gap-2 animate-in fade-in duration-150">
+                  <div className="flex items-center gap-1.5 truncate">
+                    {isDirectPrinting ? (
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-400 shrink-0" />
+                    ) : (
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                    )}
+                    <span className="truncate">{directPrintStatus}</span>
+                  </div>
+                  {!isDirectPrinting && (
+                    <button
+                      type="button"
+                      onClick={() => setDirectPrintStatus(null)}
+                      className="text-slate-400 hover:text-white p-0.5 rounded cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Scrollable Preview Canvas */}
             {modalFormat === 'thermal' ? (
               /* ================= 58MM THERMAL ROLL RECEIPT PREVIEW (EXACT MATCHING) ================= */
-              <div className="p-4 sm:p-8 bg-slate-300 overflow-y-auto flex-1 flex flex-col items-center print:p-0 print:bg-white print:overflow-visible">
+              <div className="p-3 sm:p-8 bg-slate-300 overflow-y-auto flex-1 flex flex-col items-center print:p-0 print:bg-white print:overflow-visible">
                 <div className="text-[11px] font-bold text-slate-700 mb-2 flex items-center gap-1.5 print:hidden">
                   <Receipt className="w-3.5 h-3.5 text-amber-600" />
-                  <span>58mm Roll Preview ({thermalConfig.printableWidth}mm net printable)</span>
+                  <span>58mm Roll Preview ({thermalConfig.printableWidth}mm • {thermalConfig.fontSize}pt)</span>
                 </div>
                 <div
-                  className="receipt thermal-printable-sheet bg-white text-black p-3 shadow-2xl rounded-xs select-none print:shadow-none print:p-0"
+                  className="receipt thermal-printable-sheet bg-white text-black p-0 shadow-2xl rounded-xs select-none print:shadow-none print:p-0"
                   style={{
                     width: `${thermalConfig.printableWidth}mm`,
                     maxWidth: `${thermalConfig.printableWidth}mm`,
+                    boxSizing: 'border-box',
                     paddingLeft: `${thermalConfig.marginHorizontal}mm`,
                     paddingRight: `${thermalConfig.marginHorizontal}mm`,
-                    paddingTop: `${thermalConfig.topMargin || 5}mm`,
+                    paddingTop: `${thermalConfig.topMargin ?? 5}mm`,
                     paddingBottom: `${thermalConfig.feedBeforeCut}mm`,
-                    fontSize: `${thermalConfig.fontSize}px`,
+                    fontSize: `${thermalConfig.fontSize}pt`,
                     lineHeight: thermalConfig.lineSpacing,
-                    fontFamily: 'Consolas, "Courier New", monospace',
+                    fontFamily: 'Arial, "Segoe UI", Helvetica, sans-serif',
                   }}
                 >
                   {eventsToPrint.length === 0 ? (
-                    <div className="py-4 text-center text-[9px] italic">
+                    <div className="py-4 text-center italic">
                       No events match print scope.
                     </div>
                   ) : (
@@ -1793,65 +2315,63 @@ export const RankingList: React.FC<RankingListProps> = ({
 
                         return (
                           <div key={evt.Evt_No} className="avoid-break pt-4 pb-2 border-b border-dashed border-black last:border-b-0 text-black leading-tight">
-                            {/* Header: same as Candidate list */}
+                            {/* Header */}
                             {renderThermalHeader()}
-
-                            {/* Dashed Line */}
-                            <div className="border-b border-dashed border-black my-1"></div>
 
                             {/* Event Title Line: broken into two lines */}
                             <div className="text-center py-0.5 tracking-tight text-black leading-tight">
-                              <div className="font-bold text-[10px] uppercase">RANKING LIST</div>
-                              <div className="text-[8.5px] font-semibold mt-0.5 uppercase break-words">
-                                EVT #{evt.Evt_No}: {evt.Evt_Name} ({heightDisp} • {genderAbbr})
+                              <div className="font-bold uppercase">RANKING LIST</div>
+                              <div className="thermal-event-details font-normal mt-0.5 uppercase tracking-tight break-words leading-tight">
+                                <span className="thermal-event-no font-bold">EVT {evt.Evt_No}</span>{formatThermalEventSuffix(evt.Evt_Name, evt.Height, evt.Gender)}
                               </div>
                             </div>
 
-                            {/* Dashed Line */}
-                            <div className="border-b border-dashed border-black my-1"></div>
+                            {/* Single Dashed Line */}
+                            <div className="w-full border-b border-dashed border-black my-1"></div>
 
                             {/* Table Column Headers */}
-                            <div className="flex items-center text-[9px] font-bold text-black uppercase pt-1">
-                              <span className={isBroadJump ? "w-7 text-center shrink-0" : "w-8 text-center shrink-0"}>Rank</span>
-                              <span className={isBroadJump ? "w-7 text-center shrink-0" : "w-8 text-center shrink-0"}>CH#</span>
-                              <span className={isBroadJump ? "flex-1 text-left pl-1" : "flex-1 text-left pl-2"}>ATHLETE (CLUB)</span>
+                            <div className="flex items-center font-normal text-black uppercase pt-1">
+                              <span className="w-[2.2em] text-left shrink-0">RK</span>
+                              <span className="w-[2.6em] text-left shrink-0">CH</span>
+                              <span className="flex-1 text-left pl-1">ATHLETE (CLUB)</span>
                               {isBroadJump && (
-                                <span className="w-14 text-right pr-0.5 shrink-0">Jump</span>
+                                <span className="text-right pl-1 shrink-0">JMP</span>
                               )}
                             </div>
-                            <div className="border-b-2 border-black mb-1 mt-0.5"></div>
+                            <div className="w-full border-b-2 border-black mb-1 mt-0.5"></div>
 
                             {/* Ranked Athletes List with dotted separators */}
                             <div className="space-y-0 text-black">
                               {rankedFinalists.length === 0 ? (
-                                <div className="text-[8px] italic text-center py-2 text-slate-600">
+                                <div className="italic text-center py-2 text-slate-600">
                                   No rankings declared yet for this event.
                                 </div>
                               ) : (
                                 rankedFinalists.map((f, idx) => {
                                   const club = getClubInfo(f.club || '');
                                   const isSelf = (f.club || '').trim().toUpperCase() === 'SELF';
-                                  const clubNameStr = isSelf ? '' : (club?.name || f.club || '');
+                                  const clubNameStr = isSelf ? '' : (club?.name || f.club || '').trim();
                                   const athleteDisplay = clubNameStr ? `${f.candidateName} (${clubNameStr})` : f.candidateName;
+                                  const jumpVal = isBroadJump ? (f.jumpRecord || f.resultValue || '—') : undefined;
                                   return (
                                     <div key={f.chestNo}>
-                                      <div className="flex items-center text-[9.5px] py-1 text-black leading-tight">
-                                        <span className={isBroadJump ? "w-7 text-center font-normal shrink-0" : "w-8 text-center font-normal shrink-0"}>
+                                      <div className="flex items-start py-1 text-black leading-tight">
+                                        <span className="w-[2.2em] text-left font-normal shrink-0">
                                           {getRankPosLabel(f.position, idx)}
                                         </span>
-                                        <span className={isBroadJump ? "w-7 text-center font-bold shrink-0" : "w-8 text-center font-bold shrink-0"}>
+                                        <span className="w-[2.6em] text-left font-normal shrink-0 thermal-chest-no">
                                           {f.chestNo}
                                         </span>
-                                        <span className={isBroadJump ? "flex-1 text-left font-normal uppercase truncate pl-1" : "flex-1 text-left font-normal uppercase truncate pl-2"}>
-                                          {athleteDisplay}
-                                        </span>
-                                        {isBroadJump && (
-                                          <span className="w-14 text-right font-mono text-[8.5px] font-normal shrink-0">
-                                            {f.jumpRecord || f.resultValue || '—'}
-                                          </span>
-                                        )}
+                                        <div className="flex-1 min-w-0 text-left font-normal uppercase pl-1">
+                                          <ThermalTwoLineRecord
+                                            text={athleteDisplay}
+                                            rightText={jumpVal}
+                                            rightClassName="thermal-jump-record whitespace-nowrap"
+                                            deps={[thermalConfig.printableWidth, thermalConfig.fontSize, thermalConfig.lineSpacing, thermalConfig.marginHorizontal]}
+                                          />
+                                        </div>
                                       </div>
-                                      <div className="border-b border-dotted border-black/80"></div>
+                                      <div className="w-full border-b border-dotted border-black/80"></div>
                                     </div>
                                   );
                                 })
@@ -1881,14 +2401,22 @@ export const RankingList: React.FC<RankingListProps> = ({
                                 if (hrInches > maxJumpInches) maxJumpInches = hrInches;
                               }
                               const isBroken = prevInches > 0 ? (maxJumpInches > prevInches) : (maxJumpInches > 0);
-                              const recFlag = isBroken ? 'Y' : 'N';
                               const formattedPrev = formatJumpBenchmark(prevRecord.recordValue) || prevRecord.recordValue;
                               const holderClub = prevRecord.recordHolderClub ? ` (${prevRecord.recordHolderClub})` : '';
                               const holderYear = prevRecord.recordYear ? `, ${prevRecord.recordYear}` : '';
 
+                              if (!isBroken) {
+                                return (
+                                  <div className="thermal-new-record-callout py-1 font-normal text-center text-black leading-tight border-b border-dotted border-black/80 break-words">
+                                    New Record: N
+                                  </div>
+                                );
+                              }
+
                               return (
-                                <div className="py-1 text-[8.5px] font-bold text-center text-black leading-tight border-b border-dotted border-black/80">
-                                  New record: {recFlag} | Prev: {formattedPrev} by {prevRecord.recordHolderName}{holderClub}{holderYear}
+                                <div className="thermal-new-record-callout py-1 font-normal text-center text-black leading-tight border-b border-dotted border-black/80 break-words">
+                                  <span className="font-bold">New Record: Y</span>
+                                  <span> | Prev: {formattedPrev} by {prevRecord.recordHolderName}{holderClub}{holderYear}</span>
                                 </div>
                               );
                             })()}
@@ -2021,6 +2549,176 @@ export const RankingList: React.FC<RankingListProps> = ({
                 </div>
               </div>
             )}
+
+          </div>
+        </div>
+      )}
+
+      {/* Cancellation Scope Modal (Cancel for all events vs This event only) */}
+      {cancellationTarget && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-3 sm:p-4 backdrop-blur-xs animate-in fade-in duration-150">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full border border-slate-200 overflow-hidden flex flex-col max-h-[90vh]">
+            
+            {/* Modal Header */}
+            <div className="bg-gradient-to-r from-rose-600 to-amber-700 text-white px-5 py-4 flex items-center justify-between shrink-0">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-white/20 backdrop-blur-xs">
+                  <AlertTriangle className="w-5 h-5 text-white" />
+                </div>
+                <div>
+                  <h3 className="font-black text-base sm:text-lg leading-tight">
+                    Cancel Official Ranking
+                  </h3>
+                  <p className="text-xs text-rose-100 font-medium">
+                    Choose scope of rank cancellation for this athlete
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={isProcessingBatchCancel}
+                onClick={() => setCancellationTarget(null)}
+                className="p-1 rounded-lg hover:bg-white/20 text-white/80 hover:text-white transition-colors cursor-pointer"
+                title="Close"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-4 sm:p-5 overflow-y-auto space-y-4">
+              
+              {/* Candidate Info Card */}
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="px-2.5 py-1 rounded-md bg-slate-900 text-white font-mono font-black text-sm">
+                      #{cancellationTarget.chestNo}
+                    </span>
+                    <span className="font-black text-slate-900 text-sm sm:text-base">
+                      {cancellationTarget.candidateName}
+                    </span>
+                  </div>
+                  <span className="text-xs font-bold text-slate-500 bg-white px-2 py-0.5 rounded border border-slate-200 truncate max-w-[140px]">
+                    {cancellationTarget.club || 'Independent'}
+                  </span>
+                </div>
+
+                <div className="pt-2 border-t border-slate-200 flex items-center justify-between text-xs">
+                  <span className="text-slate-600 font-medium">
+                    Current Event: <strong className="text-slate-900 font-bold">Event #{selectedEvtNo}</strong> ({currentEvent?.Evt_Name || ''})
+                  </span>
+                  <span className="font-bold text-amber-900 bg-amber-100 px-2 py-0.5 rounded border border-amber-300">
+                    {getPositionWord(cancellationTarget.pos)} ({getPointsForPosition(cancellationTarget.pos)} pts)
+                  </span>
+                </div>
+              </div>
+
+              {/* Status in other events */}
+              <div className="space-y-1.5">
+                <div className="text-xs font-bold text-slate-700 flex items-center gap-1.5 uppercase tracking-wide">
+                  <Layers className="w-3.5 h-3.5 text-blue-600" />
+                  <span>Other Events Ranking Status</span>
+                </div>
+
+                {otherRankedEvents.length > 0 ? (
+                  <div className="bg-amber-50/70 border border-amber-200 rounded-xl p-3 space-y-2">
+                    <div className="text-xs font-bold text-amber-950 flex items-center justify-between">
+                      <span>Currently ranked in {otherRankedEvents.length} other event(s):</span>
+                    </div>
+                    <div className="space-y-1 max-h-32 overflow-y-auto pr-1">
+                      {otherRankedEvents.map((oe) => (
+                        <div
+                          key={oe.eventNo}
+                          className="flex items-center justify-between text-xs bg-white px-2.5 py-1.5 rounded-lg border border-amber-200/80 shadow-2xs"
+                        >
+                          <span className="font-bold text-slate-800 truncate mr-2">
+                            Event #{oe.eventNo} - {oe.eventName}
+                          </span>
+                          <span className="font-bold text-amber-900 bg-amber-100 px-2 py-0.5 rounded text-[11px] shrink-0 border border-amber-300">
+                            {getPositionWord(oe.position)} ({oe.points} pts)
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 flex items-center gap-2 text-xs text-slate-600">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <span>Candidate is not ranked in any other events (currently ranked in Event #{selectedEvtNo} only).</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Selection Options */}
+              <div className="space-y-2.5 pt-1">
+                <div className="text-xs font-bold text-slate-500 uppercase tracking-wide">
+                  Select Cancellation Option:
+                </div>
+
+                {/* Option 1: Cancel from ALL other events (including current) */}
+                <button
+                  type="button"
+                  disabled={isProcessingBatchCancel}
+                  onClick={handleConfirmCancelAllEvents}
+                  className="w-full text-left p-3 sm:p-3.5 rounded-xl border-2 border-rose-300 hover:border-rose-500 bg-rose-50/70 hover:bg-rose-100/80 transition-all cursor-pointer shadow-xs active:scale-[0.99] disabled:opacity-50"
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="p-2 rounded-xl bg-rose-600 text-white shrink-0 mt-0.5 shadow-xs">
+                      <Layers className="w-5 h-5" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="font-black text-rose-950 text-xs sm:text-sm leading-tight">
+                        Cancel rank for this candidate from all other events' rank list (if ranked so) including current event
+                      </div>
+                      <p className="text-[11px] text-rose-800 mt-1 leading-snug">
+                        {otherRankedEvents.length > 0
+                          ? `Removes Chest #${cancellationTarget.chestNo} from official rankings across all ${otherRankedEvents.length + 1} events. Lower ranks will sequentially shift up in each event and vacated slots will open for replacements.`
+                          : `Removes Chest #${cancellationTarget.chestNo} from official rankings across all events. Lower ranks will sequentially shift up in Event #${selectedEvtNo}.`}
+                      </p>
+                    </div>
+                  </div>
+                </button>
+
+                {/* Option 2: Cancel for THIS ONE EVENT only */}
+                <button
+                  type="button"
+                  disabled={isProcessingBatchCancel}
+                  onClick={handleConfirmCancelThisEventOnly}
+                  className="w-full text-left p-3 sm:p-3.5 rounded-xl border-2 border-blue-300 hover:border-blue-500 bg-blue-50/70 hover:bg-blue-100/80 transition-all cursor-pointer shadow-xs active:scale-[0.99] disabled:opacity-50"
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="p-2 rounded-xl bg-blue-600 text-white shrink-0 mt-0.5 shadow-xs">
+                      <Trophy className="w-5 h-5" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="font-black text-blue-950 text-xs sm:text-sm leading-tight">
+                        Cancel rank for this one event only
+                      </div>
+                      <p className="text-[11px] text-blue-800 mt-1 leading-snug">
+                        Removes Chest #${cancellationTarget.chestNo} from Event #${selectedEvtNo} only. All other event rankings ({otherRankedEvents.length > 0 ? `${otherRankedEvents.length} event(s)` : 'none'}) remain completely unchanged and locked.
+                      </p>
+                    </div>
+                  </div>
+                </button>
+
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="bg-slate-50 border-t border-slate-200 px-5 py-3 flex items-center justify-between shrink-0">
+              <span className="text-xs text-slate-500">
+                {isProcessingBatchCancel ? 'Processing rank updates...' : 'No change will be made until an option is selected.'}
+              </span>
+              <button
+                type="button"
+                disabled={isProcessingBatchCancel}
+                onClick={() => setCancellationTarget(null)}
+                className="px-4 py-1.5 rounded-lg text-xs font-bold bg-white text-slate-700 hover:bg-slate-100 border border-slate-300 cursor-pointer shadow-2xs transition-colors"
+              >
+                Keep Ranking (Dismiss)
+              </button>
+            </div>
 
           </div>
         </div>

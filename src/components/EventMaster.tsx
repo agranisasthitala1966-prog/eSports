@@ -9,8 +9,10 @@ import {
   Check, 
   X, 
   Coins, 
-  AlertTriangle 
+  AlertTriangle,
+  ChevronDown
 } from 'lucide-react';
+import { parseHeightToInches } from '../utils/heightRules';
 
 interface EventMasterProps {
   events: SportEvent[];
@@ -34,13 +36,58 @@ export const EventMaster: React.FC<EventMasterProps> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [showHeightDropdown, setShowHeightDropdown] = useState(false);
+  const heightComboRef = React.useRef<HTMLDivElement>(null);
+
+  const existingHeights = React.useMemo(() => {
+    const seen = new Set<string>();
+    const list: string[] = [];
+    events.forEach((ev) => {
+      const h = (ev.Height || '').trim();
+      if (h && !seen.has(h)) {
+        seen.add(h);
+        list.push(h);
+      }
+    });
+    return list.sort((a, b) => {
+      const au = a.toUpperCase();
+      const bu = b.toUpperCase();
+      if (au === 'ALL' && bu !== 'ALL') return 1;
+      if (bu === 'ALL' && au !== 'ALL') return -1;
+      return parseHeightToInches(a) - parseHeightToInches(b);
+    });
+  }, [events]);
+
+  React.useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (heightComboRef.current && !heightComboRef.current.contains(e.target as Node)) {
+        setShowHeightDropdown(false);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowHeightDropdown(false);
+      }
+    };
+    if (showHeightDropdown) {
+      document.addEventListener('mousedown', handleClickOutside);
+      window.addEventListener('keydown', handleKeyDown);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showHeightDropdown]);
 
   const startAddNew = () => {
     const nextNo = events.length > 0 ? Math.max(...events.map((e) => Number(e.Evt_No) || 0)) + 1 : 0;
+    const defaultHeight = existingHeights.includes('4`-2``')
+      ? '4`-2``'
+      : (existingHeights[0] || '4`-2``');
     setEditingEvt({
       Evt_No: nextNo,
       Evt_Name: '',
-      Height: '4`-2``',
+      Height: defaultHeight,
       Gender: 'BOYS',
       Fees: 10.0,
       requiredHit: true,
@@ -48,6 +95,7 @@ export const EventMaster: React.FC<EventMasterProps> = ({
     });
     setIsNew(true);
     setErrorMsg(null);
+    setShowHeightDropdown(false);
   };
 
   const handleEdit = (evt: SportEvent) => {
@@ -58,6 +106,7 @@ export const EventMaster: React.FC<EventMasterProps> = ({
     });
     setIsNew(false);
     setErrorMsg(null);
+    setShowHeightDropdown(false);
   };
 
   const handleCancel = () => {
@@ -217,16 +266,58 @@ export const EventMaster: React.FC<EventMasterProps> = ({
               />
             </div>
 
-            <div>
+            <div ref={heightComboRef} className="relative">
               <label className="block text-xs font-bold text-slate-700 mb-1">Height</label>
-              <input
-                type="text"
-                required
-                value={editingEvt.Height}
-                onChange={(e) => setEditingEvt({ ...editingEvt, Height: e.target.value })}
-                placeholder="e.g. 4`-2`` or ALL"
-                className="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm font-semibold bg-white"
-              />
+              <div className="relative flex items-center">
+                <input
+                  type="text"
+                  required
+                  value={editingEvt.Height}
+                  onChange={(e) => setEditingEvt({ ...editingEvt, Height: e.target.value })}
+                  onFocus={() => {
+                    if (existingHeights.length > 0) setShowHeightDropdown(true);
+                  }}
+                  placeholder="Select or type height (e.g. 4`-2`` or ALL)"
+                  className="w-full pl-3 pr-9 py-2 rounded-xl border border-slate-300 text-sm font-semibold bg-white focus:outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                  role="combobox"
+                  aria-expanded={showHeightDropdown}
+                  aria-autocomplete="list"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowHeightDropdown((prev) => !prev)}
+                  title="Choose from existing event heights"
+                  aria-label="Toggle existing height options"
+                  className="absolute right-1.5 p-1.5 rounded-lg text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-colors cursor-pointer"
+                >
+                  <ChevronDown className={`w-4 h-4 transition-transform duration-150 ${showHeightDropdown ? 'rotate-180' : ''}`} />
+                </button>
+              </div>
+              {showHeightDropdown && existingHeights.length > 0 && (
+                <div className="absolute left-0 right-0 top-full mt-1 z-30 bg-white border border-slate-300 rounded-xl shadow-xl max-h-48 overflow-y-auto py-1">
+                  {existingHeights.map((hOption) => {
+                    const isCurrent = editingEvt.Height.trim() === hOption;
+                    return (
+                      <button
+                        key={hOption}
+                        type="button"
+                        onClick={() => {
+                          setEditingEvt({ ...editingEvt, Height: hOption });
+                          setShowHeightDropdown(false);
+                        }}
+                        className={`w-full px-3 py-1.5 text-left text-xs font-semibold flex items-center justify-between transition-colors cursor-pointer ${
+                          isCurrent
+                            ? 'bg-blue-50 text-blue-700 font-bold'
+                            : 'text-slate-700 hover:bg-slate-100'
+                        }`}
+                      >
+                        <span>{hOption}</span>
+                        {isCurrent && <Check className="w-3.5 h-3.5 text-blue-600 shrink-0" />}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
             <div>

@@ -64,6 +64,8 @@ export const ClubUploadsReview: React.FC<ClubUploadsReviewProps> = ({
   const [processingId, setProcessingId] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [isApprovedGroupExpanded, setIsApprovedGroupExpanded] = useState<boolean>(false);
+  const [isRejectedGroupExpanded, setIsRejectedGroupExpanded] = useState<boolean>(false);
 
   // Event List miniature popup state (anchored like settings button click)
   const [showEventListPopup, setShowEventListPopup] = useState(false);
@@ -169,19 +171,6 @@ export const ClubUploadsReview: React.FC<ClubUploadsReviewProps> = ({
   // Background sync is handled by App.tsx sync-summary listener
   // Window focus / visibility also triggers fresh data loads.
 
-  // Automatically expand pending upload batches so admin immediately sees new incoming requests
-  React.useEffect(() => {
-    const pendingMap: Record<string, boolean> = {};
-    uploads.forEach((u) => {
-      if (u.status === 'pending') {
-        pendingMap[u.id] = true;
-      }
-    });
-    if (Object.keys(pendingMap).length > 0) {
-      setExpandedUploads((prev) => ({ ...pendingMap, ...prev }));
-    }
-  }, [uploads]);
-
   // Filtered uploads
   const filteredUploads = useMemo(() => {
     return uploads.filter((u) => {
@@ -208,7 +197,34 @@ export const ClubUploadsReview: React.FC<ClubUploadsReviewProps> = ({
     });
   }, [uploads, selectedClubFilter, statusFilter, searchTerm]);
 
-  // Overall statistics
+  // Pending client requests sorted descending upon date & time (newest first)
+  const pendingUploads = useMemo(() => {
+    return filteredUploads
+      .filter((u) => u.status === 'pending')
+      .sort((a, b) => new Date(b.uploadedAt || 0).getTime() - new Date(a.uploadedAt || 0).getTime());
+  }, [filteredUploads]);
+
+  // Approved client requests sorted descending upon date & time (newest first)
+  const approvedUploads = useMemo(() => {
+    return filteredUploads
+      .filter((u) => u.status === 'merged')
+      .sort((a, b) => {
+        const timeB = new Date(b.mergedAt || b.uploadedAt || 0).getTime();
+        const timeA = new Date(a.mergedAt || a.uploadedAt || 0).getTime();
+        return timeB - timeA;
+      });
+  }, [filteredUploads]);
+
+  // Rejected client requests sorted descending upon date & time
+  const rejectedUploads = useMemo(() => {
+    return filteredUploads
+      .filter((u) => u.status === 'rejected')
+      .sort((a, b) => {
+        const timeB = new Date(b.reviewedAt || b.uploadedAt || 0).getTime();
+        const timeA = new Date(a.reviewedAt || a.uploadedAt || 0).getTime();
+        return timeB - timeA;
+      });
+  }, [filteredUploads]);
   const stats = useMemo(() => {
     const total = uploads.length;
     const pending = uploads.filter((u) => u.status === 'pending').length;
@@ -231,6 +247,7 @@ export const ClubUploadsReview: React.FC<ClubUploadsReviewProps> = ({
 
   // Action: Merge Entire Upload Batch
   const handleMergeUpload = async (upload: ClientUpload) => {
+    setActionError(null);
     setProcessingId(upload.id);
     try {
       const res = await api.mergeUpload(upload.id);
@@ -248,6 +265,7 @@ export const ClubUploadsReview: React.FC<ClubUploadsReviewProps> = ({
   // Action: Reject Upload Batch
   const handleRejectUpload = async (upload: ClientUpload) => {
     const reason = 'Rejected by server admin';
+    setActionError(null);
     setProcessingId(upload.id);
     try {
       await api.rejectUpload(upload.id, reason);
@@ -262,11 +280,12 @@ export const ClubUploadsReview: React.FC<ClubUploadsReviewProps> = ({
 
   // Action: Delete Upload Batch
   const handleDeleteUpload = async (uploadId: string, club: string) => {
+    setActionError(null);
     setProcessingId(uploadId);
     try {
       await api.deleteUpload(uploadId);
       await onRefresh();
-      onMergeSuccess(`Upload batch deleted successfully.`);
+      onMergeSuccess(`Upload batch from "${club}" deleted successfully.`);
     } catch (err: any) {
       setActionError(`Failed to delete: ${err.message}`);
     } finally {
@@ -276,6 +295,7 @@ export const ClubUploadsReview: React.FC<ClubUploadsReviewProps> = ({
 
   // Action: Merge Single Candidate from upload
   const handleMergeSingle = async (uploadId: string, candId: string, candName: string) => {
+    setActionError(null);
     setProcessingId(candId);
     try {
       const res = await api.mergeSingleUploadCandidate(uploadId, candId);
@@ -291,6 +311,7 @@ export const ClubUploadsReview: React.FC<ClubUploadsReviewProps> = ({
   // Action: Reject Single Candidate from upload
   const handleRejectSingle = async (uploadId: string, candId: string, candName: string) => {
     const reason = 'Not eligible or duplicate entry';
+    setActionError(null);
     setProcessingId(candId);
     try {
       await api.rejectSingleUploadCandidate(uploadId, candId, reason);
@@ -338,6 +359,390 @@ export const ClubUploadsReview: React.FC<ClubUploadsReviewProps> = ({
     setIsRefreshing(true);
     await onRefresh();
     setIsRefreshing(false);
+  };
+
+  // Render individual upload batch card
+  // Render individual upload batch card
+  const renderUploadCard = (upload: ClientUpload, index: number = 0) => {
+    const isExpanded = Boolean(expandedUploads[upload.id]);
+    const isPending = upload.status === 'pending';
+    const isMerged = upload.status === 'merged';
+    const isRejected = upload.status === 'rejected';
+
+    const uploadDate = new Date(upload.uploadedAt);
+    const formattedUploadDate = isNaN(uploadDate.getTime())
+      ? upload.uploadedAt
+      : uploadDate.toLocaleDateString(undefined, {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+        }) + ' at ' + uploadDate.toLocaleTimeString(undefined, {
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+        });
+
+    const mergedDate = upload.mergedAt ? new Date(upload.mergedAt) : null;
+    const formattedMergedDate = mergedDate && !isNaN(mergedDate.getTime())
+      ? mergedDate.toLocaleDateString(undefined, {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+        }) + ' at ' + mergedDate.toLocaleTimeString(undefined, {
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+        })
+      : null;
+
+    return (
+      <div
+        key={upload.id}
+        className={`bg-white rounded-xl border transition-all duration-150 overflow-hidden shadow-2xs ${
+          isPending
+            ? 'border-amber-300 ring-1 ring-amber-100'
+            : isMerged
+            ? 'border-emerald-200'
+            : 'border-slate-200 opacity-80'
+        }`}
+      >
+        {/* Header: Responsive layout - Clean 2-row on mobile with fully visible Club Name & expand down arrow, Single-line on desktop */}
+        <div className="py-2 px-3 sm:px-4 bg-slate-50/70 border-b border-slate-100 min-h-[44px] flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-4">
+          {/* Top row on mobile / Left group on desktop */}
+          <div className="flex items-center justify-between sm:justify-start gap-2.5 sm:gap-3 min-w-0 w-full sm:w-auto">
+            {/* Sl + Club Name (Fully Visible) + Expand Down Arrow */}
+            <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1 sm:flex-initial">
+              {/* Sl */}
+              <span className="w-6 h-6 rounded-md bg-slate-200/90 text-slate-700 font-mono font-bold text-xs flex items-center justify-center shrink-0 border border-slate-300/60">
+                {index + 1}
+              </span>
+
+              {/* Club Name & Expand Down Arrow Button - Click to expand/minimize */}
+              <div className="min-w-0">
+                <button
+                  type="button"
+                  onClick={() => toggleExpand(upload.id)}
+                  className="flex items-center gap-1.5 text-left group cursor-pointer focus:outline-hidden py-0.5"
+                  title={isExpanded ? 'Click to minimize candidate details' : 'Click to expand candidate details'}
+                >
+                  <span className="text-xs sm:text-sm font-black text-slate-900 group-hover:text-blue-600 transition-colors uppercase leading-snug">
+                    {upload.club}
+                  </span>
+                  <span className="inline-flex items-center justify-center p-0.5 rounded-md text-blue-600 bg-blue-100/70 group-hover:bg-blue-200 transition-colors shrink-0">
+                    {isExpanded ? (
+                      <ChevronUp className="w-3.5 h-3.5 stroke-[2.5]" />
+                    ) : (
+                      <ChevronDown className="w-3.5 h-3.5 stroke-[2.5]" />
+                    )}
+                  </span>
+                </button>
+
+                {/* Uploaded label below club name (Visible on Desktop) */}
+                <div className="hidden sm:flex text-[11px] text-slate-500 items-center gap-2">
+                  <span>
+                    Uploaded: <strong>{formattedUploadDate}</strong>
+                  </span>
+                  {formattedMergedDate && (
+                    <span className="text-emerald-700 font-semibold">
+                      • Approved: <strong>{formattedMergedDate}</strong>
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Mobile-only Athletes count badge in top row */}
+            <div className="sm:hidden text-right whitespace-nowrap shrink-0">
+              <span className="text-[11px] font-bold text-slate-700 bg-slate-200/80 px-2 py-0.5 rounded-md">
+                {(upload.candidates || []).length} Athlete{(upload.candidates || []).length === 1 ? '' : 's'}
+              </span>
+            </div>
+          </div>
+
+          {/* Bottom row on mobile / Right group on desktop */}
+          <div className="flex items-center justify-between sm:justify-end gap-2 sm:gap-3 w-full sm:w-auto pt-1 sm:pt-0 border-t sm:border-t-0 border-slate-200/60">
+            {/* Uploaded label (Visible on Mobile) */}
+            <div className="sm:hidden text-[10.5px] text-slate-500 flex items-center gap-1.5 truncate">
+              <span>
+                Uploaded: <strong>{formattedUploadDate}</strong>
+              </span>
+              {formattedMergedDate && (
+                <span className="text-emerald-700 font-semibold">
+                  • Approved: <strong>{formattedMergedDate}</strong>
+                </span>
+              )}
+            </div>
+
+            {/* Right: Athletes (Desktop) + Action Buttons */}
+            <div className="flex items-center gap-2 sm:gap-3 shrink-0 ml-auto sm:ml-0">
+              {/* Athletes on Desktop */}
+              <div className="hidden sm:block text-right whitespace-nowrap">
+                <span className="text-xs font-bold text-slate-800">
+                  {(upload.candidates || []).length} Athlete{(upload.candidates || []).length === 1 ? '' : 's'}
+                </span>
+                <span className="text-[11px] font-semibold text-emerald-600 ml-1.5">
+                  ({settings.currencySymbol}{upload.totalFees})
+                </span>
+              </div>
+
+              {/* In Pending: All Ok & Reject All button */}
+              {isPending && (
+                <div className="flex items-center gap-1.5 sm:gap-2">
+                  <button
+                    type="button"
+                    disabled={processingId === upload.id}
+                    onClick={() => handleMergeUpload(upload)}
+                    className="px-2.5 sm:px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-extrabold shadow-xs active:scale-95 transition-all flex items-center justify-center cursor-pointer disabled:opacity-50"
+                    title="Approve all candidates in this batch"
+                  >
+                    <span>{processingId === upload.id ? 'Approving...' : '∀ ✔'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={processingId === upload.id}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleRejectUpload(upload);
+                    }}
+                    className="px-2 sm:px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-bold transition-colors cursor-pointer flex items-center justify-center disabled:opacity-50"
+                    title="Reject all candidates in this batch"
+                  >
+                    <span>∀ ✘</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={processingId === upload.id}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDeleteUpload(upload.id, upload.club);
+                    }}
+                    className="p-1 text-slate-400 hover:text-rose-600 rounded-md hover:bg-rose-50 transition-colors cursor-pointer disabled:opacity-50"
+                    title="Delete batch record"
+                    aria-label="Delete pending batch record"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
+
+              {/* In Approved: Approved label */}
+              {isMerged && (
+                <div className="flex items-center gap-1.5 sm:gap-2">
+                  <span className="px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-800 border border-emerald-300 text-xs font-bold inline-flex items-center gap-1">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>Approved</span>
+                  </span>
+                  <button
+                    type="button"
+                    disabled={processingId === upload.id}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDeleteUpload(upload.id, upload.club);
+                    }}
+                    className="p-1 text-slate-400 hover:text-rose-600 rounded-md hover:bg-rose-50 transition-colors cursor-pointer disabled:opacity-50"
+                    title="Delete batch record"
+                    aria-label="Delete approved batch record"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
+
+              {/* In Rejected: Rejected label */}
+              {isRejected && (
+                <div className="flex items-center gap-1.5 sm:gap-2">
+                  <span className="px-2.5 py-1 rounded-lg bg-rose-100 text-rose-800 border border-rose-300 text-xs font-bold inline-flex items-center gap-1">
+                    <XCircle className="w-3.5 h-3.5 text-rose-600" />
+                    <span>Rejected</span>
+                  </span>
+                  <button
+                    type="button"
+                    disabled={processingId === upload.id}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDeleteUpload(upload.id, upload.club);
+                    }}
+                    className="p-1 text-slate-400 hover:text-rose-600 rounded-md hover:bg-rose-50 transition-colors cursor-pointer disabled:opacity-50"
+                    title="Delete batch record"
+                    aria-label="Delete rejected batch record"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Upload Rejection Note if any */}
+        {upload.notes && isRejected && (
+          <div className="px-5 py-2.5 bg-rose-50 text-rose-800 text-xs font-medium border-b border-rose-200 flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600" />
+            <span>Rejection Reason: <strong>{upload.notes}</strong></span>
+          </div>
+        )}
+
+        {/* Athletes Detail List */}
+        {isExpanded && (
+          <div className="p-4 sm:p-5 overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead>
+                <tr className="border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-[11px]">
+                  <th className="pb-2.5 px-2">#</th>
+                  <th className="pb-2.5 px-3">Athlete Name</th>
+                  <th className="pb-2.5 px-3">Category</th>
+                  <th className="pb-2.5 px-3">Height</th>
+                  <th className="pb-2.5 px-3">Selected Events</th>
+                  <th className="pb-2.5 px-3 text-right">Fee</th>
+                  <th className="pb-2.5 px-3 text-center">Status / Chest</th>
+                  <th className="pb-2.5 px-3 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {(upload.candidates || []).map((cand, idx) => {
+                  const candNameUpper = (cand.name || '').trim().toUpperCase();
+                  const isDuplicate = existingServerNames.has(candNameUpper);
+                  
+                  // Official server match for chest number lookup
+                  const officialServerCand = serverCandidates.find(
+                    (sc) => sc.id === cand.id || (sc.name && cand.name && sc.name.trim().toUpperCase() === candNameUpper && (sc.club || '').trim().toUpperCase() === (upload.club || '').trim().toUpperCase())
+                  );
+                  const hasOfficialServerChest = (officialServerCand && Number(officialServerCand.chestNo) >= 101) || (Number(cand.chestNo) >= 101);
+                  const officialAllottedChest = (officialServerCand && Number(officialServerCand.chestNo) >= 101) 
+                    ? officialServerCand.chestNo 
+                    : (Number(cand.chestNo) >= 101 ? cand.chestNo : null);
+                  const isCandApproved = Boolean(cand.merged) || Boolean(isMerged) || Boolean(hasOfficialServerChest);
+                  const isCandRejected = cand.status === 'rejected' || isRejected;
+                  const provRecordNo = cand.localRecordNo || (!hasOfficialServerChest && Number(cand.chestNo) > 0 ? cand.chestNo : idx + 1);
+
+                  return (
+                    <tr
+                      key={cand.id || idx}
+                      className={`hover:bg-slate-50/80 transition-colors ${
+                        isDuplicate && !isCandApproved ? 'bg-amber-50/50' : ''
+                      }`}
+                    >
+                      <td className="py-3 px-2 font-mono text-slate-400 font-medium">
+                        {provRecordNo}
+                      </td>
+
+                      <td className="py-3 px-3">
+                        <div className="font-bold text-slate-900 flex items-center gap-1.5">
+                          <span>{cand.name}</span>
+                          {isDuplicate && !isCandApproved && (
+                            <span
+                              className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 text-[10px] font-semibold flex items-center gap-1"
+                              title="A candidate with this name already exists in official server records"
+                            >
+                              <AlertTriangle className="w-3 h-3 text-amber-600" />
+                              Duplicate Name Alert
+                            </span>
+                          )}
+                        </div>
+                      </td>
+
+                      <td className="py-3 px-3">
+                        <span className="font-semibold text-slate-700">
+                          {cand.gender}
+                        </span>
+                      </td>
+
+                      <td className="py-3 px-3 font-mono font-medium text-slate-600">
+                        {cand.height || '—'}
+                      </td>
+
+                      {/* Selected Event Column: Display just event numbers separated by comma (like 1, 8, 9...) */}
+                      <td className="py-3 px-3">
+                        <span className="font-mono font-bold text-slate-800 text-xs">
+                          {(cand.selectedEvents || []).map(Number).sort((a, b) => a - b).join(', ') || '—'}
+                        </span>
+                      </td>
+
+                      <td className="py-3 px-3 text-right font-bold text-slate-800">
+                        {settings.currencySymbol}{cand.totalFees}
+                      </td>
+
+                      {/* Status / Chest Column: Displays allotted respective chest number after merged with server database */}
+                      <td className="py-3 px-3 text-center">
+                        {isCandApproved && officialAllottedChest ? (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800 font-black text-xs shadow-2xs">
+                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                            <span>Chest #{officialAllottedChest}</span>
+                          </span>
+                        ) : isCandApproved ? (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-bold text-xs">
+                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                            <span>Approved</span>
+                          </span>
+                        ) : isCandRejected ? (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-rose-100 text-rose-700 font-bold text-xs">
+                            <XCircle className="w-3.5 h-3.5 text-rose-600" />
+                            <span>Rejected</span>
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[11px] font-semibold">
+                            <Clock className="w-3 h-3 text-amber-600" />
+                            <span>Pending (#{provRecordNo})</span>
+                          </span>
+                        )}
+                      </td>
+
+                      {/* Beside each individual candidate: "Approved" or "Reject" button */}
+                      <td className="py-3 px-3 text-right whitespace-nowrap space-x-1.5">
+                        {!isCandApproved && !isCandRejected && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => openEditCandidate(upload.id, cand)}
+                              className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors inline-flex items-center"
+                              title="Edit athlete before approval"
+                            >
+                              <Edit3 className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              disabled={processingId === cand.id}
+                              onClick={() => handleMergeSingle(upload.id, cand.id, cand.name)}
+                              className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs transition-colors inline-flex items-center justify-center cursor-pointer disabled:opacity-50 shadow-2xs"
+                              title="Approve candidate and merge into server database"
+                            >
+                              <span>{processingId === cand.id ? '...' : '✔'}</span>
+                            </button>
+                            <button
+                              type="button"
+                              disabled={processingId === cand.id}
+                              onClick={() => handleRejectSingle(upload.id, cand.id, cand.name)}
+                              className="px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-bold text-xs transition-colors inline-flex items-center justify-center cursor-pointer disabled:opacity-50"
+                              title="Reject candidate"
+                            >
+                              <span>{processingId === cand.id ? '...' : '✘'}</span>
+                            </button>
+                          </>
+                        )}
+                        {isCandApproved && (
+                          <span className="text-[11px] font-bold text-emerald-600 inline-flex items-center gap-1">
+                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                            <span>Approved {officialAllottedChest ? `(#${officialAllottedChest})` : ''}</span>
+                          </span>
+                        )}
+                        {isCandRejected && (
+                          <span className="text-[11px] font-bold text-rose-600 inline-flex items-center gap-1">
+                            <XCircle className="w-3.5 h-3.5 text-rose-600" />
+                            <span>Rejected</span>
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    );
   };
 
   return (
@@ -662,7 +1067,7 @@ export const ClubUploadsReview: React.FC<ClubUploadsReviewProps> = ({
         </div>
       </div>
 
-      {/* Uploads List */}
+      {/* Uploads Content Area */}
       {filteredUploads.length === 0 ? (
         <div className="bg-white rounded-3xl p-12 text-center border-2 border-dashed border-slate-200 space-y-3">
           <div className="w-16 h-16 mx-auto rounded-full bg-slate-100 flex items-center justify-center text-slate-400">
@@ -675,307 +1080,242 @@ export const ClubUploadsReview: React.FC<ClubUploadsReviewProps> = ({
               : 'No uploads match your current search or status filter.'}
           </p>
         </div>
-      ) : (
+      ) : statusFilter === 'pending' ? (
+        /* Status Filter: Pending only */
         <div className="space-y-4">
-          {filteredUploads.map((upload) => {
-            const isExpanded = expandedUploads[upload.id] ?? (upload.status === 'pending');
-            const isPending = upload.status === 'pending';
-            const isMerged = upload.status === 'merged';
-            const isRejected = upload.status === 'rejected';
+          <div className="flex items-center justify-between pb-2 border-b border-slate-200">
+            <div className="flex items-center gap-2">
+              <div className="w-6 h-6 rounded-lg bg-amber-100 text-amber-700 flex items-center justify-center shrink-0">
+                <Clock className="w-3.5 h-3.5" />
+              </div>
+              <h2 className="text-sm sm:text-base font-extrabold text-slate-900 tracking-tight">
+                Pending Client Requests
+              </h2>
+              <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-amber-100 text-amber-800 border border-amber-300">
+                {pendingUploads.length}
+              </span>
+            </div>
+            <span className="text-[11px] text-slate-500 font-medium">
+              Descending date &amp; time (newest first)
+            </span>
+          </div>
 
-            // Find matching club info
-            const clubInfo = clubs.find((c) => c.name === upload.club);
+          {pendingUploads.length === 0 ? (
+            <div className="bg-white rounded-2xl p-8 text-center border border-slate-200 text-slate-500 text-xs">
+              No pending client requests found.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {pendingUploads.map((u, idx) => renderUploadCard(u, idx))}
+            </div>
+          )}
+        </div>
+      ) : statusFilter === 'merged' ? (
+        /* Status Filter: Merged/Approved only */
+        <div className="space-y-4">
+          <div className="flex items-center justify-between pb-2 border-b border-slate-200">
+            <div className="flex items-center gap-2">
+              <div className="w-6 h-6 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
+                <CheckCircle2 className="w-3.5 h-3.5" />
+              </div>
+              <h2 className="text-sm sm:text-base font-extrabold text-slate-900 tracking-tight">
+                Approved Client Requests
+              </h2>
+              <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                {approvedUploads.length}
+              </span>
+            </div>
+            <span className="text-[11px] text-slate-500 font-medium">
+              Descending date &amp; time (newest first)
+            </span>
+          </div>
 
-            return (
-              <div
-                key={upload.id}
-                className={`bg-white rounded-2xl border transition-all duration-200 overflow-hidden shadow-xs ${
-                  isPending
-                    ? 'border-amber-300 ring-2 ring-amber-100'
-                    : isMerged
-                    ? 'border-emerald-200'
-                    : 'border-slate-200 opacity-80'
-                }`}
-              >
-                {/* Upload Card Header */}
-                <div className="p-4 sm:p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 bg-slate-50/70 border-b border-slate-100">
-                  <div className="flex items-start gap-3.5 min-w-0">
-                    <div className="w-11 h-11 shrink-0 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white font-extrabold shadow-sm">
-                      {clubInfo?.shortCode ? clubInfo.shortCode.substring(0, 3) : <Building2 className="w-5 h-5" />}
-                    </div>
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <h3 className="text-base font-extrabold text-slate-900 truncate">
-                          {upload.club}
-                        </h3>
-                        {/* Status Badge */}
-                        <span
-                          className={`px-2.5 py-0.5 rounded-full text-xs font-bold inline-flex items-center gap-1 ${
-                            isPending
-                              ? 'bg-amber-100 text-amber-800 border border-amber-300'
-                              : isMerged
-                              ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
-                              : 'bg-rose-100 text-rose-800 border border-rose-300'
-                          }`}
-                        >
-                          {isPending && <Clock className="w-3 h-3 text-amber-600" />}
-                          {isMerged && <CheckCircle2 className="w-3 h-3 text-emerald-600" />}
-                          {isRejected && <XCircle className="w-3 h-3 text-rose-600" />}
-                          <span className="capitalize">{upload.status === 'pending' ? 'Pending Review' : upload.status}</span>
-                        </span>
-                      </div>
+          {approvedUploads.length === 0 ? (
+            <div className="bg-white rounded-2xl p-8 text-center border border-slate-200 text-slate-500 text-xs">
+              No approved client requests found.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {approvedUploads.map((u, idx) => renderUploadCard(u, idx))}
+            </div>
+          )}
+        </div>
+      ) : statusFilter === 'rejected' ? (
+        /* Status Filter: Rejected only */
+        <div className="space-y-4">
+          <div className="flex items-center justify-between pb-2 border-b border-slate-200">
+            <div className="flex items-center gap-2">
+              <div className="w-6 h-6 rounded-lg bg-rose-100 text-rose-700 flex items-center justify-center shrink-0">
+                <XCircle className="w-3.5 h-3.5" />
+              </div>
+              <h2 className="text-sm sm:text-base font-extrabold text-slate-900 tracking-tight">
+                Rejected Client Requests
+              </h2>
+              <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-rose-100 text-rose-800 border border-rose-300">
+                {rejectedUploads.length}
+              </span>
+            </div>
+            <span className="text-[11px] text-slate-500 font-medium">
+              Descending date &amp; time (newest first)
+            </span>
+          </div>
 
-                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500 mt-1">
-                        <span>
-                          Uploaded: <strong>{new Date(upload.uploadedAt).toLocaleString()}</strong>
-                        </span>
-                        {upload.clientName && (
-                          <span>
-                            • Submitter: <strong>{upload.clientName}</strong>
-                          </span>
-                        )}
-                        <span>
-                          • Batch ID: <code className="font-mono text-[11px] text-slate-600">{upload.id}</code>
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Summary & Controls */}
-                  <div className="flex items-center justify-between md:justify-end gap-3 shrink-0 pt-2 md:pt-0 border-t md:border-t-0 border-slate-200">
-                    <div className="text-right">
-                      <div className="text-xs font-bold text-slate-700">
-                        {(upload.candidates || []).length} Athlete{(upload.candidates || []).length === 1 ? '' : 's'}
-                      </div>
-                      <div className="text-xs font-semibold text-emerald-600">
-                        Total Fees: {settings.currencySymbol}{upload.totalFees}
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      {/* Provision "Approve All" or "Reject All" button to approve as a whole */}
-                      {isPending && (
-                        <>
-                          <button
-                            type="button"
-                            disabled={processingId === upload.id}
-                            onClick={() => handleMergeUpload(upload)}
-                            className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-extrabold shadow-md shadow-emerald-600/20 active:scale-95 transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                            title="Approve all candidates in this batch and merge into main server database"
-                          >
-                            <CheckCircle2 className="w-4 h-4" />
-                            <span>{processingId === upload.id ? 'Approving...' : 'Approve All'}</span>
-                          </button>
-
-                          <button
-                            type="button"
-                            disabled={processingId === upload.id}
-                            onClick={() => handleRejectUpload(upload)}
-                            className="px-3 py-2 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-bold transition-colors cursor-pointer flex items-center gap-1"
-                            title="Reject all candidates in this batch"
-                          >
-                            <XCircle className="w-3.5 h-3.5" />
-                            <span>Reject All</span>
-                          </button>
-                        </>
-                      )}
-
-                      {/* Delete Batch Button */}
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteUpload(upload.id, upload.club)}
-                        className="p-2 text-slate-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 transition-colors"
-                        title="Delete batch record"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-
-                      {/* Toggle Expand */}
-                      <button
-                        type="button"
-                        onClick={() => toggleExpand(upload.id)}
-                        className="p-2 text-slate-600 hover:text-slate-900 rounded-lg hover:bg-slate-200 transition-colors cursor-pointer"
-                        title={isExpanded ? 'Collapse' : 'Expand athletes'}
-                      >
-                        {isExpanded ? <ChevronUp className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
-                      </button>
-                    </div>
-                  </div>
+          {rejectedUploads.length === 0 ? (
+            <div className="bg-white rounded-2xl p-8 text-center border border-slate-200 text-slate-500 text-xs">
+              No rejected client requests found.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {rejectedUploads.map((u, idx) => renderUploadCard(u, idx))}
+            </div>
+          )}
+        </div>
+      ) : (
+        /* Status Filter: ALL (Default view) */
+        <div className="space-y-6">
+          {/* Section 1: Pending Client Requests (ordered descending upon date & time) */}
+          <div className="space-y-3.5">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-200">
+              <div className="flex items-center gap-2">
+                <div className="w-6 h-6 rounded-lg bg-amber-100 text-amber-700 flex items-center justify-center shrink-0">
+                  <Clock className="w-3.5 h-3.5" />
                 </div>
+                <h2 className="text-sm sm:text-base font-extrabold text-slate-900 tracking-tight">
+                  Pending Client Requests
+                </h2>
+                <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-amber-100 text-amber-800 border border-amber-300">
+                  {pendingUploads.length}
+                </span>
+              </div>
+              <span className="text-[11px] text-slate-500 font-medium hidden sm:inline">
+                Ordered by descending upon date &amp; time
+              </span>
+            </div>
 
-                {/* Upload Rejection Note if any */}
-                {upload.notes && isRejected && (
-                  <div className="px-5 py-2.5 bg-rose-50 text-rose-800 text-xs font-medium border-b border-rose-200 flex items-center gap-2">
-                    <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600" />
-                    <span>Rejection Reason: <strong>{upload.notes}</strong></span>
+            {pendingUploads.length > 0 && (
+              <div className="space-y-2">
+                {pendingUploads.map((u, idx) => renderUploadCard(u, idx))}
+              </div>
+            )}
+          </div>
+
+          {/* Section 2: Group all approved requests inside expand & minimized format below pending requests */}
+          <div className="rounded-2xl border border-emerald-300/80 bg-white shadow-xs overflow-hidden transition-all duration-200">
+            {/* Expand & Minimized Accordion Header */}
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={() => setIsApprovedGroupExpanded((prev) => !prev)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  setIsApprovedGroupExpanded((prev) => !prev);
+                }
+              }}
+              className="w-full p-3.5 sm:p-4 bg-gradient-to-r from-emerald-50/90 via-teal-50/50 to-white hover:from-emerald-100/70 hover:to-emerald-50/50 transition-colors cursor-pointer flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-emerald-100 select-none"
+              title={isApprovedGroupExpanded ? 'Click to minimize approved requests' : 'Click to expand approved requests'}
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-sm shadow-emerald-600/30">
+                  <CheckCircle2 className="w-5 h-5" />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <div className="flex items-center gap-1.5">
+                      <h2 className="text-sm sm:text-base font-extrabold text-slate-900 tracking-tight">
+                        Approved Requests
+                      </h2>
+                      <span 
+                        className="inline-flex items-center justify-center p-0.5 rounded-md text-emerald-700 bg-emerald-100 hover:bg-emerald-200 transition-colors shrink-0"
+                        title={isApprovedGroupExpanded ? 'Click to minimize approved requests' : 'Click to expand approved requests'}
+                      >
+                        {isApprovedGroupExpanded ? (
+                          <ChevronUp className="w-4 h-4 stroke-[2.5]" />
+                        ) : (
+                          <ChevronDown className="w-4 h-4 stroke-[2.5]" />
+                        )}
+                      </span>
+                    </div>
+                    <span className="px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 text-xs font-black">
+                      {approvedUploads.length} Approved {approvedUploads.length === 1 ? 'Batch' : 'Batches'}
+                    </span>
                   </div>
-                )}
+                  <p className="text-xs text-slate-500 mt-0.5 truncate">
+                    {approvedUploads.reduce((sum, u) => sum + (u.candidates?.length || 0), 0)} Athletes merged into server registry • Total Fees: {settings.currencySymbol}{approvedUploads.reduce((sum, u) => sum + (u.totalFees || 0), 0)}
+                  </p>
+                </div>
+              </div>
+            </div>
 
-                {/* Athletes Detail List */}
-                {isExpanded && (
-                  <div className="p-4 sm:p-5 overflow-x-auto">
-                    <table className="w-full text-left text-xs">
-                      <thead>
-                        <tr className="border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-[11px]">
-                          <th className="pb-2.5 px-2">#</th>
-                          <th className="pb-2.5 px-3">Athlete Name</th>
-                          <th className="pb-2.5 px-3">Category</th>
-                          <th className="pb-2.5 px-3">Height</th>
-                          <th className="pb-2.5 px-3">Selected Events</th>
-                          <th className="pb-2.5 px-3 text-right">Fee</th>
-                          <th className="pb-2.5 px-3 text-center">Status / Chest</th>
-                          <th className="pb-2.5 px-3 text-right">Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {(upload.candidates || []).map((cand, idx) => {
-                          const candNameUpper = (cand.name || '').trim().toUpperCase();
-                          const isDuplicate = existingServerNames.has(candNameUpper);
-                          
-                          // Official server match for chest number lookup
-                          const officialServerCand = serverCandidates.find(
-                            (sc) => sc.id === cand.id || (sc.name && cand.name && sc.name.trim().toUpperCase() === candNameUpper && (sc.club || '').trim().toUpperCase() === (upload.club || '').trim().toUpperCase())
-                          );
-                          const hasOfficialServerChest = (officialServerCand && Number(officialServerCand.chestNo) >= 101) || (Number(cand.chestNo) >= 101);
-                          const officialAllottedChest = (officialServerCand && Number(officialServerCand.chestNo) >= 101) 
-                            ? officialServerCand.chestNo 
-                            : (Number(cand.chestNo) >= 101 ? cand.chestNo : null);
-                          const isCandApproved = Boolean(cand.merged) || Boolean(isMerged) || Boolean(hasOfficialServerChest);
-                          const isCandRejected = cand.status === 'rejected' || isRejected;
-                          const provRecordNo = cand.localRecordNo || (!hasOfficialServerChest && Number(cand.chestNo) > 0 ? cand.chestNo : idx + 1);
-
-                          return (
-                            <tr
-                              key={cand.id || idx}
-                              className={`hover:bg-slate-50/80 transition-colors ${
-                                isDuplicate && !isCandApproved ? 'bg-amber-50/50' : ''
-                              }`}
-                            >
-                              <td className="py-3 px-2 font-mono text-slate-400 font-medium">
-                                {provRecordNo}
-                              </td>
-
-                              <td className="py-3 px-3">
-                                <div className="font-bold text-slate-900 flex items-center gap-1.5">
-                                  <span>{cand.name}</span>
-                                  {isDuplicate && !isCandApproved && (
-                                    <span
-                                      className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 text-[10px] font-semibold flex items-center gap-1"
-                                      title="A candidate with this name already exists in official server records"
-                                    >
-                                      <AlertTriangle className="w-3 h-3 text-amber-600" />
-                                      Duplicate Name Alert
-                                    </span>
-                                  )}
-                                </div>
-                                <div className="text-[11px] text-slate-500">
-                                  ID: <code className="font-mono text-[10px]">{cand.id}</code>
-                                </div>
-                              </td>
-
-                              <td className="py-3 px-3">
-                                <span className="font-semibold text-slate-700">
-                                  {cand.gender}
-                                </span>
-                              </td>
-
-                              <td className="py-3 px-3 font-mono font-medium text-slate-600">
-                                {cand.height || '—'}
-                              </td>
-
-                              {/* Selected Event Column: Display just event numbers separated by comma (like 1, 8, 9...) */}
-                              <td className="py-3 px-3">
-                                <span className="font-mono font-bold text-slate-800 text-xs">
-                                  {(cand.selectedEvents || []).map(Number).sort((a, b) => a - b).join(', ') || '—'}
-                                </span>
-                              </td>
-
-                              <td className="py-3 px-3 text-right font-bold text-slate-800">
-                                {settings.currencySymbol}{cand.totalFees}
-                              </td>
-
-                              {/* Status / Chest Column: Displays allotted respective chest number after merged with server database */}
-                              <td className="py-3 px-3 text-center">
-                                {isCandApproved && officialAllottedChest ? (
-                                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800 font-black text-xs shadow-2xs">
-                                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                                    <span>Chest #{officialAllottedChest}</span>
-                                  </span>
-                                ) : isCandApproved ? (
-                                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-bold text-xs">
-                                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                                    <span>Approved</span>
-                                  </span>
-                                ) : isCandRejected ? (
-                                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-rose-100 text-rose-700 font-bold text-xs">
-                                    <XCircle className="w-3.5 h-3.5 text-rose-600" />
-                                    <span>Rejected</span>
-                                  </span>
-                                ) : (
-                                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[11px] font-semibold">
-                                    <Clock className="w-3 h-3 text-amber-600" />
-                                    <span>Pending (#{provRecordNo})</span>
-                                  </span>
-                                )}
-                              </td>
-
-                              {/* Beside each individual candidate: "Approved" or "Reject" button */}
-                              <td className="py-3 px-3 text-right whitespace-nowrap space-x-1.5">
-                                {!isCandApproved && !isCandRejected && (
-                                  <>
-                                    <button
-                                      type="button"
-                                      onClick={() => openEditCandidate(upload.id, cand)}
-                                      className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors inline-flex items-center"
-                                      title="Edit athlete before approval"
-                                    >
-                                      <Edit3 className="w-3.5 h-3.5" />
-                                    </button>
-                                    <button
-                                      type="button"
-                                      disabled={processingId === cand.id}
-                                      onClick={() => handleMergeSingle(upload.id, cand.id, cand.name)}
-                                      className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] transition-colors inline-flex items-center gap-1 cursor-pointer disabled:opacity-50 shadow-2xs"
-                                      title="Approve candidate and merge into server database"
-                                    >
-                                      <CheckCircle2 className="w-3.5 h-3.5" />
-                                      <span>Approve</span>
-                                    </button>
-                                    <button
-                                      type="button"
-                                      disabled={processingId === cand.id}
-                                      onClick={() => handleRejectSingle(upload.id, cand.id, cand.name)}
-                                      className="px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-bold text-[11px] transition-colors inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
-                                      title="Reject candidate"
-                                    >
-                                      <XCircle className="w-3.5 h-3.5 text-rose-600" />
-                                      <span>Reject</span>
-                                    </button>
-                                  </>
-                                )}
-                                {isCandApproved && (
-                                  <span className="text-[11px] font-bold text-emerald-600 inline-flex items-center gap-1">
-                                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                                    <span>Approved {officialAllottedChest ? `(#${officialAllottedChest})` : ''}</span>
-                                  </span>
-                                )}
-                                {isCandRejected && (
-                                  <span className="text-[11px] font-bold text-rose-600 inline-flex items-center gap-1">
-                                    <XCircle className="w-3.5 h-3.5 text-rose-600" />
-                                    <span>Rejected</span>
-                                  </span>
-                                )}
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
+            {/* Expanded Content: Cards of all approved requests */}
+            {isApprovedGroupExpanded && (
+              <div className="p-3 sm:p-3.5 bg-slate-50/50 space-y-2 animate-in fade-in duration-200">
+                {approvedUploads.length === 0 ? (
+                  <div className="p-8 text-center text-xs text-slate-500 bg-white rounded-xl border border-slate-200">
+                    No approved client requests yet. Once pending requests are approved, they will appear here.
                   </div>
+                ) : (
+                  approvedUploads.map((u, idx) => renderUploadCard(u, idx))
                 )}
               </div>
-            );
-          })}
+            )}
+          </div>
+
+          {/* Section 3: Rejected Requests (if any) */}
+          {rejectedUploads.length > 0 && (
+            <div className="rounded-2xl border border-rose-200 bg-white shadow-xs overflow-hidden transition-all duration-200">
+              <div
+                role="button"
+                tabIndex={0}
+                onClick={() => setIsRejectedGroupExpanded((prev) => !prev)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    setIsRejectedGroupExpanded((prev) => !prev);
+                  }
+                }}
+                className="w-full p-3.5 sm:p-4 bg-gradient-to-r from-rose-50/90 to-white hover:from-rose-100/70 transition-colors cursor-pointer flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-rose-100 select-none"
+                title={isRejectedGroupExpanded ? 'Click to minimize rejected requests' : 'Click to expand rejected requests'}
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-10 h-10 rounded-xl bg-rose-600 text-white flex items-center justify-center shrink-0 shadow-sm">
+                    <XCircle className="w-5 h-5" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <div className="flex items-center gap-1.5">
+                        <h2 className="text-sm sm:text-base font-extrabold text-slate-900 tracking-tight">
+                          Rejected Requests
+                        </h2>
+                        <span 
+                          className="inline-flex items-center justify-center p-0.5 rounded-md text-rose-700 bg-rose-100 hover:bg-rose-200 transition-colors shrink-0"
+                          title={isRejectedGroupExpanded ? 'Click to minimize rejected requests' : 'Click to expand rejected requests'}
+                        >
+                          {isRejectedGroupExpanded ? (
+                            <ChevronUp className="w-4 h-4 stroke-[2.5]" />
+                          ) : (
+                            <ChevronDown className="w-4 h-4 stroke-[2.5]" />
+                          )}
+                        </span>
+                      </div>
+                      <span className="px-2.5 py-0.5 rounded-full bg-rose-100 text-rose-800 border border-rose-300 text-xs font-black">
+                        {rejectedUploads.length} {rejectedUploads.length === 1 ? 'Batch' : 'Batches'}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-500 mt-0.5 truncate">
+                      {rejectedUploads.reduce((sum, u) => sum + (u.candidates?.length || 0), 0)} Athletes rejected
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {isRejectedGroupExpanded && (
+                <div className="p-3 sm:p-3.5 bg-slate-50/50 space-y-2 animate-in fade-in duration-200">
+                  {rejectedUploads.map((u, idx) => renderUploadCard(u, idx))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 

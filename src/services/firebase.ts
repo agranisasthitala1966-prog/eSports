@@ -73,8 +73,10 @@ export async function testFirestoreConnection(): Promise<boolean> {
   }
 }
 
-// Auto-run connection check in browser
+// Validate initial connection cleanly without blocking initial mobile paint
 if (typeof window !== 'undefined') {
-  testFirestoreConnection();
+  setTimeout(() => {
+    testFirestoreConnection();
+  }, 1200);
 }
 

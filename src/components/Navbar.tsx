@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { 
   Users, 
   Calendar, 
@@ -24,10 +24,14 @@ import {
   Globe,
   ChevronDown,
   Sparkles,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Sliders,
+  RefreshCw,
+  Phone
 } from 'lucide-react';
-import { SportsMeetSettings } from '../types';
+import { SportsMeetSettings, SportEvent, EventResult } from '../types';
 import { QrLinkModal } from './QrLinkModal';
+import { buildLiveMeetTicker } from '../utils/qualificationRules';
 
 interface NavbarProps {
   currentMode: 'client' | 'server';
@@ -35,6 +39,8 @@ interface NavbarProps {
   activeTab: string;
   setActiveTab: (tab: string) => void;
   settings: SportsMeetSettings;
+  events?: SportEvent[];
+  results?: EventResult[];
   unsyncedCount: number;
   onSyncTrigger: () => void;
   isSyncing: boolean;
@@ -45,6 +51,8 @@ interface NavbarProps {
   onLockServer: () => void;
   pendingUploadsCount: number;
   onDownloadExcel?: () => void;
+  onOpenThermalSetup?: () => void;
+  onRefreshLiveStatus?: () => Promise<void> | void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -53,6 +61,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   activeTab,
   setActiveTab,
   settings,
+  events = [],
+  results = [],
   unsyncedCount,
   onSyncTrigger,
   isSyncing,
@@ -63,7 +73,28 @@ export const Navbar: React.FC<NavbarProps> = ({
   onLockServer,
   pendingUploadsCount,
   onDownloadExcel,
+  onOpenThermalSetup,
+  onRefreshLiveStatus,
 }) => {
+  const [isRefreshingTicker, setIsRefreshingTicker] = useState(false);
+
+  const handleRefreshTicker = async () => {
+    if (isRefreshingTicker) return;
+    setIsRefreshingTicker(true);
+    try {
+      await Promise.all([
+        onRefreshLiveStatus ? Promise.resolve(onRefreshLiveStatus()) : Promise.resolve(),
+        new Promise((resolve) => setTimeout(resolve, 450)),
+      ]);
+    } finally {
+      setIsRefreshingTicker(false);
+    }
+  };
+
+  const liveMeetTicker = useMemo(() => {
+    if (currentMode !== 'client') return { items: [], durationSec: 18 };
+    return buildLiveMeetTicker(settings, events, results);
+  }, [currentMode, settings, events, results]);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [showQrModal, setShowQrModal] = useState(false);
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
@@ -161,13 +192,25 @@ export const Navbar: React.FC<NavbarProps> = ({
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-14 sm:h-16 gap-2 sm:gap-4">
           
-          {/* Brand & Logo */}
+          {/* Brand & Logo - Protected from copy, download, share, and opening in Chrome */}
           <div className="flex items-center gap-2.5 sm:gap-3 shrink-0 min-w-0 select-none">
-            <div className="relative shrink-0">
+            <div 
+              className="relative shrink-0 protected-logo-wrapper select-none"
+              onContextMenu={(e) => e.preventDefault()}
+            >
               <img 
                 src="/icon.png" 
                 alt="eSports Logo" 
-                className="w-9 h-9 sm:w-11 sm:h-11 shrink-0 object-contain"
+                data-protect-logo="true"
+                draggable={false}
+                onContextMenu={(e) => e.preventDefault()}
+                onDragStart={(e) => e.preventDefault()}
+                className="w-9 h-9 sm:w-11 sm:h-11 shrink-0 object-contain protected-logo select-none pointer-events-none"
+              />
+              <div 
+                className="protected-logo-overlay" 
+                aria-hidden="true" 
+                onContextMenu={(e) => e.preventDefault()} 
               />
             </div>
             <div className="shrink-0 flex flex-col justify-center">
@@ -426,6 +469,65 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
         </div>
 
+        {/* Client-side Live Meet Status Scrolling Label (below brand subtitle in top fixed bar) */}
+        {currentMode === 'client' && liveMeetTicker.items.length > 0 && (
+          <div
+            className="w-full h-5 flex items-center border-t border-slate-100 bg-slate-50/80 overflow-hidden"
+            aria-live="polite"
+          >
+            <div className="flex-1 min-w-0 h-full flex items-center overflow-hidden">
+              <div
+                className="meet-status-ticker-track text-[11px] sm:text-xs font-bold leading-none tracking-wide"
+                style={{ animationDuration: `${liveMeetTicker.durationSec}s` }}
+              >
+                {liveMeetTicker.items.map((item, idx) => (
+                  <span key={item.key} className="inline-flex items-center leading-none">
+                    {idx > 0 && (
+                      <span className="mx-2.5 text-green-600/50 select-none" aria-hidden="true">
+                        •
+                      </span>
+                    )}
+                    <span className={item.isAlert ? 'text-red-600 font-extrabold' : 'text-green-700 font-bold'}>
+                      {item.phoneDigits ? (
+                        <>
+                          {item.prefix}
+                          <a
+                            href={`tel:${item.phoneDigits}`}
+                            title={`Tap to call ${item.phoneDigits}`}
+                            aria-label={`Tap to call ${item.phoneDigits}`}
+                            className="inline-flex items-center gap-1 px-1.5 py-[1px] rounded bg-emerald-100/90 hover:bg-emerald-200 active:scale-95 border border-emerald-500/70 text-emerald-900 font-mono font-extrabold leading-none shadow-2xs transition-all cursor-pointer no-underline"
+                          >
+                            <Phone className="w-2.5 h-2.5 text-emerald-700 animate-pulse shrink-0" />
+                            <span className="no-underline">
+                              {item.phoneDigits}
+                            </span>
+                          </a>
+                          {item.suffix}
+                        </>
+                      ) : (
+                        item.text
+                      )}
+                    </span>
+                  </span>
+                ))}
+              </div>
+            </div>
+            {onRefreshLiveStatus && (
+              <button
+                type="button"
+                id="ticker-refresh-btn"
+                onClick={handleRefreshTicker}
+                disabled={isRefreshingTicker}
+                title="Refresh live status"
+                aria-label="Refresh live status"
+                className="shrink-0 h-full px-1.5 flex items-center justify-center text-green-700 hover:text-green-800 hover:bg-green-100/70 border-l border-slate-200/80 transition-colors cursor-pointer disabled:opacity-60"
+              >
+                <RefreshCw className={`w-3 h-3 ${isRefreshingTicker ? 'animate-spin' : ''}`} />
+              </button>
+            )}
+          </div>
+        )}
+
         {/* Desktop Tab Navigation */}
         <nav className="hidden lg:flex items-center space-x-1 py-2 border-t border-slate-100 overflow-visible relative">
           {currentTabs.map((tab) => {
@@ -560,6 +662,31 @@ export const Navbar: React.FC<NavbarProps> = ({
                         </p>
                       </div>
                     </button>
+
+                    {/* 3. Thermal Printer Setup */}
+                    {onOpenThermalSetup && (
+                      <button
+                        type="button"
+                        id="menu-thermal-setup"
+                        onClick={() => {
+                          setShowSettingsMenu(false);
+                          onOpenThermalSetup();
+                        }}
+                        className="w-full flex items-start gap-3 p-2.5 rounded-xl transition-all text-left cursor-pointer group hover:bg-amber-50/70 border border-transparent hover:border-amber-200/60"
+                      >
+                        <div className="w-9 h-9 rounded-xl bg-amber-100/80 flex items-center justify-center shrink-0 text-amber-700 group-hover:bg-amber-200/70 transition-colors">
+                          <Sliders className="w-4 h-4 text-amber-700" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="font-bold text-xs sm:text-sm text-slate-900 leading-tight">
+                            Thermal Printer Setup
+                          </div>
+                          <p className="text-[11px] text-slate-500 font-medium leading-normal mt-0.5">
+                            52mm width, 10.5pt font &amp; Bluetooth print
+                          </p>
+                        </div>
+                      </button>
+                    )}
                   </div>
                 </div>
               )}
@@ -664,6 +791,25 @@ export const Navbar: React.FC<NavbarProps> = ({
                 <Database className="w-4 h-4" />
                 <span>DB Explorer</span>
               </button>
+              {onOpenThermalSetup && (
+                <button
+                  type="button"
+                  id="drawer-thermal-setup-btn"
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    onOpenThermalSetup();
+                  }}
+                  className="w-full flex items-center justify-between gap-2 px-3 py-2.5 rounded-lg text-sm font-bold text-amber-900 bg-amber-50 hover:bg-amber-100 border border-amber-200 transition-colors cursor-pointer"
+                >
+                  <div className="flex items-center gap-3">
+                    <Sliders className="w-4 h-4 text-amber-600" />
+                    <span>Thermal Printer Setup</span>
+                  </div>
+                  <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-amber-200/80 text-amber-950">
+                    52mm • 10.5pt
+                  </span>
+                </button>
+              )}
             </div>
           )}
         </div>

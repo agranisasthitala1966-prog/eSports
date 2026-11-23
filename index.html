@@ -18,11 +18,82 @@
     <link rel="manifest" href="/manifest.json" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Teko:wght@500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Teko:wght@500;600;700&display=swap" media="print" onload="this.media='all'">
+    <noscript>
+      <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Teko:wght@500;600;700&display=swap">
+    </noscript>
+    <style>
+      @keyframes esportsSpin { to { transform: rotate(360deg); } }
+      body { margin: 0; background: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+      #esports-boot-shell {
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+        background: #f1f5f9;
+        color: #0f172a;
+        padding: 24px;
+        text-align: center;
+      }
+      .esports-boot-spinner {
+        width: 34px;
+        height: 34px;
+        border: 3px solid #cbd5e1;
+        border-top-color: #2563eb;
+        border-radius: 9999px;
+        animation: esportsSpin 0.75s linear infinite;
+      }
+    </style>
   </head>
-  <body class="bg-slate-900 text-slate-100 antialiased min-h-screen">
-    <div id="root"></div>
+  <body class="bg-slate-100 text-slate-900 antialiased min-h-screen">
+    <div id="root">
+      <div id="esports-boot-shell" aria-label="Loading application">
+        <div class="esports-boot-spinner"></div>
+        <div style="font-weight:700;font-size:15px;letter-spacing:-0.01em;color:#0f172a;">eSports Meet Portal</div>
+        <div style="font-size:12px;color:#64748b;">Loading enrollment workspace...</div>
+      </div>
+    </div>
+    <script>
+      (function () {
+        var recoveredKey = 'esports_chunk_recover_v2';
+        function recoverFromStaleChunk() {
+          try {
+            if (sessionStorage.getItem(recoveredKey)) return;
+            sessionStorage.setItem(recoveredKey, '1');
+            var tasks = [];
+            if ('caches' in window) {
+              tasks.push(caches.keys().then(function (keys) {
+                return Promise.all(keys.map(function (k) { return caches.delete(k); }));
+              }));
+            }
+            if ('serviceWorker' in navigator) {
+              tasks.push(navigator.serviceWorker.getRegistrations().then(function (regs) {
+                return Promise.all(regs.map(function (r) { return r.unregister(); }));
+              }));
+            }
+            Promise.all(tasks).finally(function () {
+              window.location.reload();
+            });
+          } catch (e) {}
+        }
+        window.addEventListener('error', function (e) {
+          var target = e && e.target;
+          if (target && (target.tagName === 'SCRIPT' || target.tagName === 'LINK')) {
+            var src = target.src || target.href || '';
+            if (src.indexOf('/assets/') !== -1) {
+              recoverFromStaleChunk();
+            }
+          }
+        }, true);
+        window.addEventListener('load', function () {
+          setTimeout(function () {
+            try { sessionStorage.removeItem(recoveredKey); } catch (e) {}
+          }, 4000);
+        });
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
-

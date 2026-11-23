@@ -15,14 +15,38 @@ import {
   ChevronDown,
   Medal,
   Lock,
-  Sliders
+  Sliders,
+  RefreshCw,
+  Bluetooth
 } from 'lucide-react';
 import { ThermalPageSetupModal } from './ThermalPageSetupModal';
 import { 
   ThermalPrintSettings, 
   getThermalSettings, 
-  generateThermalPrintCSS 
+  generateThermalPrintCSS,
+  formatThermalEventSuffix 
 } from '../utils/thermalSettings';
+import { 
+  printDirectlyToThermalPrinter, 
+  isWebBluetoothSupported, 
+  isMobileClient 
+} from '../utils/thermalBluetoothPrint';
+import { ThermalLogo } from './ThermalLogo';
+import { ThermalTwoLineRecord } from './ThermalTwoLineRecord';
+import { parseJumpToInches, formatJumpBenchmark } from './RankingList';
+import {
+  WhatsAppIcon,
+  generateHitListWhatsAppText,
+  generateFinalListWhatsAppText,
+  generateRankListWhatsAppText,
+  openWhatsAppWithText,
+} from '../utils/whatsappThermalReport';
+import { ClubEchoPrintModal } from './ClubEchoPrintModal';
+import {
+  FirstPrintCategory,
+  hasWarnedFirstPrint,
+  markFirstPrintWarned,
+} from '../utils/qualificationRules';
 
 interface HitListProps {
   events: SportEvent[];
@@ -35,6 +59,7 @@ interface HitListProps {
   onDeleteHeat: (heatId: string) => Promise<void>;
   onPromoteToFinal: (eventNo: number, qualifiedAthletes: HeatParticipant[]) => void;
   onNavigateToRanking?: (eventNo?: number) => void;
+  onSaveSettings?: (settings: SportsMeetSettings) => Promise<void> | void;
 }
 
 export const HitList: React.FC<HitListProps> = ({
@@ -48,18 +73,31 @@ export const HitList: React.FC<HitListProps> = ({
   onDeleteHeat,
   onPromoteToFinal,
   onNavigateToRanking,
+  onSaveSettings,
 }) => {
   // Only one event selection at a time
   const [selectedEvtNo, setSelectedEvtNo] = useState<number>(events[0]?.Evt_No || 0);
 
-  // Qualify checkbox visibility: appears after clicking "Prepare Final List"
+  // Qualify checkbox visibility: appears after clicking "Prepare Final List" or typing chest numbers
   const [showQualifyCheckbox, setShowQualifyCheckbox] = useState<boolean>(false);
+
+  // Comma-separated qualifier chest numbers input inside the black ribbon
+  const [qualifierChestInput, setQualifierChestInput] = useState<string>('');
+  const [optimisticQualifiedSet, setOptimisticQualifiedSet] = useState<Set<number> | null>(null);
+  const qualifierSaveTimerRef = useRef<number | null>(null);
+  const latestDesiredSetRef = useRef<Set<number> | null>(null);
+  const hasEditedInputForEventRef = useRef<boolean>(false);
 
   // Print Preview Modals
   const [printModalType, setPrintModalType] = useState<'hit' | 'final' | 'results' | null>(null);
   const [modalFormat, setModalFormat] = useState<'a4' | 'thermal'>('a4');
   const [thermalConfig, setThermalConfig] = useState<ThermalPrintSettings>(getThermalSettings());
   const [showThermalSetup, setShowThermalSetup] = useState<boolean>(false);
+  const [echoPrintModalState, setEchoPrintModalState] = useState<{
+    category: FirstPrintCategory;
+    evtNos: number[];
+    contextLabel: string;
+  } | null>(null);
 
   useEffect(() => {
     const handleSettingsChange = (e: any) => {
@@ -143,9 +181,19 @@ export const HitList: React.FC<HitListProps> = ({
   // Enrolled candidates for the currently selected event (excludes cancelled chest numbers)
   const enrolledCandidates: Candidate[] = useMemo(() => {
     return candidates
-      .filter((c) => (c.selectedEvents || []).includes(selectedEvtNo) && !c.isCancelled && c.status !== 'cancelled')
+      .filter(
+        (c) =>
+          (c.selectedEvents || []).map(Number).includes(Number(selectedEvtNo)) &&
+          !c.isCancelled &&
+          c.status !== 'cancelled'
+      )
       .sort((a, b) => (Number(a.chestNo) || 0) - (Number(b.chestNo) || 0));
   }, [candidates, selectedEvtNo]);
+
+  // Set of valid chest numbers belonging to the currently selected event
+  const enrolledChestSet = useMemo(() => {
+    return new Set<number>(enrolledCandidates.map((c) => Number(c.chestNo)));
+  }, [enrolledCandidates]);
 
   // Existing heats for this event (strictly excludes cancelled chest numbers)
   const eventHeats: EventHeat[] = useMemo(() => {
@@ -170,16 +218,57 @@ export const HitList: React.FC<HitListProps> = ({
   }, [currentResult, cancelledChestSet]);
   const isAlreadyPromoted = savedFinalists.length > 0;
 
+  // Unified participant list combining ALL enrolled candidates and qualification flags across ALL heats
+  // Ensures selecting an event ALWAYS populates all candidates below (never truncated to 8 heat lanes)
+  const mergedEventParticipants: HeatParticipant[] = useMemo(() => {
+    const heatMap = new Map<number, HeatParticipant>();
+    eventHeats.forEach((h) => {
+      (h.participants || []).forEach((p) => {
+        const ch = Number(p.chestNo);
+        if (!ch || cancelledChestSet.has(ch)) return;
+        const prev = heatMap.get(ch);
+        heatMap.set(ch, {
+          ...p,
+          chestNo: ch,
+          qualified: prev ? Boolean(prev.qualified || p.qualified) : Boolean(p.qualified),
+        });
+      });
+    });
+
+    const combinedMap = new Map<number, HeatParticipant>();
+    enrolledCandidates.forEach((cand, idx) => {
+      const ch = Number(cand.chestNo);
+      const fromHeat = heatMap.get(ch);
+      combinedMap.set(ch, {
+        chestNo: ch,
+        candidateName: cand.name,
+        club: cand.club,
+        lane: fromHeat?.lane || idx + 1,
+        heatNumber: 1,
+        qualified: fromHeat ? Boolean(fromHeat.qualified) : false,
+      });
+    });
+
+    heatMap.forEach((p, ch) => {
+      if (!combinedMap.has(ch)) {
+        combinedMap.set(ch, { ...p, heatNumber: 1 });
+      }
+    });
+
+    return Array.from(combinedMap.values())
+      .sort((a, b) => (Number(a.chestNo) || 0) - (Number(b.chestNo) || 0))
+      .map((p, idx) => ({ ...p, lane: idx + 1 }));
+  }, [eventHeats, enrolledCandidates, cancelledChestSet]);
+
   // Effective finalists:
   // 1) Saved finalists if already promoted
-  // 2) If event heats exist, qualified participants (or all participants in heat)
+  // 2) If event heats exist, qualified participants across all heats (or all merged participants)
   // 3) Enrolled candidates for this event (standard direct final flow)
   const effectiveFinalists: FinalParticipant[] = useMemo(() => {
     if (savedFinalists.length > 0) return savedFinalists;
-    const activeHeat = eventHeats[0];
-    if (activeHeat && activeHeat.participants && activeHeat.participants.length > 0) {
-      const quals = activeHeat.participants.filter((p) => p.qualified);
-      const list = quals.length > 0 ? quals : activeHeat.participants;
+    if (eventHeats.length > 0 && mergedEventParticipants.length > 0) {
+      const quals = mergedEventParticipants.filter((p) => p.qualified);
+      const list = quals.length > 0 ? quals : mergedEventParticipants;
       return list.map((p, idx) => ({
         chestNo: p.chestNo,
         candidateName: p.candidateName,
@@ -196,7 +285,7 @@ export const HitList: React.FC<HitListProps> = ({
       }));
     }
     return [];
-  }, [savedFinalists, eventHeats, enrolledCandidates]);
+  }, [savedFinalists, eventHeats, mergedEventParticipants, enrolledCandidates]);
 
   // Ranked winners for the currently selected event (ordered by rank 1..6)
   const rankedWinners = useMemo(() => {
@@ -218,7 +307,7 @@ export const HitList: React.FC<HitListProps> = ({
     }
   };
 
-  // Track qualified participants from the heat
+  // Track qualified participants across all heats (or optimistic set while typing)
   const qualifiedParticipants: HeatParticipant[] = useMemo(() => {
     if (isAlreadyPromoted) {
       return savedFinalists.map((f, i) => ({
@@ -231,10 +320,80 @@ export const HitList: React.FC<HitListProps> = ({
       }));
     }
 
-    const heat = eventHeats[0];
-    if (!heat) return [];
-    return heat.participants.filter((p) => p.qualified);
-  }, [isAlreadyPromoted, savedFinalists, eventHeats]);
+    if (optimisticQualifiedSet !== null) {
+      return mergedEventParticipants
+        .filter((p) => optimisticQualifiedSet.has(Number(p.chestNo)))
+        .map((p) => ({ ...p, qualified: true }));
+    }
+
+    if (eventHeats.length === 0) return [];
+    return mergedEventParticipants.filter((p) => p.qualified);
+  }, [isAlreadyPromoted, savedFinalists, optimisticQualifiedSet, eventHeats, mergedEventParticipants]);
+
+  // Initialize qualifier chest input when switching events
+  useEffect(() => {
+    if (qualifierSaveTimerRef.current) {
+      window.clearTimeout(qualifierSaveTimerRef.current);
+      qualifierSaveTimerRef.current = null;
+    }
+    latestDesiredSetRef.current = null;
+    setOptimisticQualifiedSet(null);
+    hasEditedInputForEventRef.current = false;
+
+    const heatsForEvt = heats.filter((h) => Number(h.eventNo) === Number(selectedEvtNo));
+    const qualChests = new Set<number>();
+    heatsForEvt.forEach((h) => {
+      (h.participants || []).forEach((p) => {
+        const ch = Number(p.chestNo);
+        if (p.qualified && ch && !cancelledChestSet.has(ch)) {
+          qualChests.add(ch);
+        }
+      });
+    });
+
+    const sortedChests = Array.from(qualChests).sort((a, b) => a - b);
+    setQualifierChestInput(sortedChests.join(', '));
+    setShowQualifyCheckbox(false);
+  }, [selectedEvtNo]);
+
+  // Populate qualifier input if heats load asynchronously before user starts editing this event
+  useEffect(() => {
+    if (hasEditedInputForEventRef.current) return;
+    if (optimisticQualifiedSet !== null || latestDesiredSetRef.current !== null) return;
+
+    const heatsForEvt = heats.filter((h) => Number(h.eventNo) === Number(selectedEvtNo));
+    const qualChests = new Set<number>();
+    heatsForEvt.forEach((h) => {
+      (h.participants || []).forEach((p) => {
+        const ch = Number(p.chestNo);
+        if (p.qualified && ch && !cancelledChestSet.has(ch)) {
+          qualChests.add(ch);
+        }
+      });
+    });
+    const nextStr = Array.from(qualChests).sort((a, b) => a - b).join(', ');
+    if (nextStr !== qualifierChestInput) {
+      setQualifierChestInput(nextStr);
+    }
+  }, [heats, selectedEvtNo, cancelledChestSet]);
+
+  useEffect(() => {
+    return () => {
+      if (qualifierSaveTimerRef.current) {
+        window.clearTimeout(qualifierSaveTimerRef.current);
+      }
+    };
+  }, []);
+
+  // Validate comma-separated chest numbers entered in the black ribbon input box
+  const hasInvalidChestInput = useMemo(() => {
+    if (!qualifierChestInput.trim()) return false;
+    const tokens = qualifierChestInput
+      .split(',')
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0);
+    return tokens.some((token) => !/^\d+$/.test(token) || !enrolledChestSet.has(Number(token)));
+  }, [qualifierChestInput, enrolledChestSet]);
 
   // Can print final list: true when event has been promoted to final OR for direct final events
   const canPrintFinalList = (isAlreadyPromoted && savedFinalists.length > 0) || (!isHitRequired && enrolledCandidates.length > 0);
@@ -269,13 +428,9 @@ export const HitList: React.FC<HitListProps> = ({
       return;
     }
 
-    // Always ensure a single all-at-once heat exists for this event
+    // Always ensure a single all-at-once heat exists containing ALL enrolled candidates for this event
     if (eventHeats.length === 0) {
-      const sortedCandidates = [...enrolledCandidates].sort(
-        (a, b) => (Number(a.chestNo) || 0) - (Number(b.chestNo) || 0)
-      );
-
-      const participants: HeatParticipant[] = sortedCandidates.map((cand, idx) => ({
+      const participants: HeatParticipant[] = enrolledCandidates.map((cand, idx) => ({
         chestNo: cand.chestNo,
         candidateName: cand.name,
         club: cand.club,
@@ -290,6 +445,17 @@ export const HitList: React.FC<HitListProps> = ({
         participants,
         status: 'scheduled',
       });
+    } else if (
+      eventHeats.length > 1 ||
+      (eventHeats[0]?.participants?.length || 0) < mergedEventParticipants.length
+    ) {
+      await onSaveHeat({
+        ...eventHeats[0],
+        participants: mergedEventParticipants,
+      });
+      for (const extraHeat of eventHeats.slice(1)) {
+        await onDeleteHeat(extraHeat.id);
+      }
     }
 
     // Reveal qualify checkboxes at the left side of chest numbers
@@ -303,7 +469,84 @@ export const HitList: React.FC<HitListProps> = ({
     }, 120);
   };
 
-  // Toggle qualification status for a participant (works with existing heat or creates heat on the fly)
+  // Persist a specific set of qualified chest numbers onto the event's unified heat
+  const persistQualifiedChestSet = async (nextSet: Set<number>) => {
+    const participants: HeatParticipant[] = mergedEventParticipants.map((p, idx) => ({
+      ...p,
+      lane: idx + 1,
+      heatNumber: 1,
+      qualified: nextSet.has(Number(p.chestNo)),
+    }));
+
+    if (eventHeats.length > 0) {
+      await onSaveHeat({
+        ...eventHeats[0],
+        participants,
+      });
+      for (const extraHeat of eventHeats.slice(1)) {
+        await onDeleteHeat(extraHeat.id);
+      }
+    } else {
+      await onSaveHeat({
+        eventNo: selectedEvtNo,
+        heatNumber: 1,
+        participants,
+        status: 'scheduled',
+      });
+    }
+    setOptimisticQualifiedSet(null);
+  };
+
+  // Handle typing/deleting comma-separated qualified chest numbers in the black ribbon box
+  const handleQualifierInputChange = (rawValue: string) => {
+    hasEditedInputForEventRef.current = true;
+    setQualifierChestInput(rawValue);
+
+    const tokens = rawValue
+      .split(',')
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0);
+
+    const validSet = new Set<number>();
+    tokens.forEach((token) => {
+      if (/^\d+$/.test(token)) {
+        const ch = Number(token);
+        if (enrolledChestSet.has(ch)) {
+          validSet.add(ch);
+        }
+      }
+    });
+
+    if (validSet.size > 0 || eventHeats.length > 0) {
+      setShowQualifyCheckbox(true);
+    }
+
+    setOptimisticQualifiedSet(validSet);
+    latestDesiredSetRef.current = validSet;
+
+    if (qualifierSaveTimerRef.current) {
+      window.clearTimeout(qualifierSaveTimerRef.current);
+    }
+    qualifierSaveTimerRef.current = window.setTimeout(() => {
+      qualifierSaveTimerRef.current = null;
+      if (latestDesiredSetRef.current) {
+        persistQualifiedChestSet(latestDesiredSetRef.current);
+        latestDesiredSetRef.current = null;
+      }
+    }, 220);
+  };
+
+  const handleQualifierInputBlur = () => {
+    if (qualifierSaveTimerRef.current && latestDesiredSetRef.current) {
+      window.clearTimeout(qualifierSaveTimerRef.current);
+      qualifierSaveTimerRef.current = null;
+      const desired = latestDesiredSetRef.current;
+      latestDesiredSetRef.current = null;
+      persistQualifiedChestSet(desired);
+    }
+  };
+
+  // Toggle qualification status for a participant (always saves full merged participant list)
   const handleToggleQualify = async (chestNo: number) => {
     if (isRankingPrepared) {
       alert(`Event #${selectedEvtNo} ranking has already been prepared and completed. Qualification edits are restricted.`);
@@ -315,41 +558,49 @@ export const HitList: React.FC<HitListProps> = ({
       return;
     }
 
-    const activeHeat = eventHeats[0];
-    if (activeHeat) {
-      const updatedParticipants = activeHeat.participants.map((p) => {
-        if (Number(p.chestNo) === Number(chestNo)) {
-          return { ...p, qualified: !p.qualified };
-        }
-        return p;
+    hasEditedInputForEventRef.current = true;
+    const chNum = Number(chestNo);
+    const currentQualSet = new Set<number>();
+    if (optimisticQualifiedSet !== null) {
+      optimisticQualifiedSet.forEach((n) => currentQualSet.add(n));
+    } else if (eventHeats.length > 0) {
+      mergedEventParticipants.forEach((p) => {
+        if (p.qualified) currentQualSet.add(Number(p.chestNo));
       });
-
-      await onSaveHeat({
-        ...activeHeat,
-        participants: updatedParticipants,
-      });
-    } else {
-      // Direct final or first-time heat initialization: create heat with participants
-      const sortedCandidates = [...enrolledCandidates].sort(
-        (a, b) => (Number(a.chestNo) || 0) - (Number(b.chestNo) || 0)
-      );
-
-      const participants: HeatParticipant[] = sortedCandidates.map((cand, idx) => ({
-        chestNo: cand.chestNo,
-        candidateName: cand.name,
-        club: cand.club,
-        lane: idx + 1,
-        heatNumber: 1,
-        qualified: Number(cand.chestNo) === Number(chestNo) ? false : true,
-      }));
-
-      await onSaveHeat({
-        eventNo: selectedEvtNo,
-        heatNumber: 1,
-        participants,
-        status: 'scheduled',
-      });
+    } else if (!isHitRequired) {
+      mergedEventParticipants.forEach((p) => currentQualSet.add(Number(p.chestNo)));
     }
+
+    const willBeChecked = !currentQualSet.has(chNum);
+    if (willBeChecked) {
+      currentQualSet.add(chNum);
+    } else {
+      currentQualSet.delete(chNum);
+    }
+
+    // Keep comma-separated textbox synchronized with row checkbox toggles
+    const existingTokens = qualifierChestInput
+      .split(',')
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0);
+    if (willBeChecked) {
+      if (!existingTokens.some((t) => /^\d+$/.test(t) && Number(t) === chNum)) {
+        existingTokens.push(String(chNum));
+      }
+      setQualifierChestInput(existingTokens.join(', '));
+    } else {
+      const nextTokens = existingTokens.filter((t) => !(/^\d+$/.test(t) && Number(t) === chNum));
+      setQualifierChestInput(nextTokens.join(', '));
+    }
+
+    setShowQualifyCheckbox(true);
+    setOptimisticQualifiedSet(currentQualSet);
+    if (qualifierSaveTimerRef.current) {
+      window.clearTimeout(qualifierSaveTimerRef.current);
+      qualifierSaveTimerRef.current = null;
+    }
+    latestDesiredSetRef.current = null;
+    await persistQualifiedChestSet(currentQualSet);
   };
 
   const toggleParticipantQualified = async (heat: EventHeat, chestNo: number) => {
@@ -357,7 +608,7 @@ export const HitList: React.FC<HitListProps> = ({
   };
 
   // "Promote to Final" action
-  const handleSendToFinal = () => {
+  const handleSendToFinal = async () => {
     if (isRankingPrepared) {
       alert(`Event #${selectedEvtNo} ranking has already been completed. Final list cannot be modified.`);
       return;
@@ -373,12 +624,92 @@ export const HitList: React.FC<HitListProps> = ({
       return;
     }
 
+    if (qualifierSaveTimerRef.current && latestDesiredSetRef.current) {
+      window.clearTimeout(qualifierSaveTimerRef.current);
+      qualifierSaveTimerRef.current = null;
+      const desired = latestDesiredSetRef.current;
+      latestDesiredSetRef.current = null;
+      await persistQualifiedChestSet(desired);
+    }
+
     onPromoteToFinal(selectedEvtNo, qualifiedParticipants);
   };
 
-  // Trigger system print
-  const handleExecutePrint = () => {
+  const [isDirectPrinting, setIsDirectPrinting] = useState<boolean>(false);
+  const [directPrintStatus, setDirectPrintStatus] = useState<string | null>(null);
+
+  // Trigger print: Direct Bluetooth thermal on mobile when in thermal mode, without opening any other mobile app!
+  const executeActualPrint = async () => {
+    if (modalFormat === 'thermal') {
+      const receiptEl = document.querySelector('.receipt') as HTMLElement | null;
+
+      // On mobile devices (or whenever Web Bluetooth is available), send directly to the thermal printer
+      if (isWebBluetoothSupported() || isMobileClient()) {
+        try {
+          setIsDirectPrinting(true);
+          setDirectPrintStatus('Connecting directly to thermal printer...');
+          const result = await printDirectlyToThermalPrinter(receiptEl, thermalConfig);
+          if (result.success) {
+            setDirectPrintStatus(result.message);
+            setTimeout(() => setDirectPrintStatus(null), 4000);
+          } else {
+            setDirectPrintStatus(result.message);
+            setTimeout(() => setDirectPrintStatus(null), 3000);
+          }
+        } catch (err: any) {
+          console.warn('Bluetooth thermal print fallback:', err?.message || err);
+          window.print();
+          setDirectPrintStatus('Printed via print dialog (Bluetooth unavailable in this frame)');
+          setTimeout(() => setDirectPrintStatus(null), 4000);
+        } finally {
+          setIsDirectPrinting(false);
+        }
+        return;
+      }
+    }
+
+    // Default system print for desktop or A4 mode
     window.print();
+  };
+
+  const handleExecutePrint = async () => {
+    const isClubEchoOn = settings?.clientResponseEnabled !== false;
+    if (isClubEchoOn) {
+      if (printModalType === 'hit' && isHitRequired && !hasWarnedFirstPrint('hit', selectedEvtNo)) {
+        setEchoPrintModalState({
+          category: 'hit',
+          evtNos: [selectedEvtNo],
+          contextLabel: `Event #${selectedEvtNo}${currentEvent?.Evt_Name ? `: ${currentEvent.Evt_Name}` : ''} — Hit List`,
+        });
+        return;
+      }
+      if (printModalType === 'final' && !isHitRequired && !hasWarnedFirstPrint('direct-final', selectedEvtNo)) {
+        setEchoPrintModalState({
+          category: 'direct-final',
+          evtNos: [selectedEvtNo],
+          contextLabel: `Event #${selectedEvtNo}${currentEvent?.Evt_Name ? `: ${currentEvent.Evt_Name}` : ''} — Direct Final List`,
+        });
+        return;
+      }
+    }
+
+    await executeActualPrint();
+  };
+
+  // Trigger WhatsApp share with thermal report formatting
+  const handleShareWhatsApp = (type: 'hit' | 'final' | 'results') => {
+    if (!currentEvent) return;
+    let text = '';
+    if (type === 'hit') {
+      text = generateHitListWhatsAppText(currentEvent, enrolledCandidates, settings);
+    } else if (type === 'final') {
+      text = generateFinalListWhatsAppText(currentEvent, effectiveFinalists, settings);
+    } else if (type === 'results') {
+      text = generateRankListWhatsAppText(currentEvent, rankedWinners, settings);
+    }
+    const res = openWhatsAppWithText(text);
+    setDirectPrintStatus(res.message);
+    setTimeout(() => setDirectPrintStatus(null), 4000);
   };
 
   // Helper to find club info
@@ -407,47 +738,47 @@ export const HitList: React.FC<HitListProps> = ({
     return settings.registeredClubName || settings.organizer || 'Agrani Sasthitala Sangha';
   };
 
-  // Thermal header: Same as Candidate List thermal report (inline logo beside club name, ordinal below centered)
+  // Thermal header: inline logo beside club name, ordinal below centered
   const renderThermalHeader = (specificClubName?: string) => {
     const clubDisplayName = getThermalClubName(specificClubName);
     const clubLogo = getThermalClubLogo(specificClubName);
 
     return (
-      <div className="pb-1 mb-1 border-b border-dashed border-black pt-1">
-        <div className="flex items-center justify-center gap-1.5 leading-tight">
-          <img
+      <div className="w-full pb-1 mb-1 border-b border-dashed border-black pt-1">
+        <div className="flex items-center justify-center gap-1.5 leading-tight flex-wrap text-center">
+          <ThermalLogo
             src={clubLogo}
             alt="Club Logo"
-            className="w-5 h-5 shrink-0 object-contain filter grayscale contrast-200"
-            style={{ filter: 'grayscale(100%) contrast(200%)' }}
+            className="thermal-header-logo w-5 h-5 shrink-0 object-contain"
+            rasterSizePx={64}
           />
-          <span className="font-bold text-[10.5px] uppercase tracking-tight text-black truncate max-w-[36mm]">
+          <span className="thermal-header-club font-bold uppercase tracking-tight text-black break-words">
             {clubDisplayName}
           </span>
         </div>
-        <div className="text-[8.5px] font-semibold text-black leading-tight mt-0.5 whitespace-nowrap overflow-hidden text-ellipsis max-w-[46mm] mx-auto text-center">
+        <div className="thermal-ordinal-title font-normal text-black leading-tight mt-0.5 break-words text-center">
           {settings.ordinalTitle || '47th Annual Sports Meet 2027'}
         </div>
       </div>
     );
   };
 
-  // Thermal footer: Same as Candidate List thermal report
+  // Thermal footer: Brand logo and brand name + timestamp (no top dashed border)
   const renderThermalFooter = () => {
     return (
-      <div className="text-center pt-1 mt-1 border-t border-dashed border-black text-black">
-        <div className="flex items-center justify-center gap-1 leading-none max-w-[46mm] mx-auto whitespace-nowrap overflow-hidden">
-          <img
+      <div className="w-full text-center pt-1.5 mt-1 text-black">
+        <div className="flex items-center justify-center gap-1 leading-tight flex-wrap">
+          <ThermalLogo
             src="/icon.png"
             alt="eSports Logo"
-            className="w-3.5 h-3.5 shrink-0 object-contain filter grayscale contrast-200"
-            style={{ filter: 'grayscale(100%) contrast(200%)' }}
+            className="thermal-footer-logo w-3.5 h-3.5 shrink-0 object-contain"
+            rasterSizePx={48}
           />
-          <span className="font-semibold text-[8px] tracking-tight text-black whitespace-nowrap truncate">
-            eSports (Sport Management System)
+          <span className="thermal-footer-brand font-semibold tracking-tight text-black break-words">
+            eSports-Sport Management
           </span>
         </div>
-        <div className="text-[7.5px] text-black leading-none mt-0.5 font-mono whitespace-nowrap">
+        <div className="thermal-footer-time text-black leading-tight mt-0.5 break-words">
           {currentTimestamp}
         </div>
       </div>
@@ -569,6 +900,16 @@ export const HitList: React.FC<HitListProps> = ({
                   <Receipt className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
                   <span className="text-[11px] font-black hidden sm:inline">2" Thermal</span>
                 </button>
+                <button
+                  type="button"
+                  id="btn-whatsapp-results-card"
+                  onClick={() => handleShareWhatsApp('results')}
+                  className="px-2 sm:px-2.5 py-1.5 sm:py-2 rounded-lg sm:rounded-xl bg-emerald-600 hover:bg-emerald-500 active:scale-98 text-white font-black text-xs sm:text-sm flex items-center justify-center gap-1 transition-all shadow-md cursor-pointer whitespace-nowrap"
+                  title={`Share (Event: ${currentEvent?.Evt_No} Rank) to WhatsApp`}
+                >
+                  <WhatsAppIcon className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+                  <span className="text-[11px] font-bold hidden sm:inline">WhatsApp</span>
+                </button>
               </div>
             )}
 
@@ -628,6 +969,21 @@ export const HitList: React.FC<HitListProps> = ({
                 <Receipt className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
                 <span className="text-[11px] font-black hidden md:inline">2" Thermal</span>
               </button>
+              <button
+                type="button"
+                id="btn-whatsapp-hit-card"
+                onClick={() => handleShareWhatsApp('hit')}
+                disabled={enrolledCandidates.length === 0 || isAlreadyPromoted || isRankingPrepared}
+                className={`p-1.5 sm:px-2 sm:py-2 rounded-lg sm:rounded-xl font-black text-xs sm:text-sm flex items-center justify-center gap-1 transition-all shadow-md whitespace-nowrap ${
+                  isRankingPrepared || isAlreadyPromoted || enrolledCandidates.length === 0
+                    ? 'bg-slate-800 text-slate-500 border border-slate-700/60 cursor-not-allowed opacity-40'
+                    : 'bg-emerald-600 hover:bg-emerald-500 active:scale-98 text-white cursor-pointer'
+                }`}
+                title={`Share (Event: ${currentEvent?.Evt_No} Hit) to WhatsApp`}
+              >
+                <WhatsAppIcon className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+                <span className="text-[11px] font-bold hidden md:inline">WhatsApp</span>
+              </button>
             </div>
 
             {/* BUTTON 2: Prepare Final List */}
@@ -675,29 +1031,30 @@ export const HitList: React.FC<HitListProps> = ({
             )}
 
             {/* BUTTON 3: Print Final List (A4 & 2" Thermal) */}
-            {/* Disabled before final list is prepared; enabled after final list is prepared, disabled when ranking completed */}
+            {/* Enabled after final list is prepared OR for Direct Final (requiredHit=no) events with enrolled athletes */}
             <div className="flex items-center gap-1">
               <button
                 type="button"
                 id="btn-print-final-list"
                 onClick={() => {
-                  if (isAlreadyPromoted && !isRankingPrepared) {
+                  const canPrintFinal = (isAlreadyPromoted || (!isHitRequired && enrolledCandidates.length > 0)) && !isRankingPrepared;
+                  if (canPrintFinal) {
                     setModalFormat('a4');
                     setPrintModalType('final');
                   }
                 }}
-                disabled={!isAlreadyPromoted || isRankingPrepared}
+                disabled={(!isAlreadyPromoted && (isHitRequired || enrolledCandidates.length === 0)) || isRankingPrepared}
                 className={`px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-lg sm:rounded-xl font-bold text-xs sm:text-sm flex items-center justify-center gap-1 sm:gap-1.5 transition-all shadow-md whitespace-nowrap ${
                   isRankingPrepared
                     ? 'bg-slate-800 text-slate-500 border border-slate-700/60 cursor-not-allowed opacity-40'
-                    : isAlreadyPromoted
+                    : (isAlreadyPromoted || (!isHitRequired && enrolledCandidates.length > 0))
                     ? 'bg-blue-600 hover:bg-blue-500 active:scale-98 text-white cursor-pointer'
                     : 'bg-slate-800 text-slate-500 border border-slate-700/60 cursor-not-allowed opacity-50'
                 }`}
                 title={
                   isRankingPrepared
                     ? 'Disabled: Event ranking completed. Only print of results is possible.'
-                    : (isAlreadyPromoted || !isHitRequired)
+                    : (isAlreadyPromoted || (!isHitRequired && enrolledCandidates.length > 0))
                     ? 'Print Finalist Start List on Plain A4 Paper'
                     : 'Disabled: Final list has not been prepared yet. Click "Prepare Final List" and promote candidates to enable.'
                 }
@@ -710,14 +1067,15 @@ export const HitList: React.FC<HitListProps> = ({
                 type="button"
                 id="btn-thermal-final-list"
                 onClick={() => {
-                  if (isAlreadyPromoted && !isRankingPrepared) {
+                  const canPrintFinal = (isAlreadyPromoted || (!isHitRequired && enrolledCandidates.length > 0)) && !isRankingPrepared;
+                  if (canPrintFinal) {
                     setModalFormat('thermal');
                     setPrintModalType('final');
                   }
                 }}
-                disabled={!isAlreadyPromoted || isRankingPrepared}
+                disabled={(!isAlreadyPromoted && (isHitRequired || enrolledCandidates.length === 0)) || isRankingPrepared}
                 className={`p-1.5 sm:px-2.5 sm:py-2 rounded-lg sm:rounded-xl font-black text-xs sm:text-sm flex items-center justify-center gap-1 transition-all shadow-md whitespace-nowrap ${
-                  !isAlreadyPromoted || isRankingPrepared
+                  (!isAlreadyPromoted && (isHitRequired || enrolledCandidates.length === 0)) || isRankingPrepared
                     ? 'bg-slate-800 text-slate-500 border border-slate-700/60 cursor-not-allowed opacity-40'
                     : 'bg-amber-500 hover:bg-amber-400 active:scale-98 text-slate-950 cursor-pointer'
                 }`}
@@ -725,6 +1083,21 @@ export const HitList: React.FC<HitListProps> = ({
               >
                 <Receipt className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
                 <span className="text-[11px] font-black hidden md:inline">2" Thermal</span>
+              </button>
+              <button
+                type="button"
+                id="btn-whatsapp-final-card"
+                onClick={() => handleShareWhatsApp('final')}
+                disabled={!isAlreadyPromoted || isRankingPrepared}
+                className={`p-1.5 sm:px-2 sm:py-2 rounded-lg sm:rounded-xl font-black text-xs sm:text-sm flex items-center justify-center gap-1 transition-all shadow-md whitespace-nowrap ${
+                  !isAlreadyPromoted || isRankingPrepared
+                    ? 'bg-slate-800 text-slate-500 border border-slate-700/60 cursor-not-allowed opacity-40'
+                    : 'bg-emerald-600 hover:bg-emerald-500 active:scale-98 text-white cursor-pointer'
+                }`}
+                title={`Share (Event: ${currentEvent?.Evt_No} Final) to WhatsApp`}
+              >
+                <WhatsAppIcon className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+                <span className="text-[11px] font-bold hidden md:inline">WhatsApp</span>
               </button>
             </div>
 
@@ -786,7 +1159,12 @@ export const HitList: React.FC<HitListProps> = ({
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-1.5 sm:gap-2">
           {events.map((evt) => {
             const isSelected = selectedEvtNo === evt.Evt_No;
-            const count = candidates.filter((c) => (c.selectedEvents || []).includes(evt.Evt_No)).length;
+            const count = candidates.filter(
+              (c) =>
+                (c.selectedEvents || []).map(Number).includes(Number(evt.Evt_No)) &&
+                !c.isCancelled &&
+                c.status !== 'cancelled'
+            ).length;
             const res = results.find((r) => Number(r.eventNo) === Number(evt.Evt_No));
             const evtCompleted = isRankingPreparedForEvent(evt.Evt_No);
             const evtPromoted = Boolean(res && res.finalists && res.finalists.length > 0);
@@ -833,7 +1211,27 @@ export const HitList: React.FC<HitListProps> = ({
                     {getEventShorthand(evt)}
                   </span>
                   <div className="flex items-center gap-1">
-                    {showFinalLabel && (
+                    {evtCompleted ? (
+                      <div className="flex items-center gap-1">
+                        <span className="text-[9px] sm:text-[10px] font-black uppercase px-2 py-0.5 rounded-md bg-emerald-600 text-white border-2 border-emerald-400 shadow-sm shadow-emerald-600/30 tracking-wider font-mono">
+                          Ranked
+                        </span>
+                        {count > 0 && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedEvtNo(evt.Evt_No);
+                              setPrintModalType('results');
+                            }}
+                            className="p-0.5 rounded bg-emerald-800 hover:bg-emerald-700 text-emerald-100 transition-all cursor-pointer"
+                            title="Print Ranked Results"
+                          >
+                            <Printer className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
+                          </button>
+                        )}
+                      </div>
+                    ) : showFinalLabel ? (
                       <div className="flex items-center gap-1">
                         <span className="text-[9px] sm:text-[10px] font-black uppercase px-2 py-0.5 rounded-md bg-yellow-400 text-slate-950 border-2 border-yellow-200 shadow-sm shadow-yellow-500/30 tracking-wider font-mono">
                           FINAL
@@ -853,12 +1251,7 @@ export const HitList: React.FC<HitListProps> = ({
                           </button>
                         )}
                       </div>
-                    )}
-                    {evtCompleted && (
-                      <span className="text-[8px] sm:text-[9px] font-black uppercase px-1.5 py-0.2 rounded-md bg-emerald-600 text-white border border-emerald-400/50 shadow-xs flex items-center gap-0.5">
-                        Completed
-                      </span>
-                    )}
+                    ) : null}
                     <span className={`font-mono text-[9px] sm:text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
                       evtCompleted
                         ? isSelected ? 'bg-emerald-400 text-slate-950' : 'bg-emerald-800 text-emerald-100'
@@ -963,7 +1356,7 @@ export const HitList: React.FC<HitListProps> = ({
                 )}
               </div>
 
-              <div className="flex items-center gap-2 print:hidden shrink-0">
+              <div className="flex flex-wrap items-center gap-2 print:hidden shrink-0">
                 {isRankingPrepared ? (
                   <span className="text-[11px] sm:text-xs text-emerald-400 font-bold flex items-center gap-1">
                     <CheckCircle2 className="w-3.5 h-3.5" /> Ranking Completed
@@ -983,6 +1376,14 @@ export const HitList: React.FC<HitListProps> = ({
                   <button
                     type="button"
                     onClick={async () => {
+                      if (qualifierSaveTimerRef.current) {
+                        window.clearTimeout(qualifierSaveTimerRef.current);
+                        qualifierSaveTimerRef.current = null;
+                      }
+                      latestDesiredSetRef.current = null;
+                      hasEditedInputForEventRef.current = false;
+                      setOptimisticQualifiedSet(null);
+                      setQualifierChestInput('');
                       for (const h of eventHeats) {
                         await onDeleteHeat(h.id);
                       }
@@ -993,6 +1394,28 @@ export const HitList: React.FC<HitListProps> = ({
                   >
                     <Trash2 className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
                   </button>
+                )}
+
+                {/* Comma-separated Final Qualifier Chest Numbers Text Box */}
+                {!isRankingPrepared && !isAlreadyPromoted && (
+                  <input
+                    type="text"
+                    id="input-final-qualifier-chests"
+                    value={qualifierChestInput}
+                    onChange={(e) => handleQualifierInputChange(e.target.value)}
+                    onBlur={handleQualifierInputBlur}
+                    placeholder="Qualify Chest# (e.g. 101, 105)"
+                    title={
+                      hasInvalidChestInput
+                        ? 'Invalid chest number! Enter comma-separated chest numbers enrolled in this event.'
+                        : 'Type comma-separated chest numbers qualified for final (e.g. 101, 105, 112)'
+                    }
+                    className={`px-2.5 py-1 rounded-lg text-xs sm:text-sm font-mono font-bold border outline-none transition-all w-44 sm:w-56 ${
+                      hasInvalidChestInput
+                        ? 'bg-rose-100 text-rose-700 border-rose-400 placeholder:text-rose-400 focus:ring-2 focus:ring-rose-500'
+                        : 'bg-white text-slate-900 border-slate-300 placeholder:text-slate-400 focus:ring-2 focus:ring-amber-400'
+                    }`}
+                  />
                 )}
               </div>
             </div>
@@ -1026,20 +1449,19 @@ export const HitList: React.FC<HitListProps> = ({
                 </thead>
                 <tbody className="divide-y divide-slate-200">
                   {(() => {
-                    const activeHeat = eventHeats[0];
-                    const displayList = activeHeat ? activeHeat.participants : enrolledCandidates;
-
-                    return displayList.map((item: any, idx: number) => {
-                      const chestNo = item.chestNo;
-                      const candName = item.candidateName || item.name;
+                    return mergedEventParticipants.map((item: HeatParticipant, idx: number) => {
+                      const chestNo = Number(item.chestNo);
+                      const candName = item.candidateName;
                       const clubName = item.club;
-                      const isQualified = activeHeat 
-                        ? Boolean(item.qualified) 
+                      const isQualified = optimisticQualifiedSet !== null
+                        ? optimisticQualifiedSet.has(chestNo)
+                        : eventHeats.length > 0
+                        ? Boolean(item.qualified)
                         : isAlreadyPromoted
-                        ? savedFinalists.some((f) => Number(f.chestNo) === Number(chestNo))
+                        ? savedFinalists.some((f) => Number(f.chestNo) === chestNo)
                         : (!isHitRequired ? true : false);
-                      const isFinalist = isAlreadyPromoted && savedFinalists.some(f => f.chestNo === chestNo);
-                      const finalistRankObj = currentResult?.finalists?.find((f) => Number(f.chestNo) === Number(chestNo));
+                      const isFinalist = isAlreadyPromoted && savedFinalists.some((f) => Number(f.chestNo) === chestNo);
+                      const finalistRankObj = currentResult?.finalists?.find((f) => Number(f.chestNo) === chestNo);
                       const rankPosition = finalistRankObj?.position;
 
                       return (
@@ -1180,35 +1602,47 @@ export const HitList: React.FC<HitListProps> = ({
             
             {/* Modal Actions Bar (Hidden on print) */}
             <div className="sticky top-0 z-30 px-3 sm:px-6 py-2.5 sm:py-3.5 bg-slate-900 text-white flex flex-col gap-2.5 border-b border-slate-800 print:hidden shrink-0">
-              {/* Row 1: Title and Prominent Top-Right Highlighted 'X' Close Button */}
-              <div className="flex items-center justify-between gap-3">
+              {/* Row 1: Title + Thermal Setup & Close 'X' Buttons */}
+              <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 min-w-0">
                   <Printer className="w-4 h-4 text-amber-400 shrink-0" />
                   <div className="min-w-0">
-                    <h3 className="font-bold text-xs sm:text-base truncate">Field Working Copy Preview (Hit List)</h3>
+                    <h3 className="font-bold text-xs sm:text-base truncate">Hit List</h3>
                     <p className="text-[10px] sm:text-[11px] text-slate-400 truncate">
                       Event #{currentEvent?.Evt_No}: {currentEvent?.Evt_Name} • {enrolledCandidates.length} Athlete(s)
                     </p>
                   </div>
                 </div>
 
-                {/* Highlighted 'X' Close Button situated at top right corner */}
-                <button
-                  type="button"
-                  id="btn-close-hit-preview"
-                  onClick={() => setPrintModalType(null)}
-                  className="flex items-center justify-center p-1.5 sm:p-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white border border-rose-400 shadow-md transition-all cursor-pointer active:scale-95 shrink-0"
-                  title="Close Preview (X)"
-                  aria-label="Close Print Preview"
-                >
-                  <X className="w-5 h-5 stroke-[2.5]" />
-                </button>
+                <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setShowThermalSetup(true)}
+                    className="px-2 sm:px-2.5 py-1.5 rounded-xl border border-amber-500/40 transition-all flex items-center gap-1.5 text-xs font-bold text-amber-200 hover:text-white bg-slate-800 hover:bg-slate-700 active:scale-95 cursor-pointer shrink-0"
+                    title="Thermal Printer Setup"
+                    aria-label="Thermal Printer Setup"
+                  >
+                    <Sliders className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                    <span className="hidden xs:inline sm:inline">Setup</span>
+                  </button>
+
+                  {/* Highlighted 'X' Close Button situated at top right corner */}
+                  <button
+                    type="button"
+                    id="btn-close-hit-preview"
+                    onClick={() => setPrintModalType(null)}
+                    className="flex items-center justify-center p-1.5 sm:p-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white border border-rose-400 shadow-md transition-all cursor-pointer active:scale-95 shrink-0"
+                    title="Close Preview (X)"
+                    aria-label="Close Print Preview"
+                  >
+                    <X className="w-5 h-5 stroke-[2.5]" />
+                  </button>
+                </div>
               </div>
 
-              {/* Row 2: Left-aligned (Normal, Thermal, Print) | Right-aligned (58mm Thermal Page Setup) */}
-              <div className="flex items-center justify-between gap-2 w-full">
-                {/* Left Aligned: Normal, Thermal, Print */}
-                <div className="flex items-center gap-1.5 sm:gap-2">
+              {/* Row 2: Format Switcher (Normal, Thermal), Print, WhatsApp */}
+              <div className="flex items-center justify-between gap-2 w-full flex-wrap">
+                <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
                   {/* Format Switcher */}
                   <div className="flex items-center bg-slate-800 p-0.5 rounded-lg border border-slate-700">
                     <button
@@ -1242,101 +1676,127 @@ export const HitList: React.FC<HitListProps> = ({
                   {/* Print Trigger */}
                   <button
                     type="button"
+                    disabled={isDirectPrinting}
                     onClick={handleExecutePrint}
-                    className={`px-2.5 sm:px-4 py-1.5 rounded-lg font-bold text-xs sm:text-sm flex items-center gap-1.5 transition-all shadow-md cursor-pointer ${
+                    className={`px-2.5 sm:px-4 py-1.5 rounded-lg font-bold text-xs sm:text-sm flex items-center gap-1.5 transition-all shadow-md cursor-pointer disabled:opacity-60 active:scale-95 ${
                       modalFormat === 'thermal'
                         ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 font-black'
                         : 'bg-blue-600 hover:bg-blue-500 text-white'
                     }`}
-                    title="Print"
+                    title="Print directly to thermal printer"
                   >
-                    <Printer className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-                    <span>Print</span>
+                    {isDirectPrinting ? (
+                      <RefreshCw className="w-3.5 h-3.5 sm:w-4 sm:h-4 animate-spin text-slate-950" />
+                    ) : (
+                      <Printer className={`w-3.5 h-3.5 sm:w-4 sm:h-4 ${modalFormat === 'thermal' ? 'text-slate-950' : 'text-white'}`} />
+                    )}
+                    <span>{isDirectPrinting ? 'Printing...' : 'Print'}</span>
+                  </button>
+
+                  {/* Share Thermal Data to WhatsApp */}
+                  <button
+                    type="button"
+                    id="btn-whatsapp-share-hit-modal"
+                    onClick={() => handleShareWhatsApp('hit')}
+                    className="px-2.5 sm:px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-xs cursor-pointer shrink-0"
+                    title={`Share (Event: ${currentEvent?.Evt_No} Hit) to WhatsApp`}
+                  >
+                    <WhatsAppIcon className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-white shrink-0" />
+                    <span className="hidden xs:inline sm:inline">WhatsApp</span>
                   </button>
                 </div>
-
-                {/* Right Aligned: 58mm Thermal Page Setup Button */}
-                <button
-                  type="button"
-                  disabled={modalFormat === 'a4'}
-                  onClick={() => setShowThermalSetup(true)}
-                  className={`px-2 sm:px-2.5 py-1.5 rounded-lg border border-slate-700 transition-all flex items-center gap-1.5 text-xs font-bold ${
-                    modalFormat === 'a4'
-                      ? 'opacity-40 cursor-not-allowed bg-slate-800/60 text-slate-500'
-                      : 'text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 active:scale-98 cursor-pointer'
-                  }`}
-                  title={modalFormat === 'a4' ? "Thermal setup only available in Thermal mode" : "58mm Thermal Printer Page Setup"}
-                >
-                  <Sliders className={`w-3.5 h-3.5 ${modalFormat === 'a4' ? 'text-slate-500' : 'text-amber-400'}`} />
-                  <span className="hidden sm:inline">58mm Setup</span>
-                </button>
               </div>
+
+              {/* Direct Mobile Printing Status Alert */}
+              {directPrintStatus && (
+                <div className="w-full text-xs font-semibold px-2.5 py-1.5 rounded-lg bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center justify-between gap-2 animate-in fade-in duration-150">
+                  <div className="flex items-center gap-1.5 truncate">
+                    {isDirectPrinting ? (
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-400 shrink-0" />
+                    ) : (
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                    )}
+                    <span className="truncate">{directPrintStatus}</span>
+                  </div>
+                  {!isDirectPrinting && (
+                    <button
+                      type="button"
+                      onClick={() => setDirectPrintStatus(null)}
+                      className="text-slate-400 hover:text-white p-0.5 rounded cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Scrollable Preview Canvas */}
             {modalFormat === 'thermal' ? (
               /* ================= 58MM THERMAL ROLL RECEIPT PREVIEW (EXACT MATCHING) ================= */
-              <div className="p-4 sm:p-8 bg-slate-300 overflow-y-auto flex-1 flex flex-col items-center print:p-0 print:bg-white print:overflow-visible">
+              <div className="p-3 sm:p-8 bg-slate-300 overflow-y-auto flex-1 flex flex-col items-center print:p-0 print:bg-white print:overflow-visible">
                 <div className="text-[11px] font-bold text-slate-700 mb-2 flex items-center gap-1.5 print:hidden">
                   <Receipt className="w-3.5 h-3.5 text-amber-600" />
-                  <span>58mm Roll Preview ({thermalConfig.printableWidth}mm net printable)</span>
+                  <span>58mm Roll Preview ({thermalConfig.printableWidth}mm • {thermalConfig.fontSize}pt)</span>
                 </div>
                 <div
-                  className="receipt thermal-printable-sheet bg-white text-black p-3 shadow-2xl rounded-xs select-none print:shadow-none print:p-0"
+                  className="receipt thermal-printable-sheet bg-white text-black p-0 shadow-2xl rounded-xs select-none print:shadow-none print:p-0"
                   style={{
                     width: `${thermalConfig.printableWidth}mm`,
                     maxWidth: `${thermalConfig.printableWidth}mm`,
+                    boxSizing: 'border-box',
                     paddingLeft: `${thermalConfig.marginHorizontal}mm`,
                     paddingRight: `${thermalConfig.marginHorizontal}mm`,
-                    paddingTop: `${thermalConfig.topMargin || 5}mm`,
+                    paddingTop: `${thermalConfig.topMargin ?? 5}mm`,
                     paddingBottom: `${thermalConfig.feedBeforeCut}mm`,
-                    fontSize: `${thermalConfig.fontSize}px`,
+                    fontSize: `${thermalConfig.fontSize}pt`,
                     lineHeight: thermalConfig.lineSpacing,
-                    fontFamily: 'Consolas, "Courier New", monospace',
+                    fontFamily: 'Arial, "Segoe UI", Helvetica, sans-serif',
                   }}
                 >
-                  {/* Header: same as Candidate list */}
+                  {/* Header */}
                   {renderThermalHeader()}
-
-                  {/* Dashed Line */}
-                  <div className="border-b border-dashed border-black my-1"></div>
 
                   {/* Event Title Line: broken into two lines */}
                   <div className="text-center py-0.5 tracking-tight text-black leading-tight">
-                    <div className="font-bold text-[10px] uppercase">HIT LIST</div>
-                    <div className="text-[8.5px] font-semibold mt-0.5 uppercase break-words">
-                      EVT #{currentEvent?.Evt_No}: {currentEvent?.Evt_Name} ({(currentEvent?.Height || '').toUpperCase() === 'ALL' ? 'ALL' : (currentEvent?.Height || '').replace(/[`']/g, "'").replace(/''|``|"/g, "''")} • {currentEvent?.Gender?.trim().toUpperCase().startsWith('BOY') ? 'B' : currentEvent?.Gender?.trim().toUpperCase().startsWith('GIRL') ? 'G' : currentEvent?.Gender?.trim().toUpperCase().startsWith('CHILD') ? 'C' : 'ALL'})
+                    <div className="font-bold uppercase">HIT LIST</div>
+                    <div className="thermal-event-details font-normal mt-0.5 uppercase tracking-tight break-words leading-tight">
+                      {currentEvent ? (
+                        <><span className="thermal-event-no font-bold">EVT {currentEvent.Evt_No}</span>{formatThermalEventSuffix(currentEvent.Evt_Name, currentEvent.Height, currentEvent.Gender)}</>
+                      ) : ''}
                     </div>
                   </div>
 
-                  {/* Dashed Line */}
-                  <div className="border-b border-dashed border-black my-1"></div>
+                  {/* Single Dashed Line */}
+                  <div className="w-full border-b border-dashed border-black my-1"></div>
 
                   {/* Table Column Headers */}
-                  <div className="flex items-center text-[9px] font-bold text-black uppercase pt-1">
-                    <span className="w-6 text-center">SL</span>
-                    <span className="w-8 text-center">CH#</span>
-                    <span className="flex-1 text-left pl-2">ATHLETE (CLUB)</span>
+                  <div className="flex items-center font-normal text-black uppercase pt-1">
+                    <span className="w-[1.8em] text-left shrink-0">SL</span>
+                    <span className="w-[2.6em] text-left shrink-0">CH</span>
+                    <span className="flex-1 text-left pl-1">ATHLETE (CLUB)</span>
                   </div>
-                  <div className="border-b-2 border-black mb-1 mt-0.5"></div>
+                  <div className="w-full border-b-2 border-black mb-1 mt-0.5"></div>
 
                   {/* Athletes List with dotted separators */}
                   <div className="space-y-0 text-black">
                     {enrolledCandidates.map((cand, idx) => (
                       <div key={cand.id || cand.chestNo}>
-                        <div className="flex items-center text-[9.5px] py-1 text-black leading-tight">
-                          <span className="w-6 text-center font-normal shrink-0">{idx + 1}</span>
-                          <span className="w-8 text-center font-bold shrink-0">{cand.chestNo}</span>
-                          <span className="flex-1 text-left font-normal uppercase truncate pl-2">
-                            {cand.name} ({cand.club || 'BANDIPUR'})
-                          </span>
+                        <div className="flex items-start py-1 text-black leading-tight">
+                          <span className="w-[1.8em] text-left font-normal shrink-0">{idx + 1}</span>
+                          <span className="w-[2.6em] text-left font-normal shrink-0 thermal-chest-no">{cand.chestNo}</span>
+                          <div className="flex-1 min-w-0 text-left pl-1">
+                            <div className="font-normal uppercase thermal-record-clamp-1">
+                              {cand.name} ({cand.club || 'BANDIPUR'})
+                            </div>
+                          </div>
                         </div>
-                        <div className="border-b border-dotted border-black/80"></div>
+                        <div className="w-full border-b border-dotted border-black/80"></div>
                       </div>
                     ))}
                   </div>
 
-                  {/* Footer: same as Candidate list */}
+                  {/* Footer */}
                   {renderThermalFooter()}
                 </div>
               </div>
@@ -1462,35 +1922,47 @@ export const HitList: React.FC<HitListProps> = ({
             
             {/* Modal Actions Bar (Hidden on print) */}
             <div className="sticky top-0 z-30 px-3 sm:px-6 py-2.5 sm:py-3.5 bg-slate-900 text-white flex flex-col gap-2.5 border-b border-slate-800 print:hidden shrink-0">
-              {/* Row 1: Title and Prominent Top-Right Highlighted 'X' Close Button */}
-              <div className="flex items-center justify-between gap-3">
+              {/* Row 1: Title + Thermal Setup & Close 'X' Buttons */}
+              <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 min-w-0">
                   <Award className="w-4 h-4 text-blue-400 shrink-0" />
                   <div className="min-w-0">
-                    <h3 className="font-bold text-xs sm:text-base truncate">Official Final List Preview (Championship Round)</h3>
+                    <h3 className="font-bold text-xs sm:text-base truncate">Final List</h3>
                     <p className="text-[10px] sm:text-[11px] text-slate-400 truncate">
                       Event #{currentEvent?.Evt_No}: {currentEvent?.Evt_Name} • {effectiveFinalists.length} Finalist(s)
                     </p>
                   </div>
                 </div>
 
-                {/* Highlighted 'X' Close Button situated at top right corner */}
-                <button
-                  type="button"
-                  id="btn-close-final-preview"
-                  onClick={() => setPrintModalType(null)}
-                  className="flex items-center justify-center p-1.5 sm:p-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white border border-rose-400 shadow-md transition-all cursor-pointer active:scale-95 shrink-0"
-                  title="Close Preview (X)"
-                  aria-label="Close Print Preview"
-                >
-                  <X className="w-5 h-5 stroke-[2.5]" />
-                </button>
+                <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setShowThermalSetup(true)}
+                    className="px-2 sm:px-2.5 py-1.5 rounded-xl border border-amber-500/40 transition-all flex items-center gap-1.5 text-xs font-bold text-amber-200 hover:text-white bg-slate-800 hover:bg-slate-700 active:scale-95 cursor-pointer shrink-0"
+                    title="Thermal Printer Setup"
+                    aria-label="Thermal Printer Setup"
+                  >
+                    <Sliders className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                    <span className="hidden xs:inline sm:inline">Setup</span>
+                  </button>
+
+                  {/* Highlighted 'X' Close Button situated at top right corner */}
+                  <button
+                    type="button"
+                    id="btn-close-final-preview"
+                    onClick={() => setPrintModalType(null)}
+                    className="flex items-center justify-center p-1.5 sm:p-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white border border-rose-400 shadow-md transition-all cursor-pointer active:scale-95 shrink-0"
+                    title="Close Preview (X)"
+                    aria-label="Close Print Preview"
+                  >
+                    <X className="w-5 h-5 stroke-[2.5]" />
+                  </button>
+                </div>
               </div>
 
-              {/* Row 2: Left-aligned (Normal, Thermal, Print) | Right-aligned (58mm Thermal Page Setup) */}
-              <div className="flex items-center justify-between gap-2 w-full">
-                {/* Left Aligned: Normal, Thermal, Print */}
-                <div className="flex items-center gap-1.5 sm:gap-2">
+              {/* Row 2: Format Switcher (Normal, Thermal), Print, WhatsApp */}
+              <div className="flex items-center justify-between gap-2 w-full flex-wrap">
+                <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
                   {/* Format Switcher */}
                   <div className="flex items-center bg-slate-800 p-0.5 rounded-lg border border-slate-700">
                     <button
@@ -1524,101 +1996,127 @@ export const HitList: React.FC<HitListProps> = ({
                   {/* Print Action */}
                   <button
                     type="button"
+                    disabled={isDirectPrinting}
                     onClick={handleExecutePrint}
-                    className={`px-2.5 sm:px-4 py-1.5 rounded-lg font-bold text-xs sm:text-sm flex items-center gap-1.5 transition-all shadow-md cursor-pointer ${
+                    className={`px-2.5 sm:px-4 py-1.5 rounded-lg font-bold text-xs sm:text-sm flex items-center gap-1.5 transition-all shadow-md cursor-pointer disabled:opacity-60 active:scale-95 ${
                       modalFormat === 'thermal'
                         ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 font-black'
                         : 'bg-blue-600 hover:bg-blue-500 text-white'
                     }`}
-                    title="Print"
+                    title="Print directly to thermal printer"
                   >
-                    <Printer className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-                    <span>Print</span>
+                    {isDirectPrinting ? (
+                      <RefreshCw className="w-3.5 h-3.5 sm:w-4 sm:h-4 animate-spin text-slate-950" />
+                    ) : (
+                      <Printer className={`w-3.5 h-3.5 sm:w-4 sm:h-4 ${modalFormat === 'thermal' ? 'text-slate-950' : 'text-white'}`} />
+                    )}
+                    <span>{isDirectPrinting ? 'Printing...' : 'Print'}</span>
+                  </button>
+
+                  {/* Share Thermal Data to WhatsApp */}
+                  <button
+                    type="button"
+                    id="btn-whatsapp-share-final-modal"
+                    onClick={() => handleShareWhatsApp('final')}
+                    className="px-2.5 sm:px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-xs cursor-pointer shrink-0"
+                    title={`Share (Event: ${currentEvent?.Evt_No} Final) to WhatsApp`}
+                  >
+                    <WhatsAppIcon className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-white shrink-0" />
+                    <span className="hidden xs:inline sm:inline">WhatsApp</span>
                   </button>
                 </div>
-
-                {/* Right Aligned: 58mm Thermal Page Setup Button */}
-                <button
-                  type="button"
-                  disabled={modalFormat === 'a4'}
-                  onClick={() => setShowThermalSetup(true)}
-                  className={`px-2 sm:px-2.5 py-1.5 rounded-lg border border-slate-700 transition-all flex items-center gap-1.5 text-xs font-bold ${
-                    modalFormat === 'a4'
-                      ? 'opacity-40 cursor-not-allowed bg-slate-800/60 text-slate-500'
-                      : 'text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 active:scale-98 cursor-pointer'
-                  }`}
-                  title={modalFormat === 'a4' ? "Thermal setup only available in Thermal mode" : "58mm Thermal Printer Page Setup"}
-                >
-                  <Sliders className={`w-3.5 h-3.5 ${modalFormat === 'a4' ? 'text-slate-500' : 'text-amber-400'}`} />
-                  <span className="hidden sm:inline">58mm Setup</span>
-                </button>
               </div>
+
+              {/* Direct Mobile Printing Status Alert */}
+              {directPrintStatus && (
+                <div className="w-full text-xs font-semibold px-2.5 py-1.5 rounded-lg bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center justify-between gap-2 animate-in fade-in duration-150">
+                  <div className="flex items-center gap-1.5 truncate">
+                    {isDirectPrinting ? (
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-400 shrink-0" />
+                    ) : (
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                    )}
+                    <span className="truncate">{directPrintStatus}</span>
+                  </div>
+                  {!isDirectPrinting && (
+                    <button
+                      type="button"
+                      onClick={() => setDirectPrintStatus(null)}
+                      className="text-slate-400 hover:text-white p-0.5 rounded cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Scrollable Preview Canvas */}
             {modalFormat === 'thermal' ? (
               /* ================= 58MM THERMAL ROLL RECEIPT PREVIEW (EXACT MATCHING) ================= */
-              <div className="p-4 sm:p-8 bg-slate-300 overflow-y-auto flex-1 flex flex-col items-center print:p-0 print:bg-white print:overflow-visible">
+              <div className="p-3 sm:p-8 bg-slate-300 overflow-y-auto flex-1 flex flex-col items-center print:p-0 print:bg-white print:overflow-visible">
                 <div className="text-[11px] font-bold text-slate-700 mb-2 flex items-center gap-1.5 print:hidden">
                   <Receipt className="w-3.5 h-3.5 text-amber-600" />
-                  <span>58mm Roll Preview ({thermalConfig.printableWidth}mm net printable)</span>
+                  <span>58mm Roll Preview ({thermalConfig.printableWidth}mm • {thermalConfig.fontSize}pt)</span>
                 </div>
                 <div
-                  className="receipt thermal-printable-sheet bg-white text-black p-3 shadow-2xl rounded-xs select-none print:shadow-none print:p-0"
+                  className="receipt thermal-printable-sheet bg-white text-black p-0 shadow-2xl rounded-xs select-none print:shadow-none print:p-0"
                   style={{
                     width: `${thermalConfig.printableWidth}mm`,
                     maxWidth: `${thermalConfig.printableWidth}mm`,
+                    boxSizing: 'border-box',
                     paddingLeft: `${thermalConfig.marginHorizontal}mm`,
                     paddingRight: `${thermalConfig.marginHorizontal}mm`,
-                    paddingTop: `${thermalConfig.topMargin || 5}mm`,
+                    paddingTop: `${thermalConfig.topMargin ?? 5}mm`,
                     paddingBottom: `${thermalConfig.feedBeforeCut}mm`,
-                    fontSize: `${thermalConfig.fontSize}px`,
+                    fontSize: `${thermalConfig.fontSize}pt`,
                     lineHeight: thermalConfig.lineSpacing,
-                    fontFamily: 'Consolas, "Courier New", monospace',
+                    fontFamily: 'Arial, "Segoe UI", Helvetica, sans-serif',
                   }}
                 >
-                  {/* Header: same as Candidate list */}
+                  {/* Header */}
                   {renderThermalHeader()}
-
-                  {/* Dashed Line */}
-                  <div className="border-b border-dashed border-black my-1"></div>
 
                   {/* Event Title Line: broken into two lines */}
                   <div className="text-center py-0.5 tracking-tight text-black leading-tight">
-                    <div className="font-bold text-[10px] uppercase">FINAL LIST</div>
-                    <div className="text-[8.5px] font-semibold mt-0.5 uppercase break-words">
-                      EVT #{currentEvent?.Evt_No}: {currentEvent?.Evt_Name} ({(currentEvent?.Height || '').toUpperCase() === 'ALL' ? 'ALL' : (currentEvent?.Height || '').replace(/[`']/g, "'").replace(/''|``|"/g, "''")} • {currentEvent?.Gender?.trim().toUpperCase().startsWith('BOY') ? 'B' : currentEvent?.Gender?.trim().toUpperCase().startsWith('GIRL') ? 'G' : currentEvent?.Gender?.trim().toUpperCase().startsWith('CHILD') ? 'C' : 'ALL'})
+                    <div className="font-bold uppercase">FINAL LIST</div>
+                    <div className="thermal-event-details font-normal mt-0.5 uppercase tracking-tight break-words leading-tight">
+                      {currentEvent ? (
+                        <><span className="thermal-event-no font-bold">EVT {currentEvent.Evt_No}</span>{formatThermalEventSuffix(currentEvent.Evt_Name, currentEvent.Height, currentEvent.Gender)}</>
+                      ) : ''}
                     </div>
                   </div>
 
-                  {/* Dashed Line */}
-                  <div className="border-b border-dashed border-black my-1"></div>
+                  {/* Single Dashed Line */}
+                  <div className="w-full border-b border-dashed border-black my-1"></div>
 
                   {/* Table Column Headers */}
-                  <div className="flex items-center text-[9px] font-bold text-black uppercase pt-1">
-                    <span className="w-6 text-center">SL</span>
-                    <span className="w-8 text-center">CH#</span>
-                    <span className="flex-1 text-left pl-2">ATHLETE (CLUB)</span>
+                  <div className="flex items-center font-normal text-black uppercase pt-1">
+                    <span className="w-[1.8em] text-left shrink-0">SL</span>
+                    <span className="w-[2.6em] text-left shrink-0">CH</span>
+                    <span className="flex-1 text-left pl-1">ATHLETE (CLUB)</span>
                   </div>
-                  <div className="border-b-2 border-black mb-1 mt-0.5"></div>
+                  <div className="w-full border-b-2 border-black mb-1 mt-0.5"></div>
 
                   {/* Finalists List with dotted separators */}
                   <div className="space-y-0 text-black">
                     {effectiveFinalists.map((cand, idx) => (
                       <div key={cand.chestNo}>
-                        <div className="flex items-center text-[9.5px] py-1 text-black leading-tight">
-                          <span className="w-6 text-center font-normal shrink-0">{idx + 1}</span>
-                          <span className="w-8 text-center font-bold shrink-0">{cand.chestNo}</span>
-                          <span className="flex-1 text-left font-normal uppercase truncate pl-2">
-                            {cand.candidateName} ({cand.club || 'BANDIPUR'})
-                          </span>
+                        <div className="flex items-start py-1 text-black leading-tight">
+                          <span className="w-[1.8em] text-left font-normal shrink-0">{idx + 1}</span>
+                          <span className="w-[2.6em] text-left font-normal shrink-0 thermal-chest-no">{cand.chestNo}</span>
+                          <div className="flex-1 min-w-0 text-left pl-1">
+                            <div className="font-normal uppercase thermal-record-clamp-1">
+                              {cand.candidateName} ({cand.club || 'BANDIPUR'})
+                            </div>
+                          </div>
                         </div>
-                        <div className="border-b border-dotted border-black/80"></div>
+                        <div className="w-full border-b border-dotted border-black/80"></div>
                       </div>
                     ))}
                   </div>
 
-                  {/* Footer: same as Candidate list */}
+                  {/* Footer */}
                   {renderThermalFooter()}
                 </div>
               </div>
@@ -1771,35 +2269,47 @@ export const HitList: React.FC<HitListProps> = ({
             
             {/* Modal Actions Bar (Hidden on print) */}
             <div className="sticky top-0 z-30 px-3 sm:px-6 py-2.5 sm:py-3.5 bg-slate-900 text-white flex flex-col gap-2.5 border-b border-slate-800 print:hidden shrink-0">
-              {/* Row 1: Title and Prominent Top-Right Highlighted 'X' Close Button */}
-              <div className="flex items-center justify-between gap-3">
+              {/* Row 1: Title + Thermal Setup & Close 'X' Buttons */}
+              <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 min-w-0">
                   <Trophy className="w-4 h-4 text-emerald-400 shrink-0" />
                   <div className="min-w-0">
-                    <h3 className="font-bold text-xs sm:text-base truncate">Official Event Results &amp; Rankings Report</h3>
+                    <h3 className="font-bold text-xs sm:text-base truncate">Rankings</h3>
                     <p className="text-[10px] sm:text-[11px] text-slate-400 truncate">
                       Event #{currentEvent?.Evt_No}: {currentEvent?.Evt_Name} • {rankedWinners.length} Ranked Winner(s)
                     </p>
                   </div>
                 </div>
 
-                {/* Highlighted 'X' Close Button situated at top right corner */}
-                <button
-                  type="button"
-                  id="btn-close-results-preview"
-                  onClick={() => setPrintModalType(null)}
-                  className="flex items-center justify-center p-1.5 sm:p-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white border border-rose-400 shadow-md transition-all cursor-pointer active:scale-95 shrink-0"
-                  title="Close Preview (X)"
-                  aria-label="Close Print Preview"
-                >
-                  <X className="w-5 h-5 stroke-[2.5]" />
-                </button>
+                <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setShowThermalSetup(true)}
+                    className="px-2 sm:px-2.5 py-1.5 rounded-xl border border-amber-500/40 transition-all flex items-center gap-1.5 text-xs font-bold text-amber-200 hover:text-white bg-slate-800 hover:bg-slate-700 active:scale-95 cursor-pointer shrink-0"
+                    title="Thermal Printer Setup"
+                    aria-label="Thermal Printer Setup"
+                  >
+                    <Sliders className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                    <span className="hidden xs:inline sm:inline">Setup</span>
+                  </button>
+
+                  {/* Highlighted 'X' Close Button situated at top right corner */}
+                  <button
+                    type="button"
+                    id="btn-close-results-preview"
+                    onClick={() => setPrintModalType(null)}
+                    className="flex items-center justify-center p-1.5 sm:p-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white border border-rose-400 shadow-md transition-all cursor-pointer active:scale-95 shrink-0"
+                    title="Close Preview (X)"
+                    aria-label="Close Print Preview"
+                  >
+                    <X className="w-5 h-5 stroke-[2.5]" />
+                  </button>
+                </div>
               </div>
 
-              {/* Row 2: Left-aligned (Normal, Thermal, Print) | Right-aligned (58mm Thermal Page Setup) */}
-              <div className="flex items-center justify-between gap-2 w-full">
-                {/* Left Aligned: Normal, Thermal, Print */}
-                <div className="flex items-center gap-1.5 sm:gap-2">
+              {/* Row 2: Format Switcher (Normal, Thermal), Print, WhatsApp */}
+              <div className="flex items-center justify-between gap-2 w-full flex-wrap">
+                <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
                   {/* Format Switcher */}
                   <div className="flex items-center bg-slate-800 p-0.5 rounded-lg border border-slate-700">
                     <button
@@ -1833,126 +2343,197 @@ export const HitList: React.FC<HitListProps> = ({
                   {/* Print Trigger */}
                   <button
                     type="button"
+                    disabled={isDirectPrinting}
                     onClick={handleExecutePrint}
-                    className={`px-2.5 sm:px-4 py-1.5 rounded-lg font-bold text-xs sm:text-sm flex items-center gap-1.5 transition-all shadow-md cursor-pointer ${
+                    className={`px-2.5 sm:px-4 py-1.5 rounded-lg font-bold text-xs sm:text-sm flex items-center gap-1.5 transition-all shadow-md cursor-pointer disabled:opacity-60 active:scale-95 ${
                       modalFormat === 'thermal'
                         ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 font-black'
                         : 'bg-emerald-600 hover:bg-emerald-500 text-white'
                     }`}
-                    title="Print"
+                    title="Print directly to thermal printer"
                   >
-                    <Printer className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-                    <span>Print</span>
+                    {isDirectPrinting ? (
+                      <RefreshCw className="w-3.5 h-3.5 sm:w-4 sm:h-4 animate-spin text-slate-950" />
+                    ) : (
+                      <Printer className={`w-3.5 h-3.5 sm:w-4 sm:h-4 ${modalFormat === 'thermal' ? 'text-slate-950' : 'text-white'}`} />
+                    )}
+                    <span>{isDirectPrinting ? 'Printing...' : 'Print'}</span>
+                  </button>
+
+                  {/* Share Thermal Data to WhatsApp */}
+                  <button
+                    type="button"
+                    id="btn-whatsapp-share-results-modal"
+                    onClick={() => handleShareWhatsApp('results')}
+                    className="px-2.5 sm:px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-xs cursor-pointer shrink-0"
+                    title={`Share (Event: ${currentEvent?.Evt_No} Rank) to WhatsApp`}
+                  >
+                    <WhatsAppIcon className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-white shrink-0" />
+                    <span className="hidden xs:inline sm:inline">WhatsApp</span>
                   </button>
                 </div>
-
-                {/* Right Aligned: 58mm Thermal Page Setup Button */}
-                <button
-                  type="button"
-                  disabled={modalFormat === 'a4'}
-                  onClick={() => setShowThermalSetup(true)}
-                  className={`px-2 sm:px-2.5 py-1.5 rounded-lg border border-slate-700 transition-all flex items-center gap-1.5 text-xs font-bold ${
-                    modalFormat === 'a4'
-                      ? 'opacity-40 cursor-not-allowed bg-slate-800/60 text-slate-500'
-                      : 'text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 active:scale-98 cursor-pointer'
-                  }`}
-                  title={modalFormat === 'a4' ? "Thermal setup only available in Thermal mode" : "58mm Thermal Printer Page Setup"}
-                >
-                  <Sliders className={`w-3.5 h-3.5 ${modalFormat === 'a4' ? 'text-slate-500' : 'text-amber-400'}`} />
-                  <span className="hidden sm:inline">58mm Setup</span>
-                </button>
               </div>
+
+              {/* Direct Mobile Printing Status Alert */}
+              {directPrintStatus && (
+                <div className="w-full text-xs font-semibold px-2.5 py-1.5 rounded-lg bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center justify-between gap-2 animate-in fade-in duration-150">
+                  <div className="flex items-center gap-1.5 truncate">
+                    {isDirectPrinting ? (
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-400 shrink-0" />
+                    ) : (
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                    )}
+                    <span className="truncate">{directPrintStatus}</span>
+                  </div>
+                  {!isDirectPrinting && (
+                    <button
+                      type="button"
+                      onClick={() => setDirectPrintStatus(null)}
+                      className="text-slate-400 hover:text-white p-0.5 rounded cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Scrollable Preview Canvas */}
             {modalFormat === 'thermal' ? (
               /* ================= 58MM THERMAL ROLL RECEIPT PREVIEW (EXACT MATCHING) ================= */
-              <div className="p-4 sm:p-8 bg-slate-300 overflow-y-auto flex-1 flex flex-col items-center print:p-0 print:bg-white print:overflow-visible">
+              <div className="p-3 sm:p-8 bg-slate-300 overflow-y-auto flex-1 flex flex-col items-center print:p-0 print:bg-white print:overflow-visible">
                 <div className="text-[11px] font-bold text-slate-700 mb-2 flex items-center gap-1.5 print:hidden">
                   <Receipt className="w-3.5 h-3.5 text-amber-600" />
-                  <span>58mm Roll Preview ({thermalConfig.printableWidth}mm net printable)</span>
+                  <span>58mm Roll Preview ({thermalConfig.printableWidth}mm • {thermalConfig.fontSize}pt)</span>
                 </div>
                 <div
-                  className="receipt thermal-printable-sheet bg-white text-black p-3 shadow-2xl rounded-xs select-none print:shadow-none print:p-0"
+                  className="receipt thermal-printable-sheet bg-white text-black p-0 shadow-2xl rounded-xs select-none print:shadow-none print:p-0"
                   style={{
                     width: `${thermalConfig.printableWidth}mm`,
                     maxWidth: `${thermalConfig.printableWidth}mm`,
+                    boxSizing: 'border-box',
                     paddingLeft: `${thermalConfig.marginHorizontal}mm`,
                     paddingRight: `${thermalConfig.marginHorizontal}mm`,
-                    paddingTop: `${thermalConfig.topMargin || 5}mm`,
+                    paddingTop: `${thermalConfig.topMargin ?? 5}mm`,
                     paddingBottom: `${thermalConfig.feedBeforeCut}mm`,
-                    fontSize: `${thermalConfig.fontSize}px`,
+                    fontSize: `${thermalConfig.fontSize}pt`,
                     lineHeight: thermalConfig.lineSpacing,
-                    fontFamily: 'Consolas, "Courier New", monospace',
+                    fontFamily: 'Arial, "Segoe UI", Helvetica, sans-serif',
                   }}
                 >
-                  {/* Header: same as Candidate list */}
+                  {/* Header */}
                   {renderThermalHeader()}
-
-                  {/* Dashed Line */}
-                  <div className="border-b border-dashed border-black my-1"></div>
 
                   {/* Event Title Line: broken into two lines */}
                   <div className="text-center py-0.5 tracking-tight text-black leading-tight">
-                    <div className="font-bold text-[10px] uppercase">RANKING LIST</div>
-                    <div className="text-[8.5px] font-semibold mt-0.5 uppercase break-words">
-                      EVT #{currentEvent?.Evt_No}: {currentEvent?.Evt_Name} ({(currentEvent?.Height || '').toUpperCase() === 'ALL' ? 'ALL' : (currentEvent?.Height || '').replace(/[`']/g, "'").replace(/''|``|"/g, "''")} • {currentEvent?.Gender?.trim().toUpperCase().startsWith('BOY') ? 'B' : currentEvent?.Gender?.trim().toUpperCase().startsWith('GIRL') ? 'G' : currentEvent?.Gender?.trim().toUpperCase().startsWith('CHILD') ? 'C' : 'ALL'})
+                    <div className="font-bold uppercase">RANKING LIST</div>
+                    <div className="thermal-event-details font-normal mt-0.5 uppercase tracking-tight break-words leading-tight">
+                      {currentEvent ? (
+                        <><span className="thermal-event-no font-bold">EVT {currentEvent.Evt_No}</span>{formatThermalEventSuffix(currentEvent.Evt_Name, currentEvent.Height, currentEvent.Gender)}</>
+                      ) : ''}
                     </div>
                   </div>
 
-                  {/* Dashed Line */}
-                  <div className="border-b border-dashed border-black my-1"></div>
+                  {/* Single Dashed Line */}
+                  <div className="w-full border-b border-dashed border-black my-1"></div>
 
                   {(() => {
                     const isBroadJump = (currentEvent?.Evt_Name || '').toUpperCase().includes('BROAD JUMP');
                     return (
                       <>
                         {/* Table Column Headers */}
-                        <div className="flex items-center text-[9px] font-bold text-black uppercase pt-1">
-                          <span className={isBroadJump ? "w-7 text-center shrink-0" : "w-8 text-center shrink-0"}>Rank</span>
-                          <span className={isBroadJump ? "w-7 text-center shrink-0" : "w-8 text-center shrink-0"}>CH#</span>
-                          <span className={isBroadJump ? "flex-1 text-left pl-1" : "flex-1 text-left pl-2"}>ATHLETE (CLUB)</span>
+                        <div className="flex items-center font-normal text-black uppercase pt-1">
+                          <span className="w-[2.2em] text-left shrink-0">RK</span>
+                          <span className="w-[2.6em] text-left shrink-0">CH</span>
+                          <span className="flex-1 text-left pl-1">ATHLETE (CLUB)</span>
                           {isBroadJump && (
-                            <span className="w-14 text-right pr-0.5 shrink-0">Jump</span>
+                            <span className="text-right pl-1 shrink-0">JMP</span>
                           )}
                         </div>
-                        <div className="border-b-2 border-black mb-1 mt-0.5"></div>
+                        <div className="w-full border-b-2 border-black mb-1 mt-0.5"></div>
 
                         {/* Ranked Athletes List with dotted separators */}
                         <div className="space-y-0 text-black">
                           {rankedWinners.length === 0 ? (
-                            <div className="text-[8px] italic text-center py-2 text-slate-600">
+                            <div className="italic text-center py-2 text-slate-600">
                               No rankings declared yet for this event.
                             </div>
                           ) : (
                             rankedWinners.map((w, idx) => {
                               const p = (w.position && w.position > 0) ? w.position : (idx + 1);
                               const rankLabel = p === 1 ? '1st' : p === 2 ? '2nd' : p === 3 ? '3rd' : `${p}th`;
+                              const club = getClubInfo(w.club || '');
+                              const isSelf = (w.club || '').trim().toUpperCase() === 'SELF';
+                              const clubNameStr = isSelf ? '' : (club?.name || w.club || '').trim();
+                              const athleteDisplay = clubNameStr ? `${w.candidateName} (${clubNameStr})` : w.candidateName;
+                              const jumpVal = isBroadJump ? (w.jumpRecord || w.resultValue || '—') : undefined;
                               return (
                                 <div key={w.chestNo}>
-                                  <div className="flex items-center text-[9.5px] py-1 text-black leading-tight">
-                                    <span className={isBroadJump ? "w-7 text-center font-normal shrink-0" : "w-8 text-center font-normal shrink-0"}>{rankLabel}</span>
-                                    <span className={isBroadJump ? "w-7 text-center font-bold shrink-0" : "w-8 text-center font-bold shrink-0"}>{w.chestNo}</span>
-                                    <span className={isBroadJump ? "flex-1 text-left font-normal uppercase truncate pl-1" : "flex-1 text-left font-normal uppercase truncate pl-2"}>
-                                      {w.candidateName} ({w.club || 'BANDIPUR'})
-                                    </span>
-                                    {isBroadJump && (
-                                      <span className="w-14 text-right font-mono text-[8.5px] font-normal shrink-0">
-                                        {w.jumpRecord || w.resultValue || '—'}
-                                      </span>
-                                    )}
+                                  <div className="flex items-start py-1 text-black leading-tight">
+                                    <span className="w-[2.2em] text-left font-normal shrink-0">{rankLabel}</span>
+                                    <span className="w-[2.6em] text-left font-normal shrink-0 thermal-chest-no">{w.chestNo}</span>
+                                    <div className="flex-1 min-w-0 text-left font-normal uppercase pl-1">
+                                      <ThermalTwoLineRecord
+                                        text={athleteDisplay}
+                                        rightText={jumpVal}
+                                        rightClassName="thermal-jump-record whitespace-nowrap"
+                                        deps={[thermalConfig.printableWidth, thermalConfig.fontSize, thermalConfig.lineSpacing, thermalConfig.marginHorizontal]}
+                                      />
+                                    </div>
                                   </div>
-                                  <div className="border-b border-dotted border-black/80"></div>
+                                  <div className="w-full border-b border-dotted border-black/80"></div>
                                 </div>
                               );
                             })
                           )}
                         </div>
+
+                        {isBroadJump && (() => {
+                          const prevRecord = settings.broadJumpPreviousRecords?.[Number(currentEvent?.Evt_No)] ||
+                            (currentResult?.highestRecord?.previousRecordValue ? {
+                              recordValue: currentResult.highestRecord.previousRecordValue,
+                              recordHolderName: currentResult.highestRecord.previousRecordHolder || 'Record Holder',
+                              recordHolderClub: '',
+                              recordYear: currentResult.highestRecord.previousRecordYear || '',
+                            } : null);
+
+                          if (!prevRecord) return null;
+
+                          const prevInches = parseJumpToInches(prevRecord.recordValue);
+                          let maxJumpInches = 0;
+                          rankedWinners.forEach(r => {
+                            const jInches = parseJumpToInches(r.jumpRecord || (r as any).resultValue);
+                            if (jInches > maxJumpInches) maxJumpInches = jInches;
+                          });
+                          if (currentResult?.highestRecord?.recordValue) {
+                            const hrInches = parseJumpToInches(currentResult.highestRecord.recordValue);
+                            if (hrInches > maxJumpInches) maxJumpInches = hrInches;
+                          }
+                          const isBroken = prevInches > 0 ? (maxJumpInches > prevInches) : (maxJumpInches > 0);
+                          const formattedPrev = formatJumpBenchmark(prevRecord.recordValue) || prevRecord.recordValue;
+                          const holderClub = prevRecord.recordHolderClub ? ` (${prevRecord.recordHolderClub})` : '';
+                          const holderYear = prevRecord.recordYear ? `, ${prevRecord.recordYear}` : '';
+
+                          if (!isBroken) {
+                            return (
+                              <div className="thermal-new-record-callout py-1 font-normal text-center text-black leading-tight border-b border-dotted border-black/80 break-words">
+                                New Record: N
+                              </div>
+                            );
+                          }
+
+                          return (
+                            <div className="thermal-new-record-callout py-1 font-normal text-center text-black leading-tight border-b border-dotted border-black/80 break-words">
+                              <span className="font-bold">New Record: Y</span>
+                              <span> | Prev: {formattedPrev} by {prevRecord.recordHolderName}{holderClub}{holderYear}</span>
+                            </div>
+                          );
+                        })()}
                       </>
                     );
                   })()}
 
-                  {/* Footer: same as Candidate list */}
+                  {/* Footer */}
                   {renderThermalFooter()}
                 </div>
               </div>
@@ -2148,6 +2729,33 @@ export const HitList: React.FC<HitListProps> = ({
         isOpen={showThermalSetup} 
         onClose={() => setShowThermalSetup(false)} 
         settings={settings} 
+      />
+
+      {/* Club Echo ON Warning Flash Modal on First Print */}
+      <ClubEchoPrintModal
+        isOpen={Boolean(echoPrintModalState)}
+        contextLabel={echoPrintModalState?.contextLabel}
+        canTurnOffEcho={Boolean(onSaveSettings)}
+        onTurnOffAndPrint={async () => {
+          if (!echoPrintModalState) return;
+          markFirstPrintWarned(echoPrintModalState.category, echoPrintModalState.evtNos);
+          setEchoPrintModalState(null);
+          if (onSaveSettings) {
+            await onSaveSettings({ ...settings, clientResponseEnabled: false });
+          }
+          setTimeout(() => {
+            executeActualPrint();
+          }, 60);
+        }}
+        onContinuePrint={() => {
+          if (!echoPrintModalState) return;
+          markFirstPrintWarned(echoPrintModalState.category, echoPrintModalState.evtNos);
+          setEchoPrintModalState(null);
+          setTimeout(() => {
+            executeActualPrint();
+          }, 60);
+        }}
+        onCancel={() => setEchoPrintModalState(null)}
       />
 
     </div>

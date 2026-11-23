@@ -4,8 +4,10 @@ import path from 'path';
 import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getFirestore, collection, doc, getDocs, setDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
+import { getFirestore, collection, doc, getDoc, getDocs, setDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
 import * as XLSX from 'xlsx';
+import { isExcludedClubForRanking } from './src/utils/clubRankingFilter.ts';
+import { isDirectEvent, getAdditionalEventsForCandidate, normalizeGender } from './src/utils/heightRules.ts';
 
 const app = express();
 // AI Studio multi-container architecture: Nginx runs on 8080 and proxies traffic to app-container on 3000.
@@ -20,12 +22,14 @@ process.on('unhandledRejection', (reason) => {
   console.error('[SERVER UNHANDLED REJECTION]:', reason);
 });
 
-// Enable CORS and iframe embedding in AI Studio preview
+// Enable CORS and iframe embedding in AI Studio preview with Bluetooth permissions
 app.use((req, res, next) => {
   res.removeHeader('X-Frame-Options');
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  res.header('Permissions-Policy', 'bluetooth=*');
+  res.header('Feature-Policy', 'bluetooth *');
   if (req.method === 'OPTIONS') {
     return res.sendStatus(200);
   }
@@ -34,7 +38,15 @@ app.use((req, res, next) => {
 
 app.use(express.json({ limit: '20mb' }));
 app.use(express.urlencoded({ extended: true, limit: '20mb' }));
-app.use(express.static(path.join(process.cwd(), 'public')));
+app.use(express.static(path.join(process.cwd(), 'public'), {
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('sw.js') || filePath.endsWith('manifest.json')) {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+    }
+  },
+}));
 
 // Never cache API responses across devices (ensures desktop/mobile always receive latest data)
 app.use('/api', (req, res, next) => {
@@ -58,6 +70,54 @@ interface ServerSession {
 
 let activeServerSession: ServerSession | null = null;
 const SESSION_INACTIVITY_LIMIT_MS = 10 * 60 * 1000; // 10 minutes timeout if no heartbeat
+const MAX_PIN_ATTEMPTS = 3;
+const PIN_LOCKOUT_DURATION_MS = 10 * 60 * 1000; // 10 minutes global server login lockout
+
+interface PinLockoutState {
+  failedAttempts: number;
+  lockedUntil: number | null;
+  lastAttemptAt: string | null;
+  lastDeviceLabel: string | null;
+}
+
+let serverPinLockout: PinLockoutState = {
+  failedAttempts: 0,
+  lockedUntil: null,
+  lastAttemptAt: null,
+  lastDeviceLabel: null,
+};
+
+function getNormalizedPinLockout(): {
+  isLocked: boolean;
+  lockedUntil: number | null;
+  remainingMs: number;
+  failedAttempts: number;
+} {
+  if (serverPinLockout.lockedUntil) {
+    const remaining = serverPinLockout.lockedUntil - Date.now();
+    if (remaining > 0) {
+      return {
+        isLocked: true,
+        lockedUntil: serverPinLockout.lockedUntil,
+        remainingMs: remaining,
+        failedAttempts: MAX_PIN_ATTEMPTS,
+      };
+    }
+    // Lockout expired -> reset
+    serverPinLockout = {
+      failedAttempts: 0,
+      lockedUntil: null,
+      lastAttemptAt: serverPinLockout.lastAttemptAt,
+      lastDeviceLabel: serverPinLockout.lastDeviceLabel,
+    };
+  }
+  return {
+    isLocked: false,
+    lockedUntil: null,
+    remainingMs: 0,
+    failedAttempts: serverPinLockout.failedAttempts || 0,
+  };
+}
 
 function getValidActiveSession(): ServerSession | null {
   if (!activeServerSession) return null;
@@ -137,6 +197,8 @@ function toServerCandidateRecord(cand: any, assignedChestNo: number, existing?: 
   const rawClub = (cand.club !== undefined && cand.club !== null && cand.club.trim() !== '') 
     ? cand.club.trim().toUpperCase() 
     : (existing?.club ? existing.club.trim().toUpperCase() : 'SELF');
+  const feeStatus = cand.feeStatus || existing?.feeStatus;
+  const isFreeFeeStatus = typeof feeStatus === 'string' && /free|exempt/i.test(feeStatus);
   const record: any = {
     id: cand.id || existing?.id || `cand_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
     chestNo: Number(assignedChestNo),
@@ -147,7 +209,7 @@ function toServerCandidateRecord(cand: any, assignedChestNo: number, existing?: 
     selectedEvents: Array.isArray(cand.selectedEvents)
       ? cand.selectedEvents.map(Number)
       : (Array.isArray(existing?.selectedEvents) ? existing.selectedEvents.map(Number) : []),
-    totalFees: Number(cand.totalFees !== undefined ? cand.totalFees : existing?.totalFees) || 0,
+    totalFees: isFreeFeeStatus ? 0 : (Number(cand.totalFees !== undefined ? cand.totalFees : existing?.totalFees) || 0),
     mob: (cand.mob || cand.mobile || cand.clubMobile || existing?.mob || existing?.mobile || '').toString().trim(),
     createdAt: existing?.createdAt || cand.createdAt || now,
     updatedAt: now,
@@ -156,7 +218,6 @@ function toServerCandidateRecord(cand: any, assignedChestNo: number, existing?: 
     syncedAt: now,
   };
 
-  const feeStatus = cand.feeStatus || existing?.feeStatus;
   if (feeStatus) {
     record.feeStatus = feeStatus;
   }
@@ -176,6 +237,20 @@ function toServerCandidateRecord(cand: any, assignedChestNo: number, existing?: 
   delete record.notes;
 
   return record;
+}
+
+function makeCanonicalClubDocId(clubName: string): string {
+  const normalized = String(clubName || '').trim().toUpperCase();
+  const asciiSlug = normalized.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  if (asciiSlug && /[a-z0-9]/.test(asciiSlug) && /^[\x00-\x7F]*$/.test(normalized)) {
+    return `club_${asciiSlug}`;
+  }
+  let hash = 0;
+  for (let i = 0; i < normalized.length; i++) {
+    hash = ((hash << 5) - hash + normalized.charCodeAt(i)) | 0;
+  }
+  const hex = (hash >>> 0).toString(16);
+  return asciiSlug ? `club_${asciiSlug}_${hex}` : `club_u_${hex}`;
 }
 
 // Master Clubs table logic:
@@ -243,12 +318,17 @@ function syncClubMasterRecords(forceRebuild = false) {
     });
   });
 
-  // 3. Existing clubs map to preserve custom edited Mob or stable id
+  // 3. Existing clubs map to preserve custom edited Mob or stable id (deduplicated by uppercase club name)
   const existingMap = new Map<string, any>();
   (db.clubs || []).forEach((c: any) => {
     const key = (c.Reg_Club || c.name || '').trim().toUpperCase();
     if (key) {
-      existingMap.set(key, c);
+      const prev = existingMap.get(key);
+      const mob = (c.Mob || c.mobile || c.phone || '').toString().trim();
+      const prevMob = prev ? (prev.Mob || prev.mobile || prev.phone || '').toString().trim() : '';
+      if (!prev || (!prevMob && mob)) {
+        existingMap.set(key, c);
+      }
     }
   });
 
@@ -257,14 +337,14 @@ function syncClubMasterRecords(forceRebuild = false) {
 
   candidateClubMap.forEach((entry, cleanKey) => {
     const existing = existingMap.get(cleanKey);
-    const id = existing?.id || `club_${cleanKey.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+    const id = existing?.id || makeCanonicalClubDocId(cleanKey);
     const mob = (existing?.Mob || existing?.mobile || entry.mob || '').toString().trim();
     const counts = podiumCounts.get(cleanKey) || { count1: 0, count2: 0, count3: 0 };
-    const isSelf = cleanKey === 'SELF';
+    const isExcludedClub = isExcludedClubForRanking(cleanKey);
     const count1st = counts.count1;
     const count2nd = counts.count2;
     const count3rd = counts.count3;
-    const totPoints = isSelf ? 0 : (count1st * 7 + count2nd * 5 + count3rd * 4);
+    const totPoints = isExcludedClub ? 0 : (count1st * 7 + count2nd * 5 + count3rd * 4);
 
     nextClubs.push({
       id,
@@ -517,17 +597,19 @@ function saveDB(table = 'all') {
         (async () => {
           try {
             for (const club of db.clubs) {
-              const docId = club.id ? (club.id.startsWith('club_') ? club.id : `club_${club.id}`) : `club_${Date.now()}`;
+              const regClub = (club.Reg_Club || club.name || '').trim().toUpperCase();
+              if (!regClub) continue;
+              const docId = club.id ? (club.id.startsWith('club_') ? club.id : `club_${club.id}`) : makeCanonicalClubDocId(regClub);
               await setDoc(doc(cloudDb, 'clubs', docId), sanitizeData({
                 id: docId,
                 Sl: Number(club.Sl || 1),
-                Reg_Club: (club.Reg_Club || club.name || '').trim().toUpperCase(),
+                Reg_Club: regClub,
                 Mob: (club.Mob || club.mobile || '').toString().trim(),
                 Count_1stPlace: Number(club.Count_1stPlace || 0),
                 Count_2ndPlace: Number(club.Count_2ndPlace || 0),
                 Count_3rdPlace: Number(club.Count_3rdPlace || 0),
                 TotPoints: Number(club.TotPoints || 0),
-                name: (club.Reg_Club || club.name || '').trim().toUpperCase(),
+                name: regClub,
                 mobile: (club.Mob || club.mobile || '').toString().trim(),
               }), { merge: true });
             }
@@ -586,124 +668,194 @@ function sanitizeData(obj: any): any {
   return obj;
 }
 
-// Pull live data from Cloud Firestore on startup
+// Helper to delete all docs in a Firestore collection in small batches
+async function clearFirestoreCollection(colName: string) {
+  if (!cloudDb || isCloudQuotaExceeded) return;
+  try {
+    const snap = await getDocs(collection(cloudDb, colName));
+    const docs = snap.docs;
+    for (let i = 0; i < docs.length; i += 20) {
+      if (isCloudQuotaExceeded) break;
+      await Promise.all(docs.slice(i, i + 20).map((d) => deleteDoc(d.ref)));
+    }
+  } catch (e) {
+    handleCloudError(e, `clearFirestoreCollection(${colName})`);
+  }
+}
+
+async function replaceFirestoreCollection(colName: string, items: any[], getDocId: (item: any, idx: number) => string) {
+  if (!cloudDb || isCloudQuotaExceeded) return;
+  try {
+    await clearFirestoreCollection(colName);
+    const list = Array.isArray(items) ? items : [];
+    for (let i = 0; i < list.length; i += 15) {
+      if (isCloudQuotaExceeded) break;
+      const slice = list.slice(i, i + 15);
+      await Promise.all(
+        slice.map((item, idx) => {
+          const docId = getDocId(item, i + idx);
+          return setDoc(doc(cloudDb, colName, docId), sanitizeData(item));
+        })
+      );
+    }
+  } catch (e) {
+    handleCloudError(e, `replaceFirestoreCollection(${colName})`);
+  }
+}
+
+// Pull live data from Cloud Firestore on startup (authoritative for all collections including empty ones)
 async function syncFromFirestore() {
   if (!cloudDb) return;
   try {
-    // 1. Events
-    const evtSnap = await getDocs(collection(cloudDb, 'events'));
+    const [
+      evtSnap,
+      clubSnap,
+      settingsSnap,
+      candSnap,
+      heatsSnap,
+      resSnap,
+      uploadsSnap,
+      sessionSnap,
+    ] = await Promise.all([
+      getDocs(collection(cloudDb, 'events')),
+      getDocs(collection(cloudDb, 'clubs')),
+      getDocs(collection(cloudDb, 'settings')),
+      getDocs(collection(cloudDb, 'candidates')),
+      getDocs(collection(cloudDb, 'heats')),
+      getDocs(collection(cloudDb, 'results')),
+      getDocs(collection(cloudDb, 'uploads')),
+      getDoc(doc(cloudDb, 'serverSession', 'active')).catch(() => null),
+    ]);
+
+    // 1. Settings
+    let hasSettingsInCloud = false;
+    if (!settingsSnap.empty) {
+      settingsSnap.forEach((d) => {
+        if (d.id === 'meet_settings') {
+          hasSettingsInCloud = true;
+          db.settings = { ...DEFAULT_SETTINGS, ...d.data() };
+        }
+      });
+    }
+
+    // 2. Events (if Firestore has settings or events, treat Firestore events list as authoritative even if cleared to 0)
     if (!evtSnap.empty) {
       const itemsMap = new Map<number, any>();
       evtSnap.forEach((d) => {
         const data = d.data();
         if (data && data.Evt_No !== undefined) {
           const evtNo = Number(data.Evt_No);
-          itemsMap.set(evtNo, {
-            ...data,
-            Evt_No: evtNo,
-            Fees: Number(data.Fees ?? 0),
-            requiredHit: data.requiredHit !== undefined ? data.requiredHit : (evtNo === 15 ? false : true),
-            requiredFinal: data.requiredFinal !== undefined ? data.requiredFinal : true,
-          });
+          const isCanonical = d.id === `evt_${evtNo}`;
+          if (!itemsMap.has(evtNo) || isCanonical) {
+            itemsMap.set(evtNo, {
+              ...data,
+              Evt_No: evtNo,
+              Fees: Number(data.Fees ?? 0),
+              requiredHit: data.requiredHit !== undefined ? data.requiredHit : (evtNo === 15 ? false : true),
+              requiredFinal: data.requiredFinal !== undefined ? data.requiredFinal : true,
+            });
+          }
         }
       });
-      if (itemsMap.size > 0) {
-        db.events = Array.from(itemsMap.values()).sort((a, b) => a.Evt_No - b.Evt_No);
-      }
+      db.events = Array.from(itemsMap.values()).sort((a, b) => a.Evt_No - b.Evt_No);
+    } else if (hasSettingsInCloud) {
+      db.events = [];
     }
 
-    // 2. Clubs
-    const clubSnap = await getDocs(collection(cloudDb, 'clubs'));
-    if (!clubSnap.empty) {
-      const itemsMap = new Map<string, any>();
-      clubSnap.forEach((d) => {
-        const data = d.data();
-        if (data && (data.Reg_Club || data.name)) {
-          const regName = String(data.Reg_Club || data.name).trim().toUpperCase();
-          const isDummy = ['AGRANI SASTHITALA SANGHA', 'MILAN SAMITY ATHLETIC CLUB', 'TARUN SANGHA SPORTS CLUB', 'SUBHASH NAGAR YUBA PARISHAD', 'INDEPENDENT / UNATTACHED'].includes(regName) && !db.candidates.some(c => (c.club || '').trim().toUpperCase() === regName);
-          if (!isDummy) {
-            const id = String(data.id || d.id);
-            itemsMap.set(id, {
+    // 3. Candidates (authoritative, including empty)
+    const candItems: any[] = [];
+    const seenNames = new Set<string>();
+    const seenIds = new Set<string>();
+    candSnap.forEach((d) => {
+      const data = d.data();
+      if (!data) return;
+      const id = data.id || d.id;
+      if (id && seenIds.has(id)) return;
+      if (id) seenIds.add(id);
+
+      const name = (data.name || '').trim().toUpperCase();
+      const isCancelled = data.isCancelled || data.status === 'cancelled';
+      if (!isCancelled && name) {
+        if (seenNames.has(name)) return;
+        seenNames.add(name);
+      }
+      candItems.push({ ...data, id });
+    });
+    candItems.sort((a, b) => (Number(a.chestNo) || 0) - (Number(b.chestNo) || 0));
+    db.candidates = candItems;
+
+    // 4. Clubs (authoritative, including empty)
+    const clubMap = new Map<string, any>();
+    clubSnap.forEach((d) => {
+      const data = d.data();
+      if (data && (data.Reg_Club || data.name)) {
+        const regName = String(data.Reg_Club || data.name).trim().toUpperCase();
+        if (!regName) return;
+        const isDummy = ['AGRANI SASTHITALA SANGHA', 'MILAN SAMITY ATHLETIC CLUB', 'TARUN SANGHA SPORTS CLUB', 'SUBHASH NAGAR YUBA PARISHAD', 'INDEPENDENT / UNATTACHED'].includes(regName) && !db.candidates.some(c => (c.club || '').trim().toUpperCase() === regName);
+        if (!isDummy) {
+          const id = String(data.id || d.id);
+          const mob = (data.Mob || data.mobile || data.phone || '').trim();
+          const existing = clubMap.get(regName);
+          const canonicalId = makeCanonicalClubDocId(regName);
+          if (!existing) {
+            clubMap.set(regName, {
               id,
               Sl: Number(data.Sl) || 1,
-              Reg_Club: data.Reg_Club || data.name,
-              Mob: (data.Mob || data.mobile || data.phone || '').trim(),
+              Reg_Club: regName,
+              Mob: mob,
               Count_1stPlace: Number(data.Count_1stPlace || 0),
               Count_2ndPlace: Number(data.Count_2ndPlace || 0),
               Count_3rdPlace: Number(data.Count_3rdPlace || 0),
               TotPoints: Number(data.TotPoints || 0),
-              name: data.Reg_Club || data.name,
-              mobile: (data.Mob || data.mobile || data.phone || '').trim(),
+              name: regName,
+              mobile: mob,
             });
           } else {
-            deleteDoc(doc(cloudDb, 'clubs', d.id)).catch(() => {});
+            const existingMob = (existing.Mob || existing.mobile || '').trim();
+            clubMap.set(regName, {
+              ...existing,
+              id: id === canonicalId ? canonicalId : existing.id,
+              Mob: mob || existingMob,
+              mobile: mob || existingMob,
+              Count_1stPlace: Math.max(Number(existing.Count_1stPlace || 0), Number(data.Count_1stPlace || 0)),
+              Count_2ndPlace: Math.max(Number(existing.Count_2ndPlace || 0), Number(data.Count_2ndPlace || 0)),
+              Count_3rdPlace: Math.max(Number(existing.Count_3rdPlace || 0), Number(data.Count_3rdPlace || 0)),
+              TotPoints: Math.max(Number(existing.TotPoints || 0), Number(data.TotPoints || 0)),
+            });
           }
+        } else {
+          deleteDoc(doc(cloudDb, 'clubs', d.id)).catch(() => {});
         }
-      });
-      if (itemsMap.size > 0) db.clubs = Array.from(itemsMap.values());
+      }
+    });
+    db.clubs = Array.from(clubMap.values());
+
+    // 5. Heats (authoritative, including empty)
+    const heatItems: any[] = [];
+    heatsSnap.forEach((d) => heatItems.push({ id: d.id, ...d.data() }));
+    db.heats = heatItems;
+
+    // 6. Results (authoritative, including empty)
+    const resItems: any[] = [];
+    resSnap.forEach((d) => resItems.push({ id: d.id, ...d.data() }));
+    db.results = resItems;
+
+    // 7. Uploads (authoritative, including empty)
+    const uploadItems: any[] = [];
+    uploadsSnap.forEach((d) => uploadItems.push({ ...d.data(), id: d.id }));
+    db.clientUploads = uploadItems;
+
+    // 8. Active server session
+    if (sessionSnap && sessionSnap.exists()) {
+      activeServerSession = sessionSnap.data() as ServerSession;
+    } else {
+      activeServerSession = null;
     }
 
-    // 3. Settings
-    const settingsSnap = await getDocs(collection(cloudDb, 'settings'));
-    if (!settingsSnap.empty) {
-      settingsSnap.forEach((d) => {
-        if (d.id === 'meet_settings') {
-          db.settings = { ...DEFAULT_SETTINGS, ...d.data() };
-        }
-      });
-    }
-
-    // 4. Candidates
-    const candSnap = await getDocs(collection(cloudDb, 'candidates'));
-    if (!candSnap.empty) {
-      const items: any[] = [];
-      const seenNames = new Set<string>();
-      const seenIds = new Set<string>();
-      candSnap.forEach((d) => {
-        const data = d.data();
-        if (!data) return;
-        const id = data.id || d.id;
-        if (id && seenIds.has(id)) return;
-        if (id) seenIds.add(id);
-
-        const name = (data.name || '').trim().toUpperCase();
-        const isCancelled = data.isCancelled || data.status === 'cancelled';
-        if (!isCancelled && name) {
-          if (seenNames.has(name)) return;
-          seenNames.add(name);
-        }
-        items.push({ ...data, id });
-      });
-      if (items.length > 0) db.candidates = items;
-    }
-
-    // 5. Heats
-    const heatsSnap = await getDocs(collection(cloudDb, 'heats'));
-    if (!heatsSnap.empty) {
-      const items: any[] = [];
-      heatsSnap.forEach((d) => items.push(d.data()));
-      if (items.length > 0) db.heats = items;
-    }
-
-    // 6. Results
-    const resSnap = await getDocs(collection(cloudDb, 'results'));
-    if (!resSnap.empty) {
-      const items: any[] = [];
-      resSnap.forEach((d) => items.push(d.data()));
-      if (items.length > 0) db.results = items;
-    }
-
-    // 7. Uploads
-    const uploadsSnap = await getDocs(collection(cloudDb, 'uploads'));
-    if (!uploadsSnap.empty) {
-      const items: any[] = [];
-      uploadsSnap.forEach((d) => items.push(d.data()));
-      if (items.length > 0) db.clientUploads = items;
-    }
-
-    syncClubMasterRecords(true);
     saveDBLocalOnly('all');
-    console.log('[eSports] Server state initialized from Cloud Firestore. Event 0 fee is:', db.events.find(e => e.Evt_No === 0)?.Fees);
+    console.log(
+      `[eSports] Server state synchronized from Live Cloud Firestore: ${db.events.length} events, ${db.candidates.length} candidates, ${db.clubs.length} clubs, ${db.heats.length} heats, ${db.results.length} results, ${db.clientUploads.length} uploads.`
+    );
   } catch (err) {
     handleCloudError(err, 'Initial syncFromFirestore');
   }
@@ -714,24 +866,30 @@ function setupFirestoreServerSubscriptions() {
   if (!cloudDb) return;
   try {
     onSnapshot(collection(cloudDb, 'events'), (snap) => {
-      if (!snap.empty) {
-        const itemsMap = new Map<number, any>();
-        snap.forEach((d) => {
-          const data = d.data();
-          if (data && data.Evt_No !== undefined) {
-            const evtNo = Number(data.Evt_No);
+      if (snap.empty) {
+        db.events = [];
+        saveDBLocalOnly('events');
+        return;
+      }
+      const itemsMap = new Map<number, any>();
+      snap.forEach((d) => {
+        const data = d.data();
+        if (data && data.Evt_No !== undefined) {
+          const evtNo = Number(data.Evt_No);
+          const isCanonical = d.id === `evt_${evtNo}`;
+          if (!itemsMap.has(evtNo) || isCanonical) {
             itemsMap.set(evtNo, {
               ...data,
               Evt_No: evtNo,
               Fees: Number(data.Fees ?? 0),
+              requiredHit: data.requiredHit !== undefined ? data.requiredHit : (evtNo === 15 ? false : true),
+              requiredFinal: data.requiredFinal !== undefined ? data.requiredFinal : true,
             });
           }
-        });
-        if (itemsMap.size > 0) {
-          db.events = Array.from(itemsMap.values()).sort((a, b) => a.Evt_No - b.Evt_No);
-          saveDBLocalOnly('events');
         }
-      }
+      });
+      db.events = Array.from(itemsMap.values()).sort((a, b) => a.Evt_No - b.Evt_No);
+      saveDBLocalOnly('events');
     }, (err) => handleCloudError(err, 'Server events subscription'));
 
     onSnapshot(collection(cloudDb, 'candidates'), (snap) => {
@@ -753,10 +911,9 @@ function setupFirestoreServerSubscriptions() {
         }
         items.push({ ...data, id });
       });
+      items.sort((a, b) => (Number(a.chestNo) || 0) - (Number(b.chestNo) || 0));
       db.candidates = items;
-      syncClubMasterRecords();
       saveDBLocalOnly('candidates');
-      saveDBLocalOnly('clubs');
     }, (err) => handleCloudError(err, 'Server candidates subscription'));
 
     onSnapshot(collection(cloudDb, 'clubs'), (snap) => {
@@ -765,30 +922,59 @@ function setupFirestoreServerSubscriptions() {
         const data = d.data();
         if (data && (data.Reg_Club || data.name)) {
           const regName = String(data.Reg_Club || data.name).trim().toUpperCase();
+          if (!regName) return;
           const isDummy = ['AGRANI SASTHITALA SANGHA', 'MILAN SAMITY ATHLETIC CLUB', 'TARUN SANGHA SPORTS CLUB', 'SUBHASH NAGAR YUBA PARISHAD', 'INDEPENDENT / UNATTACHED'].includes(regName) && !db.candidates.some(c => (c.club || '').trim().toUpperCase() === regName);
           if (!isDummy) {
             const id = String(data.id || d.id);
-            itemsMap.set(id, {
-              id,
-              Sl: Number(data.Sl) || 1,
-              Reg_Club: data.Reg_Club || data.name,
-              Mob: (data.Mob || data.mobile || data.phone || '').trim(),
-              Count_1stPlace: Number(data.Count_1stPlace || 0),
-              Count_2ndPlace: Number(data.Count_2ndPlace || 0),
-              Count_3rdPlace: Number(data.Count_3rdPlace || 0),
-              TotPoints: Number(data.TotPoints || 0),
-              name: data.Reg_Club || data.name,
-              mobile: (data.Mob || data.mobile || data.phone || '').trim(),
-            });
+            const mob = (data.Mob || data.mobile || data.phone || '').trim();
+            const existing = itemsMap.get(regName);
+            const canonicalId = makeCanonicalClubDocId(regName);
+            if (!existing) {
+              itemsMap.set(regName, {
+                id,
+                Sl: Number(data.Sl) || 1,
+                Reg_Club: regName,
+                Mob: mob,
+                Count_1stPlace: Number(data.Count_1stPlace || 0),
+                Count_2ndPlace: Number(data.Count_2ndPlace || 0),
+                Count_3rdPlace: Number(data.Count_3rdPlace || 0),
+                TotPoints: Number(data.TotPoints || 0),
+                name: regName,
+                mobile: mob,
+              });
+            } else {
+              const existingMob = (existing.Mob || existing.mobile || '').trim();
+              itemsMap.set(regName, {
+                ...existing,
+                id: id === canonicalId ? canonicalId : existing.id,
+                Mob: mob || existingMob,
+                mobile: mob || existingMob,
+                Count_1stPlace: Math.max(Number(existing.Count_1stPlace || 0), Number(data.Count_1stPlace || 0)),
+                Count_2ndPlace: Math.max(Number(existing.Count_2ndPlace || 0), Number(data.Count_2ndPlace || 0)),
+                Count_3rdPlace: Math.max(Number(existing.Count_3rdPlace || 0), Number(data.Count_3rdPlace || 0)),
+                TotPoints: Math.max(Number(existing.TotPoints || 0), Number(data.TotPoints || 0)),
+              });
+            }
           }
         }
       });
-      if (itemsMap.size > 0) {
-        db.clubs = Array.from(itemsMap.values());
-      }
-      syncClubMasterRecords();
+      db.clubs = Array.from(itemsMap.values());
       saveDBLocalOnly('clubs');
     }, (err) => handleCloudError(err, 'Server clubs subscription'));
+
+    onSnapshot(collection(cloudDb, 'heats'), (snap) => {
+      const items: any[] = [];
+      snap.forEach((d) => items.push({ id: d.id, ...d.data() }));
+      db.heats = items;
+      saveDBLocalOnly('heats');
+    }, (err) => handleCloudError(err, 'Server heats subscription'));
+
+    onSnapshot(collection(cloudDb, 'results'), (snap) => {
+      const items: any[] = [];
+      snap.forEach((d) => items.push({ id: d.id, ...d.data() }));
+      db.results = items;
+      saveDBLocalOnly('results');
+    }, (err) => handleCloudError(err, 'Server results subscription'));
 
     onSnapshot(collection(cloudDb, 'settings'), (snap) => {
       snap.forEach((d) => {
@@ -801,16 +987,36 @@ function setupFirestoreServerSubscriptions() {
 
     onSnapshot(collection(cloudDb, 'uploads'), (snap) => {
       const items: any[] = [];
-      snap.forEach((d) => items.push(d.data()));
+      snap.forEach((d) => items.push({ ...d.data(), id: d.id }));
       db.clientUploads = items;
       saveDBLocalOnly('clientUploads');
     }, (err) => handleCloudError(err, 'Server uploads subscription'));
+
+    onSnapshot(doc(cloudDb, 'serverSession', 'active'), (snap) => {
+      if (snap.exists()) {
+        activeServerSession = snap.data() as ServerSession;
+      } else {
+        activeServerSession = null;
+      }
+    }, (err) => handleCloudError(err, 'Server active session subscription'));
+
+    onSnapshot(doc(cloudDb, 'serverSession', 'pinLockout'), (snap) => {
+      if (snap.exists()) {
+        const d = snap.data() as any;
+        serverPinLockout = {
+          failedAttempts: Number(d.failedAttempts || 0),
+          lockedUntil: typeof d.lockedUntil === 'number' ? d.lockedUntil : null,
+          lastAttemptAt: d.lastAttemptAt || null,
+          lastDeviceLabel: d.lastDeviceLabel || null,
+        };
+      }
+    }, (err) => handleCloudError(err, 'Server pinLockout subscription'));
   } catch (err) {
     handleCloudError(err, 'setupFirestoreServerSubscriptions');
   }
 }
 
-syncFromFirestore().then(() => {
+const firestoreSyncReady = syncFromFirestore().then(() => {
   setupFirestoreServerSubscriptions();
 });
 
@@ -827,6 +1033,44 @@ app.get(['/health', '/api/health'], (req: Request, res: Response) => {
     eventsCount: db.events.length,
     meetTitle: db.settings.ordinalTitle,
   });
+});
+
+let cachedAppVersionValue = '';
+let cachedAppVersionAt = 0;
+
+function getAppVersion(): string {
+  const now = Date.now();
+  if (cachedAppVersionValue && now - cachedAppVersionAt < 3000) {
+    return cachedAppVersionValue;
+  }
+  const targets = [
+    path.join(process.cwd(), 'index.html'),
+    path.join(process.cwd(), 'public', 'sw.js'),
+    path.join(process.cwd(), 'public', 'manifest.json'),
+    path.join(process.cwd(), 'dist', 'index.html'),
+    path.join(process.cwd(), 'src'),
+  ];
+  let maxMtime = 0;
+  const scan = (targetPath: string) => {
+    try {
+      const st = fs.statSync(targetPath);
+      if (st.isDirectory()) {
+        for (const entry of fs.readdirSync(targetPath)) {
+          scan(path.join(targetPath, entry));
+        }
+      } else if (st.mtimeMs > maxMtime) {
+        maxMtime = st.mtimeMs;
+      }
+    } catch {}
+  };
+  targets.forEach(scan);
+  cachedAppVersionValue = String(Math.round(maxMtime) || now);
+  cachedAppVersionAt = now;
+  return cachedAppVersionValue;
+}
+
+app.get('/api/app-version', (_req: Request, res: Response) => {
+  res.json({ version: getAppVersion() });
 });
 
 // Single consolidated bootstrap endpoint to eliminate multi-request overhead and prevent rate limit issues
@@ -1072,6 +1316,53 @@ function checkCandidateEditRestriction(existingCandidate: any): { isRestricted: 
   return { isRestricted: false };
 }
 
+function isAllowedLockedQuickEventUpdate(existing: any, incoming: any, restriction: { promotedFinalEvents?: number[]; rankingCompletedEvents?: number[] }): boolean {
+  const sameName = (existing.name || '').trim().toUpperCase() === (incoming.name ?? existing.name ?? '').toString().trim().toUpperCase();
+  const sameClub = (existing.club || 'SELF').trim().toUpperCase() === (incoming.club ?? existing.club ?? 'SELF').toString().trim().toUpperCase();
+  const sameGender = normalizeGender(existing.gender) === normalizeGender(incoming.gender ?? existing.gender);
+  const sameHeight = (existing.height || 'ALL').trim().toUpperCase() === (incoming.height ?? existing.height ?? 'ALL').toString().trim().toUpperCase();
+  const sameFeeStatus = (existing.feeStatus || 'Due').trim().toUpperCase() === (incoming.feeStatus ?? existing.feeStatus ?? 'Due').toString().trim().toUpperCase();
+
+  if (!sameName || !sameClub || !sameGender || !sameHeight || !sameFeeStatus) {
+    return false;
+  }
+
+  const prevEvts = new Set<number>((existing.selectedEvents || []).map(Number));
+  const nextEvts = new Set<number>(Array.isArray(incoming.selectedEvents) ? incoming.selectedEvents.map(Number) : []);
+  const removedEvts = Array.from(prevEvts).filter((n) => !nextEvts.has(n));
+  const addedEvts = Array.from(nextEvts).filter((n) => !prevEvts.has(n));
+  const changedEvts = [...removedEvts, ...addedEvts];
+  if (changedEvts.length === 0) return false;
+
+  const restrictedSet = new Set<number>([
+    ...(restriction.promotedFinalEvents || []).map(Number),
+    ...(restriction.rankingCompletedEvents || []).map(Number),
+  ]);
+  if (removedEvts.some((n) => restrictedSet.has(n))) {
+    return false;
+  }
+
+  const masterEvents = Array.isArray(db.events) && db.events.length > 0 ? db.events : DEFAULT_EVENTS;
+  const additionalEvtNos = new Set<number>(
+    getAdditionalEventsForCandidate(existing, masterEvents).map((e) => Number(e.Evt_No))
+  );
+
+  return changedEvts.every((evtNo) => {
+    const ev = masterEvents.find((e: any) => Number(e.Evt_No) === Number(evtNo));
+    return isDirectEvent(ev) || additionalEvtNos.has(Number(evtNo));
+  });
+}
+
+function computeCumulativeFeesForEvents(selectedEvents: number[], feeStatus?: string): number {
+  const st = (feeStatus || 'Due').trim().toUpperCase();
+  if (st.includes('FREE') || st.includes('EXEMPT')) return 0;
+  const masterEvents = Array.isArray(db.events) && db.events.length > 0 ? db.events : DEFAULT_EVENTS;
+  return selectedEvents.reduce((sum, evtNo) => {
+    const ev = masterEvents.find((e: any) => Number(e.Evt_No) === Number(evtNo));
+    return sum + (ev ? Number(ev.Fees) || 0 : 0);
+  }, 0);
+}
+
 // Single candidate create or update (for server front-end direct entry)
 app.post('/api/candidates', (req: Request, res: Response) => {
   const cand = req.body;
@@ -1102,17 +1393,22 @@ app.post('/api/candidates', (req: Request, res: Response) => {
     : (cand.id || `cand_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`);
   const now = new Date().toISOString();
 
+  let isQuickEventOnlyForLocked = false;
   if (existingIdx >= 0) {
     const existing = db.candidates[existingIdx];
     const isCancelling = cand.status === 'cancelled' || cand.isCancelled === true;
     if (!isCancelling) {
       const restriction = checkCandidateEditRestriction(existing);
       if (restriction.isRestricted) {
-        return res.status(403).json({
-          error: restriction.message,
-          qualifiedEvents: restriction.promotedFinalEvents || [],
-          isEditRestricted: true,
-        });
+        if (isAllowedLockedQuickEventUpdate(existing, cand, restriction)) {
+          isQuickEventOnlyForLocked = true;
+        } else {
+          return res.status(403).json({
+            error: restriction.message,
+            qualifiedEvents: restriction.promotedFinalEvents || [],
+            isEditRestricted: true,
+          });
+        }
       }
     }
   }
@@ -1144,7 +1440,18 @@ app.post('/api/candidates', (req: Request, res: Response) => {
   }
 
   const existing = existingIdx >= 0 ? db.candidates[existingIdx] : undefined;
-  const candidateRecord = toServerCandidateRecord({ ...cand, id }, assignedChestNo, existing);
+  const payloadForRecord = isQuickEventOnlyForLocked && existing
+    ? {
+        ...existing,
+        id,
+        selectedEvents: Array.isArray(cand.selectedEvents) ? cand.selectedEvents.map(Number) : existing.selectedEvents,
+        totalFees: computeCumulativeFeesForEvents(
+          Array.isArray(cand.selectedEvents) ? cand.selectedEvents.map(Number) : (existing.selectedEvents || []).map(Number),
+          existing.feeStatus
+        ),
+      }
+    : { ...cand, id };
+  const candidateRecord = toServerCandidateRecord(payloadForRecord, assignedChestNo, existing);
 
   if (existingIdx >= 0) {
     db.candidates[existingIdx] = candidateRecord;
@@ -1186,7 +1493,13 @@ app.post('/api/candidates', (req: Request, res: Response) => {
   }
 
   syncClubMasterRecords();
-  saveDB();
+  saveDB('clubs');
+  saveDB('candidates');
+  if (cloudDb && !isCloudQuotaExceeded) {
+    setDoc(doc(cloudDb, 'candidates', candidateRecord.id), sanitizeData(candidateRecord), { merge: true }).catch((e) =>
+      handleCloudError(e, 'POST /api/candidates setDoc')
+    );
+  }
   res.json({ success: true, candidate: candidateRecord });
 });
 
@@ -1199,21 +1512,37 @@ app.put('/api/candidates/:id', (req: Request, res: Response) => {
 
   const existing = db.candidates[idx];
 
-  // Restrict edit per Logic 1
+  // Restrict edit per Logic 1 (allowing Direct/Additional event toggles with locked personal fields & cumulative fee recalculation)
   const isCancelling = req.body.status === 'cancelled' || req.body.isCancelled === true;
+  let isQuickEventOnlyForLocked = false;
   if (!isCancelling) {
     const restriction = checkCandidateEditRestriction(existing);
     if (restriction.isRestricted) {
-      return res.status(403).json({
-        error: restriction.message,
-        qualifiedEvents: restriction.promotedFinalEvents || [],
-        isEditRestricted: true,
-      });
+      if (isAllowedLockedQuickEventUpdate(existing, req.body, restriction)) {
+        isQuickEventOnlyForLocked = true;
+      } else {
+        return res.status(403).json({
+          error: restriction.message,
+          qualifiedEvents: restriction.promotedFinalEvents || [],
+          isEditRestricted: true,
+        });
+      }
     }
   }
 
   const chestNo = Number(existing.chestNo) || 101;
-  const candidateRecord = toServerCandidateRecord({ ...existing, ...req.body, id }, chestNo, existing);
+  const putPayload = isQuickEventOnlyForLocked
+    ? {
+        ...existing,
+        id,
+        selectedEvents: Array.isArray(req.body.selectedEvents) ? req.body.selectedEvents.map(Number) : existing.selectedEvents,
+        totalFees: computeCumulativeFeesForEvents(
+          Array.isArray(req.body.selectedEvents) ? req.body.selectedEvents.map(Number) : (existing.selectedEvents || []).map(Number),
+          existing.feeStatus
+        ),
+      }
+    : { ...existing, ...req.body, id };
+  const candidateRecord = toServerCandidateRecord(putPayload, chestNo, existing);
   db.candidates[idx] = candidateRecord;
 
   // Keep heats and results participant details in sync with updated candidate name and club
@@ -1251,7 +1580,13 @@ app.put('/api/candidates/:id', (req: Request, res: Response) => {
   }
 
   syncClubMasterRecords();
-  saveDB();
+  saveDB('clubs');
+  saveDB('candidates');
+  if (cloudDb && !isCloudQuotaExceeded) {
+    setDoc(doc(cloudDb, 'candidates', candidateRecord.id), sanitizeData(candidateRecord), { merge: true }).catch((e) =>
+      handleCloudError(e, 'PUT /api/candidates setDoc')
+    );
+  }
   res.json({ success: true, candidate: db.candidates[idx] });
 });
 
@@ -1293,6 +1628,21 @@ app.post('/api/candidates/:id/cancel-chest', (req: Request, res: Response) => {
   }
 
   saveDB();
+  if (cloudDb && !isCloudQuotaExceeded) {
+    setDoc(doc(cloudDb, 'candidates', cand.id), sanitizeData(cand), { merge: true }).catch((e) =>
+      handleCloudError(e, 'Cancel chest candidate setDoc')
+    );
+    (db.heats || []).forEach((h: any) => {
+      if (h?.id) {
+        setDoc(doc(cloudDb, 'heats', String(h.id)), sanitizeData(h), { merge: true }).catch(() => {});
+      }
+    });
+    (db.results || []).forEach((r: any) => {
+      if (r?.id) {
+        setDoc(doc(cloudDb, 'results', String(r.id)), sanitizeData(r), { merge: true }).catch(() => {});
+      }
+    });
+  }
   res.json({
     success: true,
     message: `Chest #${cand.chestNo} for "${cand.name}" has been cancelled and excluded from all hit lists.`,
@@ -1312,6 +1662,9 @@ app.delete('/api/candidates/:id', (req: Request, res: Response) => {
   }
   db.candidates = db.candidates.filter((c) => c.id !== id);
   saveDB();
+  if (cloudDb && !isCloudQuotaExceeded) {
+    deleteDoc(doc(cloudDb, 'candidates', id)).catch((e) => handleCloudError(e, 'DELETE candidate'));
+  }
   res.json({ success: true });
 });
 
@@ -1366,7 +1719,15 @@ app.post('/api/candidates/sync', (req: Request, res: Response) => {
   });
 
   syncClubMasterRecords();
+  saveDB('clubs');
   saveDB();
+  if (cloudDb && !isCloudQuotaExceeded) {
+    updatedCandidates.forEach((cand) => {
+      setDoc(doc(cloudDb, 'candidates', String(cand.id)), sanitizeData(cand), { merge: true }).catch((e) =>
+        handleCloudError(e, 'POST /api/candidates/sync setDoc')
+      );
+    });
+  }
 
   res.json({
     success: true,
@@ -1390,39 +1751,51 @@ app.post('/api/clubs', async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Club name (Reg_Club) is required' });
   }
   const cleanMob = (club.Mob || club.mobile || club.phone || '').toString().trim();
-  const existingIdx = db.clubs.findIndex(
-    (c) => c.id === club.id || (c.Reg_Club && c.Reg_Club.toUpperCase() === regClub) || (c.name && c.name.toUpperCase() === regClub)
+  const matchingExisting = db.clubs.filter(
+    (c) => c.id === club.id || (c.Reg_Club && c.Reg_Club.trim().toUpperCase() === regClub) || (c.name && c.name.trim().toUpperCase() === regClub)
   );
-  const id = existingIdx >= 0 ? db.clubs[existingIdx].id : (club.id || `club_${regClub.toLowerCase().replace(/[^a-z0-9]/g, '_')}`);
-  const count1st = Number(club.Count_1stPlace !== undefined ? club.Count_1stPlace : (existingIdx >= 0 ? db.clubs[existingIdx].Count_1stPlace : 0)) || 0;
-  const count2nd = Number(club.Count_2ndPlace !== undefined ? club.Count_2ndPlace : (existingIdx >= 0 ? db.clubs[existingIdx].Count_2ndPlace : 0)) || 0;
-  const count3rd = Number(club.Count_3rdPlace !== undefined ? club.Count_3rdPlace : (existingIdx >= 0 ? db.clubs[existingIdx].Count_3rdPlace : 0)) || 0;
+  const existing = matchingExisting[0];
+  const id = existing?.id || makeCanonicalClubDocId(regClub);
+  const count1st = Number(club.Count_1stPlace !== undefined ? club.Count_1stPlace : (existing?.Count_1stPlace ?? 0)) || 0;
+  const count2nd = Number(club.Count_2ndPlace !== undefined ? club.Count_2ndPlace : (existing?.Count_2ndPlace ?? 0)) || 0;
+  const count3rd = Number(club.Count_3rdPlace !== undefined ? club.Count_3rdPlace : (existing?.Count_3rdPlace ?? 0)) || 0;
   const isSelf = regClub === 'SELF';
   const totPoints = isSelf ? 0 : (club.TotPoints !== undefined ? Number(club.TotPoints) : (count1st * 7 + count2nd * 5 + count3rd * 4));
+  const fallbackMob = matchingExisting.map((c) => (c.Mob || c.mobile || '').toString().trim()).find(Boolean) || '';
+  const finalMob = cleanMob || fallbackMob;
+
+  // Deduplicate: strip any existing rows for this club name or id before setting the single canonical record
+  db.clubs = db.clubs.filter(
+    (c) => c.id !== club.id && c.id !== id && (c.Reg_Club || '').trim().toUpperCase() !== regClub && (c.name || '').trim().toUpperCase() !== regClub
+  );
 
   const newClub = {
     id,
-    Sl: existingIdx >= 0 ? (db.clubs[existingIdx].Sl || (existingIdx + 1)) : (db.clubs.length + 1),
+    Sl: existing?.Sl || (db.clubs.length + 1),
     Reg_Club: regClub,
-    Mob: cleanMob,
+    Mob: finalMob,
     Count_1stPlace: count1st,
     Count_2ndPlace: count2nd,
     Count_3rdPlace: count3rd,
     TotPoints: totPoints,
     name: regClub,
-    mobile: cleanMob,
+    mobile: finalMob,
   };
 
-  if (existingIdx >= 0) {
-    db.clubs[existingIdx] = newClub;
-  } else {
-    db.clubs.push(newClub);
-  }
+  db.clubs.push(newClub);
   saveDB('clubs');
   if (cloudDb && !isCloudQuotaExceeded) {
     try {
       const docId = id.startsWith('club_') ? id : `club_${id}`;
       await setDoc(doc(cloudDb, 'clubs', docId), sanitizeData(newClub), { merge: true });
+      const snap = await getDocs(collection(cloudDb, 'clubs'));
+      for (const d of snap.docs) {
+        const dData = d.data();
+        const dName = String(dData.Reg_Club || dData.name || '').trim().toUpperCase();
+        if (dName === regClub && d.id !== docId) {
+          await deleteDoc(doc(cloudDb, 'clubs', d.id)).catch(() => {});
+        }
+      }
     } catch (e) {
       handleCloudError(e, 'Club setDoc');
     }
@@ -1479,6 +1852,49 @@ app.put('/api/clubs/:id', async (req: Request, res: Response) => {
     }
   }
   res.json({ success: true, club: db.clubs[idx] });
+});
+
+app.post('/api/clubs/mark-paid', async (req: Request, res: Response) => {
+  const clubNames: string[] = Array.isArray(req.body?.clubNames) ? req.body.clubNames : [];
+  const selectedSet = new Set(clubNames.map((n) => String(n || '').trim().toUpperCase()).filter(Boolean));
+  if (selectedSet.size === 0) {
+    return res.status(400).json({ error: 'No clubs selected' });
+  }
+
+  const now = new Date().toISOString();
+  const updatedCandidates: any[] = [];
+  db.candidates.forEach((cand, idx) => {
+    if (cand.isCancelled || cand.status === 'cancelled') return;
+    const clubNorm = String(cand.club || '').trim().toUpperCase();
+    if (!selectedSet.has(clubNorm)) return;
+    const st = String(cand.feeStatus || 'Due').trim().toUpperCase();
+    const isFree = st.includes('FREE') || st.includes('EXEMPT');
+    const isDue = !isFree && (st.includes('DUE') || st.includes('UNPAID') || !st.includes('PAID'));
+    if (!isDue) return;
+
+    const updated = {
+      ...cand,
+      feeStatus: 'Paid',
+      updatedAt: now,
+      synced: true,
+      isDirty: false,
+    };
+    db.candidates[idx] = updated;
+    updatedCandidates.push(updated);
+  });
+
+  if (updatedCandidates.length > 0) {
+    saveDB('candidates');
+    if (cloudDb && !isCloudQuotaExceeded) {
+      for (const c of updatedCandidates) {
+        setDoc(doc(cloudDb, 'candidates', c.id), sanitizeData(c), { merge: true }).catch((e) =>
+          handleCloudError(e, 'POST /api/clubs/mark-paid setDoc')
+        );
+      }
+    }
+  }
+
+  res.json({ success: true, updatedCount: updatedCandidates.length });
 });
 
 app.delete('/api/clubs/:id', async (req: Request, res: Response) => {
@@ -1543,14 +1959,81 @@ app.post('/api/settings', async (req: Request, res: Response) => {
 app.post('/api/auth/verify-pin', (req: Request, res: Response) => {
   const { pin, deviceId, deviceLabel, forceTakeover } = req.body;
   const currentPin = db.settings?.serverPin || '1234';
-  
-  if (pin !== currentPin) {
-    return res.status(401).json({ success: false, error: 'Incorrect PIN. Please try again.' });
+  const incomingDeviceLabel = deviceLabel || (req.headers['user-agent']?.includes('Mobi') ? 'Mobile Device' : 'Desktop Browser');
+
+  const lockState = getNormalizedPinLockout();
+  if (lockState.isLocked && lockState.lockedUntil) {
+    const mins = Math.ceil(lockState.remainingMs / 60000);
+    return res.status(423).json({
+      success: false,
+      isLockedOut: true,
+      lockedUntil: lockState.lockedUntil,
+      remainingMs: lockState.remainingMs,
+      failedAttempts: MAX_PIN_ATTEMPTS,
+      error: `Server login is locked across all devices due to 3 unsuccessful attempts. Try again in ${mins} minute(s).`,
+    });
+  }
+
+  if (String(pin || '').trim() !== String(currentPin).trim()) {
+    const nextAttempts = lockState.failedAttempts + 1;
+    const nowIso = new Date().toISOString();
+
+    if (nextAttempts >= MAX_PIN_ATTEMPTS) {
+      const lockedUntil = Date.now() + PIN_LOCKOUT_DURATION_MS;
+      serverPinLockout = {
+        failedAttempts: MAX_PIN_ATTEMPTS,
+        lockedUntil,
+        lastAttemptAt: nowIso,
+        lastDeviceLabel: incomingDeviceLabel,
+      };
+      if (cloudDb && !isCloudQuotaExceeded) {
+        setDoc(doc(cloudDb, 'serverSession', 'pinLockout'), sanitizeData(serverPinLockout)).catch((e) => handleCloudError(e, 'pinLockout setDoc'));
+      }
+      return res.status(423).json({
+        success: false,
+        isLockedOut: true,
+        lockedUntil,
+        remainingMs: PIN_LOCKOUT_DURATION_MS,
+        failedAttempts: MAX_PIN_ATTEMPTS,
+        error: 'Too many failed attempts (3/3). Server login is locked for 10 minutes across all devices.',
+      });
+    }
+
+    serverPinLockout = {
+      failedAttempts: nextAttempts,
+      lockedUntil: null,
+      lastAttemptAt: nowIso,
+      lastDeviceLabel: incomingDeviceLabel,
+    };
+    if (cloudDb && !isCloudQuotaExceeded) {
+      setDoc(doc(cloudDb, 'serverSession', 'pinLockout'), sanitizeData(serverPinLockout)).catch((e) => handleCloudError(e, 'pinLockout setDoc'));
+    }
+
+    const remainingAttempts = MAX_PIN_ATTEMPTS - nextAttempts;
+    return res.status(401).json({
+      success: false,
+      isPinRejected: true,
+      failedAttempts: nextAttempts,
+      remainingAttempts,
+      error: `Incorrect PIN. ${remainingAttempts} attempt${remainingAttempts === 1 ? '' : 's'} remaining before 10-minute lock.`,
+    });
+  }
+
+  // Correct PIN -> reset failed attempts counter
+  if (serverPinLockout.failedAttempts > 0 || serverPinLockout.lockedUntil) {
+    serverPinLockout = {
+      failedAttempts: 0,
+      lockedUntil: null,
+      lastAttemptAt: new Date().toISOString(),
+      lastDeviceLabel: incomingDeviceLabel,
+    };
+    if (cloudDb && !isCloudQuotaExceeded) {
+      setDoc(doc(cloudDb, 'serverSession', 'pinLockout'), sanitizeData(serverPinLockout)).catch((e) => handleCloudError(e, 'pinLockout reset'));
+    }
   }
 
   const currentActive = getValidActiveSession();
   const incomingDeviceId = deviceId || `dev_${Date.now()}`;
-  const incomingDeviceLabel = deviceLabel || (req.headers['user-agent']?.includes('Mobi') ? 'Mobile Device' : 'Desktop Browser');
 
   if (currentActive) {
     // If the active session is from the exact same device, allow reconnect/renew
@@ -1610,20 +2093,23 @@ app.post('/api/auth/verify-pin', (req: Request, res: Response) => {
   });
 });
 
-// Check if server is currently logged in on any device
+// Check if server is currently logged in on any device (and return global PIN lockout state)
 app.get('/api/auth/session-status', (req: Request, res: Response) => {
   const deviceId = req.query.deviceId as string;
   const currentActive = getValidActiveSession();
-  
+  const lockout = getNormalizedPinLockout();
+
   if (!currentActive) {
     return res.json({
       isServerLoggedIn: false,
+      lockout,
     });
   }
 
   return res.json({
     isServerLoggedIn: true,
     isCurrentDevice: Boolean(deviceId && currentActive.deviceId === deviceId),
+    lockout,
     activeDevice: {
       label: currentActive.deviceLabel,
       loggedInAt: currentActive.loggedInAt,
@@ -1698,7 +2184,7 @@ app.post('/api/auth/reset-pin', (req: Request, res: Response) => {
   }
 
   db.settings.serverPin = String(newPin).trim();
-  saveDB();
+  saveDB('settings');
   res.json({ success: true, message: 'Server login PIN has been updated successfully!' });
 });
 
@@ -1721,34 +2207,7 @@ app.post('/api/uploads', (req: Request, res: Response) => {
   const targetClub = (club || candidates[0]?.club || 'Independent / Unattached').trim();
   const now = new Date().toISOString();
 
-  // If clubMobile provided and targetClub is not Independent, save/update in db.clubs table
-  if (clubMobile && targetClub && targetClub !== 'Independent' && targetClub !== 'Independent / Unattached') {
-    const cleanMobile = String(clubMobile).trim();
-    const existingClubIdx = db.clubs.findIndex(c => (c.name || '').trim().toUpperCase() === targetClub.toUpperCase());
-    if (existingClubIdx >= 0) {
-      db.clubs[existingClubIdx].mobile = cleanMobile;
-      if (!db.clubs[existingClubIdx].phone || db.clubs[existingClubIdx].phone === '-') {
-        db.clubs[existingClubIdx].phone = cleanMobile;
-      }
-    } else {
-      db.clubs.push({
-        id: `club_${Date.now()}`,
-        name: targetClub,
-        shortCode: targetClub.slice(0, 4).toUpperCase().replace(/[^A-Z0-9]/g, '') || 'CLUB',
-        mobile: cleanMobile,
-        phone: cleanMobile,
-        address: '',
-      });
-    }
-    const updatedClubObj = existingClubIdx >= 0 ? db.clubs[existingClubIdx] : db.clubs[db.clubs.length - 1];
-    saveDB('clubs');
-    if (cloudDb && !isCloudQuotaExceeded && updatedClubObj) {
-      try {
-        const docId = updatedClubObj.id.startsWith('club_') ? updatedClubObj.id : `club_${updatedClubObj.id}`;
-        setDoc(doc(cloudDb, 'clubs', docId), sanitizeData(updatedClubObj), { merge: true }).catch(() => {});
-      } catch {}
-    }
-  }
+  // NOTE: Requested club name & clubMobile stay on the upload request ONLY and must never enter db.clubs until server approves the request.
 
   // Process incoming candidates: ensure provisional chest numbers (< 101) are preserved as localRecordNo
   // and NOT mistakenly treated as official server chest numbers before approval.
@@ -1811,8 +2270,8 @@ app.post('/api/uploads', (req: Request, res: Response) => {
       totalServerCandidates: db.candidates.length,
     });
   } else {
-    // Create a new pending batch
-    const uploadId = `upload_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    // Create a new pending batch (reuse provided Firestore uploadId when replicating)
+    const uploadId = (req.body.id && String(req.body.id).trim()) || `upload_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const newUpload = {
       id: uploadId,
       club: targetClub,
@@ -1857,6 +2316,8 @@ app.post('/api/uploads/:id/merge', (req: Request, res: Response) => {
   }, 100);
 
   upload.candidates.forEach((cand: any) => {
+    if (cand.status === 'rejected') return;
+
     // Check if candidate already exists by ID or by matching name and club
     const existingIdx = db.candidates.findIndex(
       (c) => c.id === cand.id ||
@@ -1893,12 +2354,15 @@ app.post('/api/uploads/:id/merge', (req: Request, res: Response) => {
   });
 
   // Update upload batch status
-  upload.status = 'merged';
+  upload.status = mergedList.length > 0 ? 'merged' : 'rejected';
   upload.mergedAt = now;
   upload.reviewedAt = now;
   db.clientUploads[uploadIdx] = upload;
 
-  syncClubMasterRecords();
+  if (mergedList.length > 0) {
+    syncClubMasterRecords();
+    saveDB('clubs');
+  }
   saveDB();
 
   res.json({
@@ -1920,10 +2384,17 @@ app.post('/api/uploads/:id/reject', (req: Request, res: Response) => {
 
   upload.status = 'rejected';
   upload.reviewedAt = new Date().toISOString();
-  if (req.body.reason) {
+  if (req.body?.reason) {
     upload.notes = req.body.reason;
   }
-  saveDB();
+  saveDB('clientUploads');
+
+  if (cloudDb && !isCloudQuotaExceeded) {
+    setDoc(doc(cloudDb, 'uploads', uploadId), sanitizeData(upload), { merge: true }).catch((err) =>
+      handleCloudError(err, 'Reject upload Firestore sync')
+    );
+  }
+
   res.json({ success: true, message: `Upload batch from "${upload.club}" marked as rejected.`, upload });
 });
 
@@ -1931,7 +2402,14 @@ app.post('/api/uploads/:id/reject', (req: Request, res: Response) => {
 app.delete('/api/uploads/:id', (req: Request, res: Response) => {
   const uploadId = req.params.id;
   db.clientUploads = db.clientUploads.filter((u) => u.id !== uploadId);
-  saveDB();
+  saveDB('clientUploads');
+
+  if (cloudDb && !isCloudQuotaExceeded) {
+    deleteDoc(doc(cloudDb, 'uploads', uploadId)).catch((err) =>
+      handleCloudError(err, 'Delete upload Firestore sync')
+    );
+  }
+
   res.json({ success: true, message: 'Upload batch removed' });
 });
 
@@ -2016,6 +2494,8 @@ app.post('/api/uploads/:id/merge-single/:candId', (req: Request, res: Response) 
     upload.mergedAt = now;
   }
 
+  syncClubMasterRecords();
+  saveDB('clubs');
   saveDB();
 
   res.json({
@@ -2116,15 +2596,24 @@ app.post('/api/heats', (req: Request, res: Response) => {
   if (idx >= 0) {
     db.heats[idx] = heat;
   } else {
-    db.heats.push(heat);
+  db.heats.push(heat);
   }
-  saveDB();
+  saveDB('heats');
+  if (cloudDb && !isCloudQuotaExceeded) {
+    setDoc(doc(cloudDb, 'heats', String(heat.id)), sanitizeData(heat), { merge: true }).catch((e) =>
+      handleCloudError(e, 'POST /api/heats setDoc')
+    );
+  }
   res.json({ success: true, heat });
 });
 
 app.delete('/api/heats/:id', (req: Request, res: Response) => {
-  db.heats = db.heats.filter((h) => h.id !== req.params.id);
-  saveDB();
+  const heatId = req.params.id;
+  db.heats = db.heats.filter((h) => h.id !== heatId);
+  saveDB('heats');
+  if (cloudDb && !isCloudQuotaExceeded) {
+    deleteDoc(doc(cloudDb, 'heats', heatId)).catch((e) => handleCloudError(e, 'DELETE /api/heats deleteDoc'));
+  }
   res.json({ success: true });
 });
 
@@ -2139,6 +2628,7 @@ app.post('/api/results', (req: Request, res: Response) => {
     result.id = `res_evt_${result.eventNo}`;
   }
   const idx = db.results.findIndex((r) => r.id === result.id || Number(r.eventNo) === Number(result.eventNo));
+  let savedResult = result;
   if (idx >= 0) {
     const existing = db.results[idx];
     const isAlreadyRanked = Boolean(
@@ -2154,12 +2644,19 @@ app.post('/api/results', (req: Request, res: Response) => {
     }
 
     db.results[idx] = { ...db.results[idx], ...result };
+    savedResult = db.results[idx];
   } else {
     db.results.push(result);
   }
   syncClubMasterRecords();
-  saveDB();
-  res.json({ success: true, result });
+  saveDB('clubs');
+  saveDB('results');
+  if (cloudDb && !isCloudQuotaExceeded) {
+    setDoc(doc(cloudDb, 'results', String(savedResult.id)), sanitizeData(savedResult), { merge: true }).catch((e) =>
+      handleCloudError(e, 'POST /api/results setDoc')
+    );
+  }
+  res.json({ success: true, result: savedResult });
 });
 
 // Database Explorer & Direct Table Operations
@@ -2185,7 +2682,17 @@ app.post('/api/db/raw/:table', (req: Request, res: Response) => {
     return res.status(400).json({ error: `Table '${table}' is not a collection` });
   }
   const row = req.body;
-  if (!row.id && table !== 'events') {
+  if (table === 'clubs') {
+    const regClub = String(row.Reg_Club || row.name || '').trim().toUpperCase();
+    if (!regClub) {
+      return res.status(400).json({ error: 'Club name is required' });
+    }
+    row.Reg_Club = regClub;
+    row.name = regClub;
+    const existing = db.clubs.find((c) => (c.Reg_Club || c.name || '').trim().toUpperCase() === regClub);
+    row.id = existing?.id || makeCanonicalClubDocId(regClub);
+    db.clubs = db.clubs.filter((c) => (c.Reg_Club || c.name || '').trim().toUpperCase() !== regClub && c.id !== row.id);
+  } else if (!row.id && table !== 'events') {
     row.id = table === 'candidates' && row.chestNo ? `cand_${row.chestNo}` : `${table}_${Date.now()}`;
   }
   if (table === 'events' && row.Evt_No !== undefined) {
@@ -2200,8 +2707,16 @@ app.post('/api/db/raw/:table', (req: Request, res: Response) => {
           const docId = `evt_${row.Evt_No}`;
           await setDoc(doc(cloudDb, 'events', docId), sanitizeData({ ...row, Fees: Number(row.Fees ?? 0) }), { merge: true });
         } else if (table === 'clubs') {
-          const docId = row.id ? (row.id.startsWith('club_') ? row.id : `club_${row.id}`) : `club_${Date.now()}`;
+          const regClub = String(row.Reg_Club || row.name || '').trim().toUpperCase();
+          const docId = row.id ? (row.id.startsWith('club_') ? row.id : `club_${row.id}`) : makeCanonicalClubDocId(regClub);
           await setDoc(doc(cloudDb, 'clubs', docId), sanitizeData(row), { merge: true });
+          const snap = await getDocs(collection(cloudDb, 'clubs'));
+          for (const d of snap.docs) {
+            const dName = String(d.data()?.Reg_Club || d.data()?.name || '').trim().toUpperCase();
+            if (dName === regClub && d.id !== docId) {
+              await deleteDoc(doc(cloudDb, 'clubs', d.id)).catch(() => {});
+            }
+          }
         } else if (table === 'candidates') {
           await setDoc(doc(cloudDb, 'candidates', String(row.id)), sanitizeData(row), { merge: true });
         } else if (table === 'heats') {
@@ -2218,21 +2733,38 @@ app.post('/api/db/raw/:table', (req: Request, res: Response) => {
 });
 
 // Update entire table or settings directly from DB Explorer
-app.put('/api/db/raw/:table', (req: Request, res: Response) => {
+app.put('/api/db/raw/:table', async (req: Request, res: Response) => {
   const table = req.params.table as keyof DBData;
   if (db[table] === undefined) {
     return res.status(404).json({ error: `Table '${table}' not found` });
   }
   if (table === 'settings') {
     db.settings = { ...db.settings, ...req.body };
+    saveDB('settings');
   } else if (Array.isArray(req.body)) {
     (db as any)[table] = req.body;
+    saveDBLocalOnly(table);
   } else if (Array.isArray(req.body.records)) {
     (db as any)[table] = req.body.records;
+    saveDBLocalOnly(table);
   } else {
     return res.status(400).json({ error: 'Expected array of records or settings object' });
   }
-  saveDB(table);
+
+  if (cloudDb && !isCloudQuotaExceeded && table !== 'settings' && Array.isArray(db[table])) {
+    const colName = table === 'clientUploads' ? 'uploads' : String(table);
+    await replaceFirestoreCollection(colName, db[table] as any[], (item, idx) => {
+      if (table === 'events') return `evt_${item.Evt_No ?? idx}`;
+      if (table === 'clubs') {
+        const regName = String(item.Reg_Club || item.name || '').trim().toUpperCase();
+        return item.id ? (String(item.id).startsWith('club_') ? String(item.id) : `club_${item.id}`) : makeCanonicalClubDocId(regName || String(idx));
+      }
+      if (table === 'results') return String(item.id || `res_evt_${item.eventNo ?? idx}`);
+      if (table === 'heats') return String(item.id || `heat_${item.eventNo ?? 0}_${item.heatNumber ?? idx}`);
+      return String(item.id || `${colName}_${Date.now()}_${idx}`);
+    });
+  }
+
   res.json({ success: true, table: db[table] });
 });
 
@@ -2296,6 +2828,8 @@ app.put('/api/db/raw/:table/:id', (req: Request, res: Response) => {
           await setDoc(doc(cloudDb, 'heats', String(finalRow.id || id)), sanitizeData(finalRow), { merge: true });
         } else if (table === 'results') {
           await setDoc(doc(cloudDb, 'results', String(finalRow.id || id)), sanitizeData(finalRow), { merge: true });
+        } else if (table === 'clientUploads') {
+          await setDoc(doc(cloudDb, 'uploads', String(finalRow.id || id)), sanitizeData(finalRow), { merge: true });
         }
       } catch (e) {
         handleCloudError(e, `raw updating row in ${table}`);
@@ -2303,6 +2837,24 @@ app.put('/api/db/raw/:table/:id', (req: Request, res: Response) => {
     })();
   }
   return res.json({ success: true, row: finalRow });
+});
+
+// Delete ALL rows from a single table (Raw Database Operation -> Delete All button)
+app.delete('/api/db/raw/:table', async (req: Request, res: Response) => {
+  const table = req.params.table as keyof DBData;
+  if (!Array.isArray(db[table])) {
+    return res.status(400).json({ error: `Table '${table}' is not a collection` });
+  }
+  const deletedCount = (db[table] as any[]).length;
+  (db as any)[table] = [];
+  saveDBLocalOnly(table);
+
+  if (cloudDb && !isCloudQuotaExceeded) {
+    const colName = table === 'clientUploads' ? 'uploads' : String(table);
+    await clearFirestoreCollection(colName);
+  }
+
+  res.json({ success: true, table, deletedCount });
 });
 
 app.delete('/api/db/raw/:table/:id', (req: Request, res: Response) => {
@@ -2353,6 +2905,8 @@ app.delete('/api/db/raw/:table/:id', (req: Request, res: Response) => {
               await deleteDoc(doc(cloudDb, 'clubs', d.id)).catch(() => {});
             }
           }
+        } else if (table === 'clientUploads') {
+          await deleteDoc(doc(cloudDb, 'uploads', id));
         } else {
           await deleteDoc(doc(cloudDb, table, id));
         }
@@ -2665,7 +3219,7 @@ app.get(['/api/db/export-excel', '/api/db/export-xlsx'], (req: Request, res: Res
 });
 
 // DB Restore (Import)
-app.post('/api/db/restore', (req: Request, res: Response) => {
+app.post('/api/db/restore', async (req: Request, res: Response) => {
   const dump = req.body;
   if (!dump || (!dump.events && !dump.candidates)) {
     return res.status(400).json({ error: 'Invalid database backup JSON format' });
@@ -2677,10 +3231,21 @@ app.post('/api/db/restore', (req: Request, res: Response) => {
     results: dump.results || [],
     heats: dump.heats || [],
     settings: dump.settings || { ...DEFAULT_SETTINGS },
-    clientUploads: dump.clientUploads || [],
+    clientUploads: dump.clientUploads || dump.uploads || [],
     lastUpdated: new Date().toISOString(),
   };
-  saveDB();
+  saveDBLocalOnly('all');
+  if (cloudDb && !isCloudQuotaExceeded) {
+    await Promise.all([
+      replaceFirestoreCollection('events', db.events, (e) => `evt_${e.Evt_No}`),
+      replaceFirestoreCollection('candidates', db.candidates, (c, i) => String(c.id || `cand_${c.chestNo || i}`)),
+      replaceFirestoreCollection('clubs', db.clubs, (c, i) => String(c.id || makeCanonicalClubDocId(c.Reg_Club || c.name || String(i)))),
+      replaceFirestoreCollection('heats', db.heats, (h, i) => String(h.id || `heat_${h.eventNo ?? 0}_${h.heatNumber ?? i}`)),
+      replaceFirestoreCollection('results', db.results, (r, i) => String(r.id || `res_evt_${r.eventNo ?? i}`)),
+      replaceFirestoreCollection('uploads', db.clientUploads, (u, i) => String(u.id || `upload_${i}`)),
+      setDoc(doc(cloudDb, 'settings', 'meet_settings'), sanitizeData(db.settings), { merge: true }).catch(() => {}),
+    ]);
+  }
   res.json({
     success: true,
     message: `Database restored successfully! (${db.candidates.length} candidates, ${db.events.length} events, ${db.clubs.length} clubs)`,
@@ -2689,6 +3254,46 @@ app.post('/api/db/restore', (req: Request, res: Response) => {
       events: db.events.length,
       clubs: db.clubs.length,
       results: db.results.length,
+    },
+  });
+});
+
+// Restore only Athletes' Data & Event Allocation (from 'General Entry' and 'Event Allocation' sheets)
+app.post('/api/db/restore-athletes', async (req: Request, res: Response) => {
+  const payload = req.body;
+  if (!payload || !Array.isArray(payload.candidates)) {
+    return res.status(400).json({ error: 'Invalid Athletes Data payload' });
+  }
+
+  db.candidates = payload.candidates.map((c: any, idx: number) =>
+    toServerCandidateRecord(c, Number(c.chestNo) || (101 + idx), c)
+  );
+  db.heats = Array.isArray(payload.heats) ? payload.heats : [];
+  db.results = Array.isArray(payload.results) ? payload.results : [];
+  syncClubMasterRecords(true);
+  db.lastUpdated = new Date().toISOString();
+
+  saveDBLocalOnly('all');
+  if (cloudDb && !isCloudQuotaExceeded) {
+    await Promise.all([
+      replaceFirestoreCollection('candidates', db.candidates, (c, i) => String(c.id || `cand_${c.chestNo || i}`)),
+      replaceFirestoreCollection('heats', db.heats, (h, i) => String(h.id || `heat_${h.eventNo ?? 0}_${h.heatNumber ?? i}`)),
+      replaceFirestoreCollection('results', db.results, (r, i) => String(r.id || `res_evt_${r.eventNo ?? i}`)),
+      replaceFirestoreCollection('clubs', db.clubs, (c, i) => String(c.id || makeCanonicalClubDocId(c.Reg_Club || c.name || String(i)))),
+    ]);
+  }
+  res.json({
+    success: true,
+    message: `Athletes' data & event allocation restored (${db.candidates.length} candidates, ${db.heats.length} heats, ${db.results.length} results)`,
+    candidates: db.candidates,
+    clubs: db.clubs,
+    heats: db.heats,
+    results: db.results,
+    stats: {
+      candidates: db.candidates.length,
+      heats: db.heats.length,
+      results: db.results.length,
+      clubs: db.clubs.length,
     },
   });
 });
@@ -2999,7 +3604,12 @@ app.post('/api/db/sample-data', (req: Request, res: Response) => {
   ];
 
   db.candidates = [...SAMPLE_CANDIDATES];
-  saveDB();
+  syncClubMasterRecords(true);
+  saveDBLocalOnly('candidates');
+  saveDB('clubs');
+  if (cloudDb && !isCloudQuotaExceeded) {
+    replaceFirestoreCollection('candidates', db.candidates, (c, i) => String(c.id || `cand_${c.chestNo || i}`)).catch(() => {});
+  }
   res.json({
     success: true,
     message: 'Loaded 20 sample candidates for testing!',
@@ -3008,13 +3618,23 @@ app.post('/api/db/sample-data', (req: Request, res: Response) => {
   });
 });
 
-app.post('/api/db/purge-except-events', (req: Request, res: Response) => {
+app.post('/api/db/purge-except-events', async (req: Request, res: Response) => {
   db.candidates = [];
   db.results = [];
   db.heats = [];
   db.clientUploads = [];
+  db.clubs = [];
   // Preserve events list master data
-  saveDB();
+  saveDBLocalOnly('all');
+  if (cloudDb && !isCloudQuotaExceeded) {
+    await Promise.all([
+      clearFirestoreCollection('candidates'),
+      clearFirestoreCollection('results'),
+      clearFirestoreCollection('heats'),
+      clearFirestoreCollection('uploads'),
+      clearFirestoreCollection('clubs'),
+    ]);
+  }
   res.json({
     success: true,
     message: 'All candidates, uploads, heats, and results deleted from database. Event list master data preserved.',
@@ -3022,16 +3642,26 @@ app.post('/api/db/purge-except-events', (req: Request, res: Response) => {
   });
 });
 
-app.post('/api/db/clear', (req: Request, res: Response) => {
+app.post('/api/db/clear', async (req: Request, res: Response) => {
   db.candidates = [];
   db.results = [];
   db.heats = [];
   db.clientUploads = [];
-  saveDB();
+  db.clubs = [];
+  saveDBLocalOnly('all');
+  if (cloudDb && !isCloudQuotaExceeded) {
+    await Promise.all([
+      clearFirestoreCollection('candidates'),
+      clearFirestoreCollection('results'),
+      clearFirestoreCollection('heats'),
+      clearFirestoreCollection('uploads'),
+      clearFirestoreCollection('clubs'),
+    ]);
+  }
   res.json({ success: true, message: 'Cleared candidates, heats, results, and uploads' });
 });
 
-app.post('/api/db/factory-reset', (req: Request, res: Response) => {
+app.post('/api/db/factory-reset', async (req: Request, res: Response) => {
   db = {
     events: [...DEFAULT_EVENTS],
     candidates: [],
@@ -3042,8 +3672,20 @@ app.post('/api/db/factory-reset', (req: Request, res: Response) => {
     clientUploads: [],
     lastUpdated: new Date().toISOString(),
   };
-  syncClubMasterRecords(true);
-  saveDB('all');
+  saveDBLocalOnly('all');
+  if (cloudDb && !isCloudQuotaExceeded) {
+    await Promise.all([
+      clearFirestoreCollection('candidates'),
+      clearFirestoreCollection('clubs'),
+      clearFirestoreCollection('results'),
+      clearFirestoreCollection('heats'),
+      clearFirestoreCollection('uploads'),
+    ]);
+    await replaceFirestoreCollection('events', DEFAULT_EVENTS, (e) => `evt_${e.Evt_No}`);
+    await setDoc(doc(cloudDb, 'settings', 'meet_settings'), sanitizeData(DEFAULT_SETTINGS)).catch((e) =>
+      handleCloudError(e, 'factory-reset settings sync')
+    );
+  }
   console.log('[DB] Factory reset performed: all tables reset to default state.');
   res.json({
     success: true,
@@ -3062,6 +3704,15 @@ app.post('/api/db/factory-reset', (req: Request, res: Response) => {
 // VITE OR STATIC SERVING
 // ----------------------------------------------------
 async function startServer() {
+  // Ensure initial sync from Live Cloud Firestore completes before accepting HTTP requests
+  try {
+    await Promise.race([
+      firestoreSyncReady,
+      new Promise((resolve) => setTimeout(resolve, 4000)),
+    ]);
+  } catch (e) {
+    console.warn('[eSports] Startup Firestore sync race notice:', e);
+  }
   const distPath = path.join(process.cwd(), 'dist');
   const hasDist = fs.existsSync(path.join(distPath, 'index.html'));
 
@@ -3072,15 +3723,48 @@ async function startServer() {
 
   if (isProduction) {
     console.log('[eSports] Production mode: Serving static build from dist');
-    app.use(express.static(distPath));
+    app.get('/sw.js', (_req: Request, res: Response) => {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+      res.sendFile(path.join(process.cwd(), 'public', 'sw.js'));
+    });
+    app.use('/assets', express.static(path.join(distPath, 'assets'), {
+      maxAge: '365d',
+      immutable: true,
+    }));
+    app.use(express.static(distPath, {
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith('index.html') || filePath.endsWith('sw.js') || filePath.endsWith('manifest.json')) {
+          res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+          res.setHeader('Pragma', 'no-cache');
+          res.setHeader('Expires', '0');
+        }
+      },
+    }));
     app.get('*', (req: Request, res: Response) => {
       if (req.path.startsWith('/api')) {
         return res.status(404).json({ error: 'API endpoint not found' });
       }
+      // Never serve index.html for missing hashed JS/CSS/media files (prevents MIME-type white screen)
+      if (req.path.startsWith('/assets/') || /\.[a-zA-Z0-9]{1,8}$/.test(req.path)) {
+        return res.status(404).type('text/plain').send('Asset not found');
+      }
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
       res.sendFile(path.join(distPath, 'index.html'));
     });
   } else {
     console.log('[eSports] Development mode: Starting Vite dev server middleware');
+    app.use((req: Request, res: Response, next) => {
+      if (req.path === '/' || req.path === '/index.html' || req.path === '/sw.js' || req.path === '/manifest.json') {
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+      }
+      next();
+    });
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',

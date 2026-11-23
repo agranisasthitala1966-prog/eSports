@@ -100,7 +100,7 @@ export const ResetPinModal: React.FC<ResetPinModalProps> = ({
                 maxLength={8}
                 value={currentPin}
                 onChange={(e) => setCurrentPin(e.target.value.replace(/\D/g, ''))}
-                placeholder="Enter current PIN (Default: 1234)"
+                placeholder="Enter current PIN"
                 className="w-full py-2.5 px-3 rounded-xl bg-[#070b14] border border-slate-700 focus:border-amber-400 text-white font-mono text-sm focus:outline-hidden"
               />
             </div>

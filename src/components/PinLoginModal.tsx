@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Lock, X, AlertCircle, Loader2, Smartphone, ShieldAlert, ArrowRight } from 'lucide-react';
+import { Lock, X, AlertCircle, Loader2, Smartphone, ShieldAlert, ArrowRight, Clock } from 'lucide-react';
 import { api } from '../services/api';
 
 interface PinLoginModalProps {
@@ -16,6 +16,9 @@ export const PinLoginModal: React.FC<PinLoginModalProps> = ({
   const [pin, setPin] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [lockedUntil, setLockedUntil] = useState<number | null>(null);
+  const [failedAttempts, setFailedAttempts] = useState<number>(0);
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const [sessionConflict, setSessionConflict] = useState<{
     deviceLabel: string;
     loggedInAt?: string;
@@ -26,29 +29,77 @@ export const PinLoginModal: React.FC<PinLoginModalProps> = ({
   } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Check active server session status on open
+  const isLocked = Boolean(lockedUntil && nowMs < lockedUntil);
+  const remainingSeconds = isLocked && lockedUntil ? Math.max(0, Math.ceil((lockedUntil - nowMs) / 1000)) : 0;
+  const countdownText = `${String(Math.floor(remainingSeconds / 60)).padStart(2, '0')}:${String(remainingSeconds % 60).padStart(2, '0')}`;
+
+  // Check active server session & global PIN lockout status on open + subscribe in real time
   useEffect(() => {
-    if (isOpen) {
-      setPin('');
-      setError(null);
-      setLoading(false);
-      setSessionConflict(null);
-      setActiveSessionNotice(null);
+    if (!isOpen) return;
 
-      api.getSessionStatus().then((status) => {
-        if (status.isServerLoggedIn && !status.isCurrentDevice && status.activeDevice) {
-          setActiveSessionNotice({
-            label: status.activeDevice.label,
-            since: status.activeDevice.loggedInAt,
-          });
-        }
-      }).catch(() => {});
+    setPin('');
+    setError(null);
+    setLoading(false);
+    setSessionConflict(null);
+    setActiveSessionNotice(null);
+    setNowMs(Date.now());
 
-      setTimeout(() => {
-        inputRef.current?.focus();
-      }, 50);
-    }
+    api.getPinLockoutStatus().then((lockStatus) => {
+      if (lockStatus.isLocked && lockStatus.lockedUntil) {
+        setLockedUntil(lockStatus.lockedUntil);
+        setFailedAttempts(3);
+      } else {
+        setLockedUntil(null);
+        setFailedAttempts(lockStatus.failedAttempts || 0);
+      }
+    }).catch(() => {});
+
+    const unsubLockout = api.subscribeToPinLockout((lockStatus) => {
+      if (lockStatus.isLocked && lockStatus.lockedUntil) {
+        setLockedUntil(lockStatus.lockedUntil);
+        setFailedAttempts(3);
+        setPin('');
+        setSessionConflict(null);
+      } else {
+        setLockedUntil(null);
+        setFailedAttempts(lockStatus.failedAttempts || 0);
+      }
+    });
+
+    api.getSessionStatus().then((status) => {
+      if (status.isServerLoggedIn && !status.isCurrentDevice && status.activeDevice) {
+        setActiveSessionNotice({
+          label: status.activeDevice.label,
+          since: status.activeDevice.loggedInAt,
+        });
+      }
+    }).catch(() => {});
+
+    const focusTimer = setTimeout(() => {
+      inputRef.current?.focus();
+    }, 50);
+
+    return () => {
+      clearTimeout(focusTimer);
+      unsubLockout();
+    };
   }, [isOpen]);
+
+  // 1-second live countdown timer while locked
+  useEffect(() => {
+    if (!isOpen || !lockedUntil) return;
+    const interval = setInterval(() => {
+      const current = Date.now();
+      setNowMs(current);
+      if (current >= lockedUntil) {
+        setLockedUntil(null);
+        setFailedAttempts(0);
+        setError(null);
+        setTimeout(() => inputRef.current?.focus(), 50);
+      }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [isOpen, lockedUntil]);
 
   // Handle ESC key to exit
   useEffect(() => {
@@ -64,7 +115,7 @@ export const PinLoginModal: React.FC<PinLoginModalProps> = ({
   if (!isOpen) return null;
 
   const handleVerify = async (pinToVerify: string, forceTakeover = false) => {
-    if (!pinToVerify.trim() || loading) return;
+    if (!pinToVerify.trim() || loading || isLocked) return;
 
     setLoading(true);
     setError(null);
@@ -79,16 +130,30 @@ export const PinLoginModal: React.FC<PinLoginModalProps> = ({
         localStorage.setItem('esports_server_session_id', res.sessionId);
       }
       setPin('');
+      setLockedUntil(null);
+      setFailedAttempts(0);
       onSuccess(res);
     } catch (err: any) {
-      if (err.isAlreadyLoggedIn) {
+      if (err.isLockedOut) {
+        const until = typeof err.lockedUntil === 'number'
+          ? err.lockedUntil
+          : Date.now() + (Number(err.remainingMs) || 10 * 60 * 1000);
+        setLockedUntil(until);
+        setNowMs(Date.now());
+        setFailedAttempts(3);
+        setPin('');
+        setError(null);
+      } else if (err.isAlreadyLoggedIn) {
         setSessionConflict({
           deviceLabel: err.activeDevice?.label || 'Another Device',
           loggedInAt: err.activeDevice?.loggedInAt,
         });
         setError(`Server is active on ${err.activeDevice?.label || 'another device'}. Concurrent logins restricted.`);
       } else {
-        setError(err.message || 'Incorrect PIN. Default is 1234.');
+        if (typeof err.failedAttempts === 'number') {
+          setFailedAttempts(err.failedAttempts);
+        }
+        setError(err.message || 'Incorrect PIN.');
         setPin('');
         setTimeout(() => {
           inputRef.current?.focus();
@@ -100,6 +165,7 @@ export const PinLoginModal: React.FC<PinLoginModalProps> = ({
   };
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (isLocked) return;
     const rawVal = e.target.value.replace(/\D/g, '').slice(0, 4);
     setPin(rawVal);
     setError(null);
@@ -113,7 +179,7 @@ export const PinLoginModal: React.FC<PinLoginModalProps> = ({
 
   const handleFormSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (pin.length > 0) {
+    if (!isLocked && pin.length > 0) {
       handleVerify(pin, false);
     }
   };
@@ -138,7 +204,11 @@ export const PinLoginModal: React.FC<PinLoginModalProps> = ({
 
         {/* Header */}
         <div className="text-center space-y-2 mb-5">
-          <div className="w-13 h-13 mx-auto rounded-2xl bg-gradient-to-tr from-amber-500 to-blue-600 flex items-center justify-center shadow-lg shadow-blue-500/20">
+          <div className={`w-13 h-13 mx-auto rounded-2xl flex items-center justify-center shadow-lg ${
+            isLocked
+              ? 'bg-gradient-to-tr from-rose-600 to-amber-600 shadow-rose-500/25'
+              : 'bg-gradient-to-tr from-amber-500 to-blue-600 shadow-blue-500/20'
+          }`}>
             {loading ? (
               <Loader2 className="w-6 h-6 text-white animate-spin" />
             ) : (
@@ -149,12 +219,33 @@ export const PinLoginModal: React.FC<PinLoginModalProps> = ({
             Server Access
           </h2>
           <p className="text-xs text-slate-400">
-            Enter 4-digit PIN to access Server Control
+            {isLocked
+              ? 'Server login temporarily locked across all devices'
+              : 'Enter 4-digit PIN to access Server Control'}
           </p>
         </div>
 
+        {/* Global 10-Minute Lockout Banner */}
+        {isLocked && (
+          <div className="mb-4 p-3.5 rounded-2xl bg-rose-950/90 border border-rose-500/70 text-rose-100 text-xs space-y-2 animate-in fade-in">
+            <div className="flex items-start gap-2.5">
+              <Clock className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+              <div>
+                <p className="font-bold text-rose-300">Server Login Locked (10 Minutes)</p>
+                <p className="text-[11px] text-rose-200/90 mt-0.5 leading-relaxed">
+                  3 unsuccessful PIN attempts occurred. Login is locked for all devices.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center justify-between px-3 py-1.5 rounded-xl bg-rose-900/60 border border-rose-500/40 font-mono">
+              <span className="text-[11px] font-semibold text-rose-200">Unlocks in</span>
+              <span className="text-sm font-black text-amber-300 tracking-wider">{countdownText}</span>
+            </div>
+          </div>
+        )}
+
         {/* Notice if another device currently holds active server session */}
-        {activeSessionNotice && !sessionConflict && (
+        {!isLocked && activeSessionNotice && !sessionConflict && (
           <div className="mb-4 p-3 rounded-2xl bg-amber-950/50 border border-amber-600/40 text-amber-200 text-xs flex items-start gap-2.5">
             <Smartphone className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
             <div>
@@ -167,15 +258,22 @@ export const PinLoginModal: React.FC<PinLoginModalProps> = ({
         )}
 
         {/* Error message */}
-        {error && !sessionConflict && (
+        {!isLocked && error && !sessionConflict && (
           <div className="mb-4 p-2.5 rounded-xl bg-rose-950/80 border border-rose-700/60 text-rose-200 text-xs font-semibold flex items-center justify-center gap-2 animate-in fade-in">
             <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
             <span>{error}</span>
           </div>
         )}
 
+        {/* Warning indicator if previous failed attempts exist across devices */}
+        {!isLocked && !error && !sessionConflict && failedAttempts > 0 && failedAttempts < 3 && (
+          <div className="mb-4 p-2.5 rounded-xl bg-amber-950/60 border border-amber-700/50 text-amber-200 text-[11px] font-semibold text-center">
+            {failedAttempts}/3 unsuccessful attempt(s) recorded — {3 - failedAttempts} attempt{3 - failedAttempts === 1 ? '' : 's'} remaining before 10-minute lock.
+          </div>
+        )}
+
         {/* Session Conflict Takeover Dialog */}
-        {sessionConflict && (
+        {!isLocked && sessionConflict && (
           <div className="mb-5 p-3.5 rounded-2xl bg-rose-950/80 border border-rose-600/70 text-rose-100 text-xs space-y-3 animate-in fade-in">
             <div className="flex items-start gap-2">
               <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
@@ -208,8 +306,8 @@ export const PinLoginModal: React.FC<PinLoginModalProps> = ({
         {/* PIN Input */}
         <form onSubmit={handleFormSubmit} className="space-y-5">
           <div
-            className="relative cursor-text"
-            onClick={() => inputRef.current?.focus()}
+            className={`relative ${isLocked ? 'cursor-not-allowed opacity-50' : 'cursor-text'}`}
+            onClick={() => { if (!isLocked) inputRef.current?.focus(); }}
           >
             {/* Real hidden/covered numeric input */}
             <input
@@ -219,10 +317,10 @@ export const PinLoginModal: React.FC<PinLoginModalProps> = ({
               pattern="[0-9]*"
               autoComplete="one-time-code"
               maxLength={4}
-              disabled={loading}
+              disabled={loading || isLocked}
               value={pin}
               onChange={handleInputChange}
-              className="absolute inset-0 w-full h-full opacity-0 cursor-text z-10"
+              className="absolute inset-0 w-full h-full opacity-0 cursor-text z-10 disabled:cursor-not-allowed"
               aria-label="Server PIN"
             />
 
@@ -230,12 +328,14 @@ export const PinLoginModal: React.FC<PinLoginModalProps> = ({
             <div className="flex items-center justify-center gap-3">
               {[0, 1, 2, 3].map((idx) => {
                 const isFilled = pin.length > idx;
-                const isCurrent = pin.length === idx;
+                const isCurrent = !isLocked && pin.length === idx;
                 return (
                   <div
                     key={idx}
                     className={`w-13 h-14 sm:w-14 sm:h-15 rounded-2xl flex items-center justify-center text-2xl font-mono font-black transition-all border-2 ${
-                      error
+                      isLocked
+                        ? 'border-rose-800/70 bg-rose-950/20 text-rose-500'
+                        : error
                         ? 'border-rose-500 bg-rose-950/30 text-rose-400'
                         : isCurrent
                         ? 'border-amber-400 bg-amber-400/10 text-amber-400 ring-2 ring-amber-400/40 shadow-lg shadow-amber-400/10 scale-105'
@@ -257,17 +357,13 @@ export const PinLoginModal: React.FC<PinLoginModalProps> = ({
             </div>
           </div>
 
-          {/* Loading status or hint */}
-          <div className="text-center pt-1">
-            {loading ? (
+          {/* Loading status */}
+          <div className="text-center pt-1 min-h-[20px]">
+            {loading && (
               <div className="flex items-center justify-center gap-2 text-xs font-semibold text-amber-400">
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
                 <span>Verifying PIN...</span>
               </div>
-            ) : (
-              <span className="text-[11px] text-slate-500 font-medium">
-                Default PIN: <strong className="text-slate-400 font-mono">1234</strong>
-              </span>
             )}
           </div>
         </form>
