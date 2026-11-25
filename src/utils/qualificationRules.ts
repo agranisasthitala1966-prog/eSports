@@ -327,15 +327,6 @@ export function buildLiveMeetTicker(
   const items: LiveMeetTickerItem[] = [];
   const isEchoEnabled = settings?.clientResponseEnabled !== false;
 
-  if (isEchoEnabled) {
-    const clubName = (settings?.registeredClubName || 'Sasthitala Agrani').trim();
-    items.push({
-      key: 'host',
-      text: clubName,
-      isAlert: false,
-    });
-  }
-
   if (isBeforeMeetStartDate(settings?.dates) && settings?.ordinalTitle?.trim()) {
     items.push({ key: 'ordinal', text: settings.ordinalTitle.trim(), isAlert: false });
   }

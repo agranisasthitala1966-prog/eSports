@@ -33,11 +33,12 @@ import {
   isMobileClient 
 } from '../utils/thermalBluetoothPrint';
 import { ThermalLogo } from './ThermalLogo';
+import { receiptDomToOfflineHtmlBlob } from '../utils/thermalLogo';
 import { ThermalTwoLineRecord } from './ThermalTwoLineRecord';
 import {
   WhatsAppIcon,
-  generateRankListWhatsAppText,
-  openWhatsAppWithText,
+  buildServerReportFileName,
+  shareThermalHtmlBlob,
 } from '../utils/whatsappThermalReport';
 import { isExcludedClubForRanking } from '../utils/clubRankingFilter';
 
@@ -356,7 +357,8 @@ export const RankingList: React.FC<RankingListProps> = ({
     }
   }, [eventsWithFinalList, singlePrintEvt]);
 
-  // Print Modal
+  // Print Modal & Collapsible Print Drawer
+  const [showPrintDrawer, setShowPrintDrawer] = useState<boolean>(false);
   const [showPrintModal, setShowPrintModal] = useState<boolean>(false);
   const [modalFormat, setModalFormat] = useState<'a4' | 'thermal'>('a4');
   const [thermalConfig, setThermalConfig] = useState<ThermalPrintSettings>(getThermalSettings());
@@ -1030,7 +1032,11 @@ export const RankingList: React.FC<RankingListProps> = ({
   }, [printScope, singlePrintEvt, rangeStart, rangeEnd, customCsvInput, eventsWithFinalList]);
 
   const [isDirectPrinting, setIsDirectPrinting] = useState<boolean>(false);
+  const [isSharingWhatsApp, setIsSharingWhatsApp] = useState<boolean>(false);
   const [directPrintStatus, setDirectPrintStatus] = useState<string | null>(null);
+  const thermalModalSheetRef = useRef<HTMLDivElement>(null);
+  const offscreenThermalShareRef = useRef<HTMLDivElement>(null);
+  const currentYear = new Date().getFullYear();
 
   // Trigger print: Direct Bluetooth thermal on mobile when in thermal mode, or window.print() for A4
   const handleExecutePrint = async () => {
@@ -1065,22 +1071,58 @@ export const RankingList: React.FC<RankingListProps> = ({
     window.print();
   };
 
-  // Trigger WhatsApp share for Ranking thermal report
-  const handleWhatsAppShareRanking = () => {
+  // Trigger WhatsApp share for Ranking List thermal report as complete offline HTML
+  const handleWhatsAppShareRanking = async () => {
     if (eventsToPrint.length === 0) return;
-    const textBlocks: string[] = [];
-    eventsToPrint.forEach((evt) => {
-      const evtRes = results.find((r) => Number(r.eventNo) === Number(evt.Evt_No));
-      const rankedFinalists = (evtRes?.winners && evtRes.winners.length > 0 ? evtRes.winners : (evtRes?.finalists || []))
-        .filter((f) => (f.position || 0) > 0)
-        .sort((a, b) => (a.position || 0) - (b.position || 0));
-      const text = generateRankListWhatsAppText(evt, rankedFinalists, settings);
-      textBlocks.push(text);
+
+    const targetEl =
+      (showPrintModal && modalFormat === 'thermal'
+        ? thermalModalSheetRef.current
+        : offscreenThermalShareRef.current) ||
+      (document.querySelector('.receipt') as HTMLElement | null);
+
+    const evtLabel =
+      eventsToPrint.length === 1
+        ? eventsToPrint[0].Evt_No
+        : printScope === 'range'
+        ? `${rangeStart}-${rangeEnd}`
+        : 'All';
+
+    const fileName = buildServerReportFileName('ranking', {
+      year: currentYear,
+      eventNo: evtLabel,
+      extension: 'html',
     });
-    const fullText = textBlocks.join('\n\n');
-    const res = openWhatsAppWithText(fullText);
-    setDirectPrintStatus(res.message);
-    setTimeout(() => setDirectPrintStatus(null), 4000);
+    const docTitle = fileName.replace(/\.html$/i, '');
+
+    if (!targetEl) {
+      setDirectPrintStatus('Unable to locate Ranking List thermal sheet for offline HTML export.');
+      setTimeout(() => setDirectPrintStatus(null), 4000);
+      return;
+    }
+
+    setIsSharingWhatsApp(true);
+    setDirectPrintStatus('Generating offline HTML for Ranking List...');
+    try {
+      const htmlBlob = await receiptDomToOfflineHtmlBlob(targetEl, {
+        title: docTitle,
+        printableWidthMm: thermalConfig.printableWidth,
+      });
+      if (!htmlBlob) {
+        setDirectPrintStatus('Failed to generate offline HTML for Ranking List.');
+        setTimeout(() => setDirectPrintStatus(null), 4000);
+        return;
+      }
+      const res = await shareThermalHtmlBlob(htmlBlob, fileName, docTitle);
+      if (!res.cancelled) {
+        setDirectPrintStatus(res.message);
+        setTimeout(() => setDirectPrintStatus(null), 5000);
+      } else {
+        setDirectPrintStatus(null);
+      }
+    } finally {
+      setIsSharingWhatsApp(false);
+    }
   };
 
   // Helper to find club info
@@ -1152,6 +1194,151 @@ export const RankingList: React.FC<RankingListProps> = ({
         <div className="thermal-footer-time text-black leading-tight mt-0.5 break-words">
           {currentTimestamp}
         </div>
+      </div>
+    );
+  };
+
+  // Reusable Thermal Ranking List receipts renderer (shared between Modal Preview & Offscreen Offline HTML Export)
+  const renderThermalRankingReceipts = () => {
+    if (eventsToPrint.length === 0) {
+      return (
+        <div className="py-4 text-center italic">
+          No events match print scope.
+        </div>
+      );
+    }
+
+    const getRankPosLabel = (pos?: number, fallbackIdx?: number) => {
+      const p = pos && pos > 0 ? pos : fallbackIdx !== undefined ? fallbackIdx + 1 : 1;
+      if (p === 1) return '1st';
+      if (p === 2) return '2nd';
+      if (p === 3) return '3rd';
+      return `${p}th`;
+    };
+
+    return (
+      <div className="space-y-4">
+        {eventsToPrint.map((evt) => {
+          const evtRes = results.find((r) => Number(r.eventNo) === Number(evt.Evt_No));
+          const rankedFinalists = (evtRes?.winners && evtRes.winners.length > 0 ? evtRes.winners : (evtRes?.finalists || []))
+            .filter((f) => (f.position || 0) > 0)
+            .sort((a, b) => (a.position || 0) - (b.position || 0));
+
+          const isBroadJump = (evt.Evt_Name || '').toUpperCase().includes('BROAD JUMP');
+
+          return (
+            <div key={evt.Evt_No} className="avoid-break pt-4 pb-2 border-b border-dashed border-black last:border-b-0 text-black leading-tight">
+              {/* Header */}
+              {renderThermalHeader()}
+
+              {/* Event Title Line: broken into two lines */}
+              <div className="text-center py-0.5 tracking-tight text-black leading-tight">
+                <div className="font-bold uppercase">RANKING LIST</div>
+                <div className="thermal-event-details font-normal mt-0.5 uppercase tracking-tight break-words leading-tight">
+                  <span className="thermal-event-no font-bold">EVT {evt.Evt_No}</span>{formatThermalEventSuffix(evt.Evt_Name, evt.Height, evt.Gender)}
+                </div>
+              </div>
+
+              {/* Single Dashed Line */}
+              <div className="w-full border-b border-dashed border-black my-1"></div>
+
+              {/* Table Column Headers */}
+              <div className="flex items-center font-normal text-black uppercase pt-1">
+                <span className="w-[2.2em] text-left shrink-0">RK</span>
+                <span className="w-[2.6em] text-left shrink-0">CH</span>
+                <span className="flex-1 text-left pl-1">ATHLETE (CLUB)</span>
+                {isBroadJump && (
+                  <span className="text-right pl-1 shrink-0">JMP</span>
+                )}
+              </div>
+              <div className="w-full border-b-2 border-black mb-1 mt-0.5"></div>
+
+              {/* Ranked Athletes List with dotted separators */}
+              <div className="space-y-0 text-black">
+                {rankedFinalists.length === 0 ? (
+                  <div className="italic text-center py-2 text-slate-600">
+                    No rankings declared yet for this event.
+                  </div>
+                ) : (
+                  rankedFinalists.map((f, idx) => {
+                    const club = getClubInfo(f.club || '');
+                    const isSelf = (f.club || '').trim().toUpperCase() === 'SELF';
+                    const clubNameStr = isSelf ? '' : (club?.name || f.club || '').trim();
+                    const athleteDisplay = clubNameStr ? `${f.candidateName} (${clubNameStr})` : f.candidateName;
+                    const jumpVal = isBroadJump ? (f.jumpRecord || f.resultValue || '—') : undefined;
+                    return (
+                      <div key={f.chestNo}>
+                        <div className="flex items-start py-1 text-black leading-tight">
+                          <span className="w-[2.2em] text-left font-normal shrink-0">
+                            {getRankPosLabel(f.position, idx)}
+                          </span>
+                          <span className="w-[2.6em] text-left font-normal shrink-0 thermal-chest-no">
+                            {f.chestNo}
+                          </span>
+                          <div className="flex-1 min-w-0 text-left font-normal uppercase pl-1">
+                            <ThermalTwoLineRecord
+                              text={athleteDisplay}
+                              rightText={jumpVal}
+                              rightClassName="thermal-jump-record whitespace-nowrap"
+                              deps={[thermalConfig.printableWidth, thermalConfig.fontSize, thermalConfig.lineSpacing, thermalConfig.marginHorizontal]}
+                            />
+                          </div>
+                        </div>
+                        <div className="w-full border-b border-dotted border-black/80"></div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+
+              {/* Broad Jump Record Callout for Thermal Print */}
+              {isBroadJump && (() => {
+                const prevRecord = settings.broadJumpPreviousRecords?.[Number(evt.Evt_No)] ||
+                  (evtRes?.highestRecord?.previousRecordValue ? {
+                    recordValue: evtRes.highestRecord.previousRecordValue,
+                    recordHolderName: evtRes.highestRecord.previousRecordHolder || 'Record Holder',
+                    recordHolderClub: '',
+                    recordYear: evtRes.highestRecord.previousRecordYear || '',
+                  } : null);
+
+                if (!prevRecord) return null;
+
+                const prevInches = parseJumpToInches(prevRecord.recordValue);
+                let maxJumpInches = 0;
+                rankedFinalists.forEach(r => {
+                  const jInches = parseJumpToInches(r.jumpRecord || (r as any).resultValue);
+                  if (jInches > maxJumpInches) maxJumpInches = jInches;
+                });
+                if (evtRes?.highestRecord?.recordValue) {
+                  const hrInches = parseJumpToInches(evtRes.highestRecord.recordValue);
+                  if (hrInches > maxJumpInches) maxJumpInches = hrInches;
+                }
+                const isBroken = prevInches > 0 ? (maxJumpInches > prevInches) : (maxJumpInches > 0);
+                const formattedPrev = formatJumpBenchmark(prevRecord.recordValue) || prevRecord.recordValue;
+                const holderClub = prevRecord.recordHolderClub ? ` (${prevRecord.recordHolderClub})` : '';
+                const holderYear = prevRecord.recordYear ? `, ${prevRecord.recordYear}` : '';
+
+                if (!isBroken) {
+                  return (
+                    <div className="thermal-new-record-callout py-1 font-normal text-center text-black leading-tight border-b border-dotted border-black/80 break-words">
+                      New Record: N
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="thermal-new-record-callout py-1 font-normal text-center text-black leading-tight border-b border-dotted border-black/80 break-words">
+                    <span className="font-bold">New Record: Y</span>
+                    <span> | Prev: {formattedPrev} by {prevRecord.recordHolderName}{holderClub}{holderYear}</span>
+                  </div>
+                );
+              })()}
+
+              {/* Footer: Dashed Line + App Name Only (No other footer info) */}
+              {renderThermalFooter()}
+            </div>
+          );
+        })}
       </div>
     );
   };
@@ -1252,10 +1439,10 @@ export const RankingList: React.FC<RankingListProps> = ({
     return (
       <div
         key={slot.pos}
-        className={`relative bg-[#f1f5f9] border ${
+        className={`relative bg-[#e5ecf4] border ${
           isOpenReplacement
-            ? 'border-amber-400 ring-2 ring-amber-300/40 bg-amber-50/40'
-            : 'border-[#cbd5e1]'
+            ? 'border-amber-400 ring-2 ring-amber-300/40 bg-amber-50/60'
+            : 'border-[#b5c4d6]'
         } rounded-lg sm:rounded-xl p-2 sm:p-2.5 pl-3 sm:pl-3.5 shadow-2xs transition-all`}
       >
         {/* Accent bar */}
@@ -1526,207 +1713,224 @@ export const RankingList: React.FC<RankingListProps> = ({
       <div className={`max-w-5xl mx-auto space-y-4 px-2 sm:px-0 interactive-ranking-ui ${showPrintModal ? 'print:hidden' : ''}`}>
       
       {/* ========================================================================= */}
-      {/* MAIN CONTAINER (Concise, Mobile-Friendly Light Bluish Ash Palette)        */}
+      {/* MAIN CONTAINER (Concise, Mobile-Friendly Darker Bluish Ash Palette)       */}
       {/* ========================================================================= */}
-      <div className="bg-[#e4ebf3] rounded-xl sm:rounded-2xl p-3 sm:p-5 border border-[#cbd5e1] shadow-md text-slate-800 space-y-3 sm:space-y-4">
+      <div className="bg-[#d1dbe8] rounded-xl sm:rounded-2xl p-2.5 sm:p-4 border border-[#a8b8cd] shadow-md text-slate-800 space-y-2 sm:space-y-2.5">
         
-        {/* Top Navigation Row: Back to H/F list placed at the very top of heading */}
-        {onNavigateBackToHitList && (
-          <div className="flex items-center justify-between pb-1">
-            <button
-              type="button"
-              onClick={() => onNavigateBackToHitList(selectedEvtNo)}
-              className="px-3 py-1.5 rounded-lg bg-white hover:bg-slate-100 text-slate-800 hover:text-slate-950 border border-[#94a3b8] font-bold text-xs flex items-center gap-1.5 transition-all shadow-2xs active:scale-98 cursor-pointer"
-              title="Return to Hit / Final List"
-            >
-              <ArrowLeft className="w-3.5 h-3.5 text-blue-600 stroke-[2.5]" />
-              <span>Back to H/F list</span>
-            </button>
-            {eventsWithFinalList.length > 0 ? (
-              <span className="text-[11px] sm:text-xs font-black text-slate-700 uppercase bg-white/80 px-2.5 py-1 rounded-full border border-slate-300 shadow-2xs">
-                Event #{selectedEvtNo}
-              </span>
-            ) : (
-              <span className="text-[11px] sm:text-xs font-bold text-amber-800 uppercase bg-amber-100 px-2.5 py-1 rounded-full border border-amber-300 shadow-2xs">
-                No Final Lists
-              </span>
-            )}
-          </div>
-        )}
-
-        {/* Title Header: Compact and responsive */}
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#cbd5e1] pb-2 sm:pb-3">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-amber-500/20 text-amber-700 flex items-center justify-center shrink-0">
-              <Trophy className="w-4 h-4" />
+        {/* ========================================================================= */}
+        {/* FIXED PAGE TITLE SECTION + EXPANDABLE SLIDING PRINT CONTROLS DRAWER       */}
+        {/* ========================================================================= */}
+        <div className="sticky top-[45px] sm:top-[49px] lg:top-[86px] z-30 bg-[#d1dbe8] -mx-2.5 sm:-mx-4 -mt-2.5 sm:-mt-4 px-2.5 sm:px-4 pt-2 sm:pt-3 pb-2.5 rounded-t-xl sm:rounded-t-2xl border-b border-[#b0bfd2] mb-3 shadow-[0_2px_6px_rgba(15,23,42,0.06)]">
+          {/* Top Navigation Row: Transparent Back to H/F list button */}
+          {onNavigateBackToHitList && (
+            <div className="flex items-center justify-start pb-0.5">
+              <button
+                type="button"
+                onClick={() => onNavigateBackToHitList(selectedEvtNo)}
+                className="px-1 py-0.5 rounded-md bg-transparent hover:bg-slate-900/5 text-slate-800 hover:text-slate-950 font-bold text-xs flex items-center gap-1 transition-all active:scale-98 cursor-pointer"
+                title="Return to Hit / Final List"
+              >
+                <ArrowLeft className="w-3.5 h-3.5 text-blue-700 stroke-[2.5]" />
+                <span>Back to H/F list</span>
+              </button>
             </div>
-            <div>
-              <h1 className="text-blue-950 font-black text-base sm:text-lg leading-tight">
-                Final Rankings &amp; Points
-              </h1>
-              <p className="text-[11px] text-slate-600 font-semibold hidden sm:block">
-                Assign podium positions to finalists and calculate club championship points.
-              </p>
-            </div>
-          </div>
-          {!onNavigateBackToHitList && (
-            eventsWithFinalList.length > 0 ? (
-              <span className="text-[11px] sm:text-xs font-black text-slate-700 uppercase bg-white/80 px-2.5 py-1 rounded-full border border-slate-300 shadow-2xs">
-                Event #{selectedEvtNo}
-              </span>
-            ) : (
-              <span className="text-[11px] sm:text-xs font-bold text-amber-800 uppercase bg-amber-100 px-2.5 py-1 rounded-full border border-amber-300 shadow-2xs">
-                No Final Lists
-              </span>
-            )
           )}
-        </div>
 
-        {/* ========================================================================= */}
-        {/* PRINT CONTROLS BAR: Compact, wrap-safe layout for phones                  */}
-        {/* ========================================================================= */}
-        <div className="bg-[#d5e0ee] rounded-lg sm:rounded-xl px-2.5 py-1.5 sm:px-3 sm:py-2 border border-[#baccdb] shadow-2xs">
-          <div className="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-2.5">
-            
-            {/* 1. Print Scope Dropdown */}
-            <div className="flex items-center gap-1.5 shrink-0">
-              <label className="text-[11px] font-bold text-slate-700 whitespace-nowrap">
-                Print Scope:
-              </label>
-              <div className="relative flex-1 sm:w-36">
-                <select
-                  value={printScope}
-                  onChange={(e) => setPrintScope(e.target.value as PrintScopeType)}
-                  className="w-full bg-white border border-[#94a3b8] rounded-md px-2 py-1 text-xs font-bold text-slate-800 focus:outline-hidden focus:border-blue-600 cursor-pointer appearance-none pr-6 shadow-2xs"
-                >
-                  <option value="single">Single Event</option>
-                  <option value="range">Range of Events</option>
-                  <option value="custom">Comma Separated (#)</option>
-                </select>
-                <ChevronDown className="w-3.5 h-3.5 text-slate-500 absolute right-1.5 top-1.5 pointer-events-none" />
+          {/* Title Header: Compact with status label on the next line */}
+          <div className="flex flex-wrap items-center justify-between gap-2 pb-1">
+            <div className="flex items-center gap-2">
+              <div className="w-7 h-7 rounded-lg bg-amber-500/20 text-amber-700 flex items-center justify-center shrink-0">
+                <Trophy className="w-4 h-4" />
+              </div>
+              <div>
+                <h1 className="text-blue-950 font-black text-base sm:text-lg leading-tight">
+                  Final Rankings &amp; Points
+                </h1>
+                <p className="text-[11px] font-bold text-slate-700 leading-tight mt-0.5">
+                  {eventsWithFinalList.length} Event(s) with Final List
+                </p>
               </div>
             </div>
-
-            {/* 2. Scope Inputs (Compact inline layout) */}
-            <div className="flex-1 min-w-0">
-              {printScope === 'single' && (
-                <div className="flex items-center gap-1.5">
-                  <label className="text-[11px] font-bold text-slate-700 whitespace-nowrap">
-                    Event Number:
-                  </label>
-                  <div className="relative flex-1 min-w-0">
-                    <select
-                      value={eventsWithFinalList.some(e => Number(e.Evt_No) === Number(singlePrintEvt)) ? singlePrintEvt : (eventsWithFinalList[0]?.Evt_No ?? '')}
-                      onChange={(e) => setSinglePrintEvt(Number(e.target.value))}
-                      disabled={eventsWithFinalList.length === 0}
-                      className="w-full bg-white border border-[#94a3b8] rounded-md px-2 py-1 text-xs font-bold text-slate-800 focus:outline-hidden focus:border-blue-600 cursor-pointer appearance-none pr-6 truncate shadow-2xs disabled:bg-slate-100 disabled:text-slate-400"
-                    >
-                      {eventsWithFinalList.length === 0 ? (
-                        <option value="">No events with final list</option>
-                      ) : (
-                        eventsWithFinalList.map((evt) => (
-                          <option key={evt.Evt_No} value={evt.Evt_No}>
-                            #{evt.Evt_No} - {evt.Evt_Name}
-                          </option>
-                        ))
-                      )}
-                    </select>
-                    <ChevronDown className="w-3.5 h-3.5 text-slate-500 absolute right-1.5 top-1.5 pointer-events-none" />
-                  </div>
-                </div>
-              )}
-
-              {printScope === 'range' && (
-                <div className="flex items-center gap-1.5">
-                  <label className="text-[11px] font-bold text-slate-700 whitespace-nowrap">
-                    Event Range:
-                  </label>
-                  <div className="flex items-center gap-1 flex-1">
-                    <input
-                      type="number"
-                      min="1"
-                      value={rangeStart}
-                      onChange={(e) => setRangeStart(parseInt(e.target.value, 10) || 0)}
-                      className="w-full bg-white border border-[#94a3b8] rounded-md px-2 py-1 text-xs font-mono font-bold text-slate-800 text-center focus:outline-hidden focus:border-blue-600 shadow-2xs"
-                      placeholder="Start"
-                    />
-                    <span className="text-[11px] text-slate-600 font-bold px-0.5">to</span>
-                    <input
-                      type="number"
-                      min="1"
-                      value={rangeEnd}
-                      onChange={(e) => setRangeEnd(parseInt(e.target.value, 10) || 0)}
-                      className="w-full bg-white border border-[#94a3b8] rounded-md px-2 py-1 text-xs font-mono font-bold text-slate-800 text-center focus:outline-hidden focus:border-blue-600 shadow-2xs"
-                      placeholder="End"
-                    />
-                  </div>
-                </div>
-              )}
-
-              {printScope === 'custom' && (
-                <div className="flex items-center gap-1.5">
-                  <label className="text-[11px] font-bold text-slate-700 whitespace-nowrap">
-                    Events (CSV):
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="1, 2, 3, 5"
-                    value={customCsvInput}
-                    onChange={(e) => setCustomCsvInput(e.target.value)}
-                    className="w-full bg-white border border-[#94a3b8] rounded-md px-2 py-1 text-xs font-mono font-bold text-slate-800 focus:outline-hidden focus:border-blue-600 shadow-2xs"
-                  />
-                </div>
-              )}
-            </div>
-
-            {/* 3. Print & Share Buttons (Plain A4, 2" Thermal, Icon-Only WhatsApp) */}
-            <div className="flex items-center justify-end gap-1.5 shrink-0">
-              <button
-                type="button"
-                id="btn-print-ranking-sheets"
-                onClick={() => {
-                  setModalFormat('a4');
-                  setShowPrintModal(true);
-                }}
-                className="flex-1 sm:flex-initial py-1.5 px-2.5 rounded-md bg-slate-800 hover:bg-slate-900 active:scale-98 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-all shadow-sm cursor-pointer whitespace-nowrap"
-                title="Print Official Rankings Report on Plain A4 Paper"
-              >
-                <Printer className="w-3.5 h-3.5 text-amber-300 shrink-0" />
-                <span>Plain A4</span>
-              </button>
-              <button
-                type="button"
-                id="btn-thermal-ranking-sheets"
-                onClick={() => {
-                  setModalFormat('thermal');
-                  setShowPrintModal(true);
-                }}
-                className="flex-1 sm:flex-initial py-1.5 px-2.5 rounded-md bg-amber-500 hover:bg-amber-400 active:scale-98 text-slate-950 font-black text-xs flex items-center justify-center gap-1 transition-all shadow-sm cursor-pointer whitespace-nowrap"
-                title="Print Official Rankings on 2&quot; Roll Thermal Printer"
-              >
-                <Receipt className="w-3.5 h-3.5 shrink-0" />
-                <span className="text-[11px] font-black">2" Thermal</span>
-              </button>
-              <button
-                type="button"
-                id="btn-whatsapp-ranking-sheets"
-                onClick={handleWhatsAppShareRanking}
-                className="p-1.5 rounded-md bg-emerald-600 hover:bg-emerald-500 active:scale-98 text-white flex items-center justify-center transition-all shadow-sm cursor-pointer shrink-0"
-                title={`Share (Event: ${eventsToPrint[0]?.Evt_No || singlePrintEvt} Rank) to WhatsApp`}
-                aria-label="Share Rankings to WhatsApp"
-              >
-                <WhatsAppIcon className="w-4 h-4 shrink-0" />
-              </button>
-            </div>
-
           </div>
+
+          {/* ========================================================================= */}
+          {/* HIDDEN SLIDING PRINT CONTROLS SECTION (Expands downward on 'V' click)     */}
+          {/* ========================================================================= */}
+          <div
+            className={`grid transition-all duration-300 ease-in-out ${
+              showPrintDrawer ? 'grid-rows-[1fr] opacity-100 mt-1.5 mb-1.5' : 'grid-rows-[0fr] opacity-0 mt-0 mb-0 pointer-events-none'
+            }`}
+          >
+            <div className="overflow-hidden">
+              <div className="bg-[#c2cfdf] rounded-lg sm:rounded-xl px-2.5 py-1.5 sm:px-3 sm:py-2 border border-[#9db0c7] shadow-2xs">
+                <div className="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-2.5">
+                  
+                  {/* 1. Print Scope Dropdown */}
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <label className="text-[11px] font-bold text-slate-700 whitespace-nowrap">
+                      Print Scope:
+                    </label>
+                    <div className="relative flex-1 sm:w-36">
+                      <select
+                        value={printScope}
+                        onChange={(e) => setPrintScope(e.target.value as PrintScopeType)}
+                        className="w-full bg-white border border-[#94a3b8] rounded-md px-2 py-1 text-xs font-bold text-slate-800 focus:outline-hidden focus:border-blue-600 cursor-pointer appearance-none pr-6 shadow-2xs"
+                      >
+                        <option value="single">Single Event</option>
+                        <option value="range">Range of Events</option>
+                        <option value="custom">Comma Separated (#)</option>
+                      </select>
+                      <ChevronDown className="w-3.5 h-3.5 text-slate-500 absolute right-1.5 top-1.5 pointer-events-none" />
+                    </div>
+                  </div>
+
+                  {/* 2. Scope Inputs (Compact inline layout) */}
+                  <div className="flex-1 min-w-0">
+                    {printScope === 'single' && (
+                      <div className="flex items-center gap-1.5">
+                        <label className="text-[11px] font-bold text-slate-700 whitespace-nowrap">
+                          Event Number:
+                        </label>
+                        <div className="relative flex-1 min-w-0">
+                          <select
+                            value={eventsWithFinalList.some(e => Number(e.Evt_No) === Number(singlePrintEvt)) ? singlePrintEvt : (eventsWithFinalList[0]?.Evt_No ?? '')}
+                            onChange={(e) => setSinglePrintEvt(Number(e.target.value))}
+                            disabled={eventsWithFinalList.length === 0}
+                            className="w-full bg-white border border-[#94a3b8] rounded-md px-2 py-1 text-xs font-bold text-slate-800 focus:outline-hidden focus:border-blue-600 cursor-pointer appearance-none pr-6 truncate shadow-2xs disabled:bg-slate-100 disabled:text-slate-400"
+                          >
+                            {eventsWithFinalList.length === 0 ? (
+                              <option value="">No events with final list</option>
+                            ) : (
+                              eventsWithFinalList.map((evt) => (
+                                <option key={evt.Evt_No} value={evt.Evt_No}>
+                                  #{evt.Evt_No} - {evt.Evt_Name}
+                                </option>
+                              ))
+                            )}
+                          </select>
+                          <ChevronDown className="w-3.5 h-3.5 text-slate-500 absolute right-1.5 top-1.5 pointer-events-none" />
+                        </div>
+                      </div>
+                    )}
+
+                    {printScope === 'range' && (
+                      <div className="flex items-center gap-1.5">
+                        <label className="text-[11px] font-bold text-slate-700 whitespace-nowrap">
+                          Event Range:
+                        </label>
+                        <div className="flex items-center gap-1 flex-1">
+                          <input
+                            type="number"
+                            min="1"
+                            value={rangeStart}
+                            onChange={(e) => setRangeStart(parseInt(e.target.value, 10) || 0)}
+                            className="w-full bg-white border border-[#94a3b8] rounded-md px-2 py-1 text-xs font-mono font-bold text-slate-800 text-center focus:outline-hidden focus:border-blue-600 shadow-2xs"
+                            placeholder="Start"
+                          />
+                          <span className="text-[11px] text-slate-600 font-bold px-0.5">to</span>
+                          <input
+                            type="number"
+                            min="1"
+                            value={rangeEnd}
+                            onChange={(e) => setRangeEnd(parseInt(e.target.value, 10) || 0)}
+                            className="w-full bg-white border border-[#94a3b8] rounded-md px-2 py-1 text-xs font-mono font-bold text-slate-800 text-center focus:outline-hidden focus:border-blue-600 shadow-2xs"
+                            placeholder="End"
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    {printScope === 'custom' && (
+                      <div className="flex items-center gap-1.5">
+                        <label className="text-[11px] font-bold text-slate-700 whitespace-nowrap">
+                          Events (CSV):
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="1, 2, 3, 5"
+                          value={customCsvInput}
+                          onChange={(e) => setCustomCsvInput(e.target.value)}
+                          className="w-full bg-white border border-[#94a3b8] rounded-md px-2 py-1 text-xs font-mono font-bold text-slate-800 focus:outline-hidden focus:border-blue-600 shadow-2xs"
+                        />
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 3. Print & Share Buttons (Plain A4, 2" Thermal, Icon-Only WhatsApp) */}
+                  <div className="flex items-center justify-end gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      id="btn-print-ranking-sheets"
+                      onClick={() => {
+                        setModalFormat('a4');
+                        setShowPrintModal(true);
+                      }}
+                      className="flex-1 sm:flex-initial py-1.5 px-2.5 rounded-md bg-slate-800 hover:bg-slate-900 active:scale-98 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-all shadow-sm cursor-pointer whitespace-nowrap"
+                      title="Print Official Rankings Report on Plain A4 Paper"
+                    >
+                      <Printer className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+                      <span>Plain A4</span>
+                    </button>
+                    <button
+                      type="button"
+                      id="btn-thermal-ranking-sheets"
+                      onClick={() => {
+                        setModalFormat('thermal');
+                        setShowPrintModal(true);
+                      }}
+                      className="flex-1 sm:flex-initial py-1.5 px-2.5 rounded-md bg-amber-500 hover:bg-amber-400 active:scale-98 text-slate-950 font-black text-xs flex items-center justify-center gap-1 transition-all shadow-sm cursor-pointer whitespace-nowrap"
+                      title="Print Official Rankings on 2&quot; Roll Thermal Printer"
+                    >
+                      <Receipt className="w-3.5 h-3.5 shrink-0" />
+                      <span className="text-[11px] font-black">2" Thermal</span>
+                    </button>
+                    <button
+                      type="button"
+                      id="btn-whatsapp-ranking-sheets"
+                      disabled={isSharingWhatsApp || eventsToPrint.length === 0}
+                      onClick={handleWhatsAppShareRanking}
+                      className="p-1.5 rounded-md bg-emerald-600 hover:bg-emerald-500 active:scale-98 text-white flex items-center justify-center transition-all shadow-sm cursor-pointer shrink-0 disabled:opacity-60"
+                      title="Share Ranking List Thermal Report (Offline HTML)"
+                      aria-label="Share Rankings to WhatsApp"
+                    >
+                      {isSharingWhatsApp ? (
+                        <RefreshCw className="w-4 h-4 animate-spin shrink-0" />
+                      ) : (
+                        <WhatsAppIcon className="w-4 h-4 shrink-0" />
+                      )}
+                    </button>
+                  </div>
+
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Center Bottom Horizontal-Line 'V' Pull Toggle Button with Print Icon */}
+          <button
+            type="button"
+            id="btn-toggle-ranking-print-drawer"
+            onClick={() => setShowPrintDrawer((prev) => !prev)}
+            aria-expanded={showPrintDrawer}
+            title={showPrintDrawer ? 'Hide Print & Share Options' : 'Show Print & Share Options'}
+            className="absolute left-1/2 -translate-x-1/2 bottom-0 translate-y-1/2 z-20 flex items-center gap-1 px-3 py-0.5 rounded-full bg-yellow-400 hover:bg-yellow-300 text-slate-950 border border-yellow-600/70 shadow-md transition-all cursor-pointer active:scale-95"
+          >
+            <Printer className="w-3 h-3 text-slate-950 shrink-0" />
+            <span className={`inline-flex items-center ${!showPrintDrawer ? 'animate-dance-down' : ''}`}>
+              <ChevronDown
+                className={`w-3.5 h-3.5 text-slate-950 stroke-[2.75] transition-transform duration-300 ${
+                  showPrintDrawer ? 'rotate-180' : ''
+                }`}
+              />
+            </span>
+          </button>
         </div>
 
         {/* ========================================================================= */}
-        {/* COMPLETED & LOCKED BADGE                                                 */}
+        {/* COMPLETED & LOCKED BADGE (Center Aligned)                                */}
         {/* ========================================================================= */}
         {isAlreadyRanked && (
-          <div className="pt-0.5">
+          <div className="pt-1 flex justify-center">
             <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md bg-emerald-600 text-white font-black text-xs uppercase tracking-wider shadow-xs">
               <CheckCircle2 className="w-3.5 h-3.5" />
               <span>Event completed &amp; Locked</span>
@@ -1739,14 +1943,9 @@ export const RankingList: React.FC<RankingListProps> = ({
         {/* Strictly only contains events where the final list has been generated     */}
         {/* ========================================================================= */}
         <div className="space-y-1">
-          <div className="flex items-center justify-between">
-            <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider">
-              Select Event for Ranking:
-            </label>
-            <span className="text-[10px] font-bold text-slate-500">
-              {eventsWithFinalList.length} Event(s) with Final List
-            </span>
-          </div>
+          <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+            Select Event for Ranking:
+          </label>
           <div className="relative">
             <select
               value={eventsWithFinalList.some(e => Number(e.Evt_No) === Number(selectedEvtNo)) ? selectedEvtNo : (eventsWithFinalList[0]?.Evt_No ?? '')}
@@ -1962,7 +2161,7 @@ export const RankingList: React.FC<RankingListProps> = ({
           <button
             type="button"
             onClick={() => setShowAdditionalOrdinals(!showAdditionalOrdinals)}
-            className="text-xs text-blue-700 hover:text-blue-900 font-bold flex items-center gap-1 py-1 cursor-pointer transition-colors"
+            className="text-xs text-blue-800 hover:text-blue-950 font-bold flex items-center gap-1 py-0 leading-none cursor-pointer transition-colors"
           >
             <Plus className={`w-3.5 h-3.5 transition-transform ${showAdditionalOrdinals ? 'rotate-45' : ''}`} />
             <span>
@@ -1973,44 +2172,48 @@ export const RankingList: React.FC<RankingListProps> = ({
         </div>
 
         {/* ========================================================================= */}
-        {/* SAVE OFFICIAL RANKINGS BUTTON (Mobile Full Width)                         */}
+        {/* SAVE OFFICIAL RANKINGS BUTTON (Compact & Mobile Full Width)               */}
         {/* ========================================================================= */}
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2 pt-2 border-t border-[#cbd5e1]">
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-1.5 pt-1.5 border-t border-[#b0bfd2]">
           
-          <div className="min-h-[20px]">
-            {saveError || (isBroadJump && !jumpOrderValidation.isValid && jumpOrderValidation.summaryError) ? (
-              <span className="text-rose-700 text-xs font-bold animate-in fade-in flex items-center gap-1.5">
-                <AlertTriangle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
-                <span>{saveError || jumpOrderValidation.summaryError}</span>
-              </span>
-            ) : saveSuccess ? (
-              <span className="text-emerald-700 text-xs font-bold animate-in fade-in flex items-center gap-1">
-                <span>✓</span>
-                <span>Rankings saved! Points recalculated.</span>
-              </span>
-            ) : hasCancellationOccurred ? (
-              <span className="text-amber-800 text-xs font-bold flex items-center gap-1.5 animate-pulse">
-                <span>⚠️</span>
-                <span>
-                  {Object.values(rankedMap).filter((c) => c !== null).length < targetRankCount
-                    ? `Please fill replacement candidate (${Object.values(rankedMap).filter((c) => c !== null).length}/${targetRankCount} Ranked)`
-                    : `Ready to save! Total ${targetRankCount} rankings filled.`}
+          {(saveError || (isBroadJump && !jumpOrderValidation.isValid && jumpOrderValidation.summaryError) || saveSuccess || hasCancellationOccurred || isAlreadyRanked) ? (
+            <div>
+              {saveError || (isBroadJump && !jumpOrderValidation.isValid && jumpOrderValidation.summaryError) ? (
+                <span className="text-rose-700 text-xs font-bold animate-in fade-in flex items-center gap-1.5">
+                  <AlertTriangle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                  <span>{saveError || jumpOrderValidation.summaryError}</span>
                 </span>
-              </span>
-            ) : isAlreadyRanked ? (
-              <span className="text-emerald-800 text-xs font-bold flex items-center gap-1.5">
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                <span>Event #{selectedEvtNo} rankings are finalized. Click "Cancel Rank" on any row to adjust.</span>
-              </span>
-            ) : null}
-          </div>
+              ) : saveSuccess ? (
+                <span className="text-emerald-700 text-xs font-bold animate-in fade-in flex items-center gap-1">
+                  <span>✓</span>
+                  <span>Rankings saved! Points recalculated.</span>
+                </span>
+              ) : hasCancellationOccurred ? (
+                <span className="text-amber-800 text-xs font-bold flex items-center gap-1.5 animate-pulse">
+                  <span>⚠️</span>
+                  <span>
+                    {Object.values(rankedMap).filter((c) => c !== null).length < targetRankCount
+                      ? `Please fill replacement candidate (${Object.values(rankedMap).filter((c) => c !== null).length}/${targetRankCount} Ranked)`
+                      : `Ready to save! Total ${targetRankCount} rankings filled.`}
+                  </span>
+                </span>
+              ) : isAlreadyRanked ? (
+                <span className="text-emerald-800 text-xs font-bold flex items-center gap-1.5">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Event #{selectedEvtNo} rankings are finalized. Click "Cancel Rank" on any row to adjust.</span>
+                </span>
+              ) : null}
+            </div>
+          ) : (
+            <div className="hidden sm:block" />
+          )}
 
           <button
             type="button"
             id="btn-save-official-rankings"
             onClick={handleSaveRankings}
             disabled={(!hasCancellationOccurred && isAlreadyRanked) || isSaving || (isBroadJump && !jumpOrderValidation.isValid)}
-            className={`w-full sm:w-auto px-5 py-2.5 rounded-lg font-black text-xs sm:text-sm transition-all shadow-md text-center ${
+            className={`w-full sm:w-auto px-4 py-1.5 rounded-lg font-black text-xs sm:text-sm transition-all shadow-md text-center ${
               (!hasCancellationOccurred && isAlreadyRanked) || (isBroadJump && !jumpOrderValidation.isValid)
                 ? 'bg-slate-700 text-slate-400 border border-slate-600 cursor-not-allowed'
                 : 'bg-amber-500 hover:bg-amber-400 active:scale-98 text-slate-950 cursor-pointer disabled:opacity-50'
@@ -2033,8 +2236,8 @@ export const RankingList: React.FC<RankingListProps> = ({
       {/* ========================================================================= */}
       {/* LIVE CLUB CHAMPIONSHIP LEADERBOARD (Concise Mobile Table)                 */}
       {/* ========================================================================= */}
-      <div className="bg-[#e4ebf3] rounded-xl sm:rounded-2xl border border-[#cbd5e1] overflow-hidden shadow-sm">
-        <div className="bg-slate-800 text-white px-3 sm:px-4 py-2.5 flex items-center justify-between">
+      <div className="bg-[#d1dbe8] rounded-xl sm:rounded-2xl border border-[#a8b8cd] overflow-hidden shadow-sm">
+        <div className="bg-slate-800 text-white px-3 sm:px-4 py-2 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Trophy className="w-4 h-4 text-amber-400" />
             <h3 className="font-black text-xs sm:text-sm uppercase tracking-wide">
@@ -2052,16 +2255,16 @@ export const RankingList: React.FC<RankingListProps> = ({
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead>
-                <tr className="bg-[#d5e0ee] text-[10px] sm:text-[11px] font-black text-slate-700 uppercase border-b border-[#cbd5e1]">
+                <tr className="bg-[#c2cfdf] text-[10px] sm:text-[11px] font-black text-slate-700 uppercase border-b border-[#a8b8cd]">
                   <th className="py-2 px-2.5 sm:px-3 w-12 text-center">Rank</th>
                   <th className="py-2 px-2.5 sm:px-3">Club / Team</th>
+                  <th className="py-2 px-2 sm:px-3 text-center w-20 font-black">Points</th>
                   <th className="py-2 px-2 sm:px-3 text-center w-16 text-amber-700">Gold (7p)</th>
                   <th className="py-2 px-2 sm:px-3 text-center w-16 text-slate-700">Silver (5p)</th>
                   <th className="py-2 px-2 sm:px-3 text-center w-16 text-amber-900">Bronze (4p)</th>
-                  <th className="py-2 px-2.5 sm:px-3 text-right w-20 font-black">Points</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-[#cbd5e1]">
+              <tbody className="divide-y divide-[#b0bfd2]">
                 {clubChampionshipTable.map((team, idx) => (
                   <tr key={team.name} className={`hover:bg-white/60 transition-colors ${idx === 0 ? 'bg-amber-100/60 font-bold' : 'bg-white/30'}`}>
                     <td className="py-2 px-2.5 sm:px-3 text-center font-black">
@@ -2083,6 +2286,10 @@ export const RankingList: React.FC<RankingListProps> = ({
                       )}
                     </td>
 
+                    <td className="py-2 px-2 sm:px-3 text-center font-mono font-black text-xs sm:text-sm text-blue-900">
+                      {team.points}
+                    </td>
+
                     <td className="py-2 px-2 sm:px-3 text-center font-bold text-amber-700">
                       {team.gold}
                     </td>
@@ -2093,10 +2300,6 @@ export const RankingList: React.FC<RankingListProps> = ({
 
                     <td className="py-2 px-2 sm:px-3 text-center font-bold text-amber-900">
                       {team.bronze}
-                    </td>
-
-                    <td className="py-2 px-2.5 sm:px-3 text-right font-mono font-black text-xs sm:text-sm text-blue-900">
-                      {team.points} pts
                     </td>
                   </tr>
                 ))}
@@ -2212,16 +2415,23 @@ export const RankingList: React.FC<RankingListProps> = ({
                     <span>{isDirectPrinting ? 'Printing...' : 'Print'}</span>
                   </button>
 
-                  {/* Share Thermal Data to WhatsApp */}
+                  {/* Share Thermal Data to WhatsApp as Offline HTML */}
                   <button
                     type="button"
                     id="btn-whatsapp-share-ranking-modal"
+                    disabled={isSharingWhatsApp || eventsToPrint.length === 0}
                     onClick={handleWhatsAppShareRanking}
-                    className="px-2.5 sm:px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-xs cursor-pointer shrink-0"
-                    title={`Share (Event: ${eventsToPrint[0]?.Evt_No || singlePrintEvt} Rank) to WhatsApp`}
+                    className="px-2.5 sm:px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-xs cursor-pointer shrink-0 disabled:opacity-60"
+                    title="Share Ranking List Thermal Report (Offline HTML)"
                   >
-                    <WhatsAppIcon className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-white shrink-0" />
-                    <span className="hidden xs:inline sm:inline">WhatsApp</span>
+                    {isSharingWhatsApp ? (
+                      <RefreshCw className="w-3.5 h-3.5 sm:w-4 sm:h-4 animate-spin text-white shrink-0" />
+                    ) : (
+                      <WhatsAppIcon className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-white shrink-0" />
+                    )}
+                    <span className="hidden xs:inline sm:inline">
+                      {isSharingWhatsApp ? 'Exporting...' : 'WhatsApp'}
+                    </span>
                   </button>
                 </div>
               </div>
@@ -2259,6 +2469,7 @@ export const RankingList: React.FC<RankingListProps> = ({
                   <span>58mm Roll Preview ({thermalConfig.printableWidth}mm • {thermalConfig.fontSize}pt)</span>
                 </div>
                 <div
+                  ref={thermalModalSheetRef}
                   className="receipt thermal-printable-sheet bg-white text-black p-0 shadow-2xl rounded-xs select-none print:shadow-none print:p-0"
                   style={{
                     width: `${thermalConfig.printableWidth}mm`,
@@ -2273,161 +2484,7 @@ export const RankingList: React.FC<RankingListProps> = ({
                     fontFamily: 'Arial, "Segoe UI", Helvetica, sans-serif',
                   }}
                 >
-                  {eventsToPrint.length === 0 ? (
-                    <div className="py-4 text-center italic">
-                      No events match print scope.
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      {eventsToPrint.map((evt) => {
-                        const evtRes = results.find((r) => Number(r.eventNo) === Number(evt.Evt_No));
-                        const rankedFinalists = (evtRes?.winners && evtRes.winners.length > 0 ? evtRes.winners : (evtRes?.finalists || []))
-                          .filter((f) => (f.position || 0) > 0)
-                          .sort((a, b) => (a.position || 0) - (b.position || 0));
-
-                        const formatHeightStr = (hStr?: string) => {
-                          if (!hStr) return 'ALL';
-                          const clean = hStr.trim().toUpperCase();
-                          if (clean === 'ALL') return 'ALL';
-                          return clean.replace(/[`']/g, "'").replace(/''|``|"/g, "''");
-                        };
-
-                        const getGenderAbbrStr = (gender?: string) => {
-                          if (!gender) return 'ALL';
-                          const g = gender.trim().toUpperCase();
-                          if (g.startsWith('BOY') || g === 'B') return 'B';
-                          if (g.startsWith('GIRL') || g === 'G') return 'G';
-                          if (g.startsWith('CHILD') || g === 'C') return 'C';
-                          return 'ALL';
-                        };
-
-                        const getRankPosLabel = (pos?: number, fallbackIdx?: number) => {
-                          const p = (pos && pos > 0) ? pos : ((fallbackIdx !== undefined) ? fallbackIdx + 1 : 1);
-                          if (p === 1) return '1st';
-                          if (p === 2) return '2nd';
-                          if (p === 3) return '3rd';
-                          return `${p}th`;
-                        };
-
-                        const heightDisp = formatHeightStr(evt.Height);
-                        const genderAbbr = getGenderAbbrStr(evt.Gender);
-                        const isBroadJump = (evt.Evt_Name || '').toUpperCase().includes('BROAD JUMP');
-
-                        return (
-                          <div key={evt.Evt_No} className="avoid-break pt-4 pb-2 border-b border-dashed border-black last:border-b-0 text-black leading-tight">
-                            {/* Header */}
-                            {renderThermalHeader()}
-
-                            {/* Event Title Line: broken into two lines */}
-                            <div className="text-center py-0.5 tracking-tight text-black leading-tight">
-                              <div className="font-bold uppercase">RANKING LIST</div>
-                              <div className="thermal-event-details font-normal mt-0.5 uppercase tracking-tight break-words leading-tight">
-                                <span className="thermal-event-no font-bold">EVT {evt.Evt_No}</span>{formatThermalEventSuffix(evt.Evt_Name, evt.Height, evt.Gender)}
-                              </div>
-                            </div>
-
-                            {/* Single Dashed Line */}
-                            <div className="w-full border-b border-dashed border-black my-1"></div>
-
-                            {/* Table Column Headers */}
-                            <div className="flex items-center font-normal text-black uppercase pt-1">
-                              <span className="w-[2.2em] text-left shrink-0">RK</span>
-                              <span className="w-[2.6em] text-left shrink-0">CH</span>
-                              <span className="flex-1 text-left pl-1">ATHLETE (CLUB)</span>
-                              {isBroadJump && (
-                                <span className="text-right pl-1 shrink-0">JMP</span>
-                              )}
-                            </div>
-                            <div className="w-full border-b-2 border-black mb-1 mt-0.5"></div>
-
-                            {/* Ranked Athletes List with dotted separators */}
-                            <div className="space-y-0 text-black">
-                              {rankedFinalists.length === 0 ? (
-                                <div className="italic text-center py-2 text-slate-600">
-                                  No rankings declared yet for this event.
-                                </div>
-                              ) : (
-                                rankedFinalists.map((f, idx) => {
-                                  const club = getClubInfo(f.club || '');
-                                  const isSelf = (f.club || '').trim().toUpperCase() === 'SELF';
-                                  const clubNameStr = isSelf ? '' : (club?.name || f.club || '').trim();
-                                  const athleteDisplay = clubNameStr ? `${f.candidateName} (${clubNameStr})` : f.candidateName;
-                                  const jumpVal = isBroadJump ? (f.jumpRecord || f.resultValue || '—') : undefined;
-                                  return (
-                                    <div key={f.chestNo}>
-                                      <div className="flex items-start py-1 text-black leading-tight">
-                                        <span className="w-[2.2em] text-left font-normal shrink-0">
-                                          {getRankPosLabel(f.position, idx)}
-                                        </span>
-                                        <span className="w-[2.6em] text-left font-normal shrink-0 thermal-chest-no">
-                                          {f.chestNo}
-                                        </span>
-                                        <div className="flex-1 min-w-0 text-left font-normal uppercase pl-1">
-                                          <ThermalTwoLineRecord
-                                            text={athleteDisplay}
-                                            rightText={jumpVal}
-                                            rightClassName="thermal-jump-record whitespace-nowrap"
-                                            deps={[thermalConfig.printableWidth, thermalConfig.fontSize, thermalConfig.lineSpacing, thermalConfig.marginHorizontal]}
-                                          />
-                                        </div>
-                                      </div>
-                                      <div className="w-full border-b border-dotted border-black/80"></div>
-                                    </div>
-                                  );
-                                })
-                              )}
-                            </div>
-
-                            {/* Broad Jump Record Callout for Thermal Print */}
-                            {isBroadJump && (() => {
-                              const prevRecord = settings.broadJumpPreviousRecords?.[Number(evt.Evt_No)] ||
-                                (evtRes?.highestRecord?.previousRecordValue ? {
-                                  recordValue: evtRes.highestRecord.previousRecordValue,
-                                  recordHolderName: evtRes.highestRecord.previousRecordHolder || 'Record Holder',
-                                  recordHolderClub: '',
-                                  recordYear: evtRes.highestRecord.previousRecordYear || '',
-                                } : null);
-
-                              if (!prevRecord) return null;
-
-                              const prevInches = parseJumpToInches(prevRecord.recordValue);
-                              let maxJumpInches = 0;
-                              rankedFinalists.forEach(r => {
-                                const jInches = parseJumpToInches(r.jumpRecord || (r as any).resultValue);
-                                if (jInches > maxJumpInches) maxJumpInches = jInches;
-                              });
-                              if (evtRes?.highestRecord?.recordValue) {
-                                const hrInches = parseJumpToInches(evtRes.highestRecord.recordValue);
-                                if (hrInches > maxJumpInches) maxJumpInches = hrInches;
-                              }
-                              const isBroken = prevInches > 0 ? (maxJumpInches > prevInches) : (maxJumpInches > 0);
-                              const formattedPrev = formatJumpBenchmark(prevRecord.recordValue) || prevRecord.recordValue;
-                              const holderClub = prevRecord.recordHolderClub ? ` (${prevRecord.recordHolderClub})` : '';
-                              const holderYear = prevRecord.recordYear ? `, ${prevRecord.recordYear}` : '';
-
-                              if (!isBroken) {
-                                return (
-                                  <div className="thermal-new-record-callout py-1 font-normal text-center text-black leading-tight border-b border-dotted border-black/80 break-words">
-                                    New Record: N
-                                  </div>
-                                );
-                              }
-
-                              return (
-                                <div className="thermal-new-record-callout py-1 font-normal text-center text-black leading-tight border-b border-dotted border-black/80 break-words">
-                                  <span className="font-bold">New Record: Y</span>
-                                  <span> | Prev: {formattedPrev} by {prevRecord.recordHolderName}{holderClub}{holderYear}</span>
-                                </div>
-                              );
-                            })()}
-
-                            {/* Footer: Dashed Line + App Name Only (No other footer info) */}
-                            {renderThermalFooter()}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
+                  {renderThermalRankingReceipts()}
                 </div>
               </div>
             ) : (
@@ -2730,6 +2787,33 @@ export const RankingList: React.FC<RankingListProps> = ({
         onClose={() => setShowThermalSetup(false)} 
         settings={settings} 
       />
+
+      {/* Offscreen Thermal sheet so WhatsApp Offline HTML share works from the sliding drawer or A4 modal view */}
+      {(!showPrintModal || modalFormat !== 'thermal') && eventsToPrint.length > 0 && (
+        <div
+          aria-hidden="true"
+          className="fixed -left-[99999px] top-0 pointer-events-none opacity-0 print:hidden"
+        >
+          <div
+            ref={offscreenThermalShareRef}
+            className="thermal-printable-sheet bg-white text-black p-0"
+            style={{
+              width: `${thermalConfig.printableWidth}mm`,
+              maxWidth: `${thermalConfig.printableWidth}mm`,
+              boxSizing: 'border-box',
+              paddingLeft: `${thermalConfig.marginHorizontal}mm`,
+              paddingRight: `${thermalConfig.marginHorizontal}mm`,
+              paddingTop: `${thermalConfig.topMargin ?? 5}mm`,
+              paddingBottom: `${thermalConfig.feedBeforeCut}mm`,
+              fontSize: `${thermalConfig.fontSize}pt`,
+              lineHeight: thermalConfig.lineSpacing,
+              fontFamily: 'Arial, "Segoe UI", Helvetica, sans-serif',
+            }}
+          >
+            {renderThermalRankingReceipts()}
+          </div>
+        </div>
+      )}
 
     </div>
   );

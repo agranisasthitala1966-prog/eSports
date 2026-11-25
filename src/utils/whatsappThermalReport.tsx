@@ -476,3 +476,122 @@ export const shareThermalHtmlBlob = async (
     };
   }
 };
+
+function sanitizeReportNameSegment(value: string): string {
+  return String(value || '')
+    .replace(/[\\/*?"<>|]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export type ServerShareReportKind = 'chest' | 'hit' | 'final' | 'ranking' | 'club' | 'championship';
+
+export function buildServerReportFileName(
+  kind: ServerShareReportKind,
+  options: {
+    eventNo?: string | number;
+    clubName?: string;
+    year?: number;
+    extension?: 'html' | 'pdf';
+  } = {}
+): string {
+  const year = options.year ?? new Date().getFullYear();
+  const ext = options.extension ?? 'html';
+
+  switch (kind) {
+    case 'chest':
+      return `Name List - ${year}.${ext}`;
+    case 'hit': {
+      const evtPart = sanitizeReportNameSegment(
+        options.eventNo !== undefined && String(options.eventNo).trim() !== '' && String(options.eventNo) !== 'all'
+          ? String(options.eventNo)
+          : 'All'
+      );
+      return `Event: ${evtPart} (Hit List) - ${year}.${ext}`;
+    }
+    case 'final': {
+      const evtPart = sanitizeReportNameSegment(
+        options.eventNo !== undefined && String(options.eventNo).trim() !== '' && String(options.eventNo) !== 'all'
+          ? String(options.eventNo)
+          : 'All'
+      );
+      return `Event: ${evtPart} (Final List) - ${year}.${ext}`;
+    }
+    case 'ranking': {
+      const evtPart = sanitizeReportNameSegment(
+        options.eventNo !== undefined && String(options.eventNo).trim() !== '' && String(options.eventNo) !== 'all'
+          ? String(options.eventNo)
+          : 'All'
+      );
+      return `Event: ${evtPart} (Ranking List) - ${year}.${ext}`;
+    }
+    case 'club': {
+      const clubPart = sanitizeReportNameSegment(
+        options.clubName && options.clubName !== 'all' ? options.clubName : 'All Clubs'
+      );
+      return `Bill: ${clubPart} - ${year}.${ext}`;
+    }
+    case 'championship':
+      return `Club Ranking - ${year}.${ext}`;
+  }
+}
+
+/**
+ * Shares an A4 PDF Blob via Web Share API (opening WhatsApp/share sheet on mobile),
+ * falling back cleanly to downloading the `.pdf` file on desktop or restricted frames.
+ */
+export const shareA4PdfBlob = async (
+  blob: Blob,
+  fileName: string = `Name List - ${new Date().getFullYear()}.pdf`,
+  title: string = 'Name List A4 Report'
+): Promise<{ success: boolean; cancelled?: boolean; message: string }> => {
+  try {
+    const file = new File([blob], fileName, { type: 'application/pdf' });
+    const canShareFiles =
+      typeof navigator !== 'undefined' &&
+      typeof navigator.share === 'function' &&
+      (!navigator.canShare || navigator.canShare({ files: [file] }));
+
+    if (canShareFiles) {
+      try {
+        await navigator.share({
+          files: [file],
+          title,
+        });
+        return {
+          success: true,
+          message: `${title} shared as A4 PDF!`,
+        };
+      } catch (shareErr: any) {
+        if (shareErr?.name === 'AbortError') {
+          return {
+            success: false,
+            cancelled: true,
+            message: 'Share cancelled.',
+          };
+        }
+        // Fall through to clean PDF download if Web Share is blocked in iframe/browser
+      }
+    }
+
+    const blobUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = blobUrl;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
+
+    return {
+      success: true,
+      message: `A4 PDF saved (${fileName}) — attach and share in WhatsApp!`,
+    };
+  } catch {
+    return {
+      success: false,
+      message: 'Unable to export A4 PDF report.',
+    };
+  }
+};
+

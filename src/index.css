@@ -249,3 +249,15 @@ img[alt*="Logo" i] {
   animation-play-state: paused;
 }
 
+@keyframes dance-down {
+  0%, 100% {
+    transform: translateY(-1px);
+  }
+  50% {
+    transform: translateY(2.5px);
+  }
+}
+
+.animate-dance-down {
+  animation: dance-down 1s ease-in-out infinite;
+}

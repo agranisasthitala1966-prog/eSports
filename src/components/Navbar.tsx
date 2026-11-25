@@ -190,7 +190,7 @@ export const Navbar: React.FC<NavbarProps> = ({
     <header className="bg-white border-b border-slate-200 sticky top-0 z-40 shadow-xs print:hidden">
       {/* Top Bar with Meet Info & Mode Switcher */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex items-center justify-between h-14 sm:h-16 gap-2 sm:gap-4">
+        <div className="flex items-center justify-between h-11 sm:h-12 gap-2 sm:gap-4">
           
           {/* Brand & Logo - Protected from copy, download, share, and opening in Chrome */}
           <div className="flex items-center gap-2.5 sm:gap-3 shrink-0 min-w-0 select-none">
@@ -245,7 +245,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                     ? `${unsyncedCount} new/updated entries ready to upload to server`
                     : 'All entries synced'
                 }
-                className={`flex items-center gap-2 px-3 py-1.5 sm:px-3.5 sm:py-2 rounded-xl text-xs sm:text-sm font-bold transition-all shadow-xs cursor-pointer ${
+                className={`flex items-center gap-2 px-3 py-1 sm:px-3.5 sm:py-1.5 rounded-xl text-xs sm:text-sm font-bold transition-all shadow-xs cursor-pointer ${
                   !(settings?.clientResponseEnabled ?? true)
                     ? 'opacity-40 cursor-not-allowed bg-slate-100 text-slate-400 border border-slate-200'
                     : unsyncedCount > 0
@@ -266,7 +266,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               id="header-qr-link-btn"
               disabled={currentMode === 'client' && !(settings?.clientResponseEnabled ?? true)}
               onClick={() => setShowQrModal(true)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-2xs active:scale-98 ${
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-2xs active:scale-98 ${
                 currentMode === 'client' && !(settings?.clientResponseEnabled ?? true)
                   ? 'opacity-40 cursor-not-allowed bg-slate-100 text-slate-400 border border-slate-200'
                   : 'bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300'
@@ -280,7 +280,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             {/* Mode Controls: At client enroll page there will be no server tab */}
             {currentMode === 'client' ? (
               <div className="flex items-center gap-1.5">
-                <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                <div className="flex items-center gap-1.5 px-3 py-1 rounded-xl text-xs font-bold bg-blue-50 text-blue-700 border border-blue-200">
                   <Smartphone className="w-3.5 h-3.5" />
                   <span>Public Portal</span>
                 </div>
@@ -289,7 +289,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                   type="button"
                   id="client-pin-login-btn"
                   onClick={onPromptPin}
-                  className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer border border-slate-200"
+                  className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer border border-slate-200"
                   title="PIN Login"
                   aria-label="Server PIN Login"
                 >
@@ -298,7 +298,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               </div>
             ) : (
               <div className="flex items-center gap-2">
-                <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200">
+                <div className="flex items-center bg-slate-100 p-0.5 rounded-xl border border-slate-200">
                   <button
                     id="toggle-client-mode"
                     onClick={() => {
@@ -307,13 +307,13 @@ export const Navbar: React.FC<NavbarProps> = ({
                         setActiveTab('enroll');
                       }
                     }}
-                    className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold text-slate-600 hover:text-slate-900 transition-all cursor-pointer"
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold text-slate-600 hover:text-slate-900 transition-all cursor-pointer"
                   >
                     <Smartphone className="w-3.5 h-3.5" />
                     <span>Public</span>
                   </button>
 
-                  <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-blue-600 text-white shadow-xs">
+                  <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold bg-blue-600 text-white shadow-xs">
                     <Unlock className="w-3.5 h-3.5" />
                     <span>Server</span>
                   </div>
@@ -325,7 +325,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                     <button
                       type="button"
                       onClick={onOpenResetPin}
-                      className="p-2 text-slate-600 hover:text-amber-600 hover:bg-amber-50 rounded-xl transition-colors cursor-pointer border border-slate-200"
+                      className="p-1.5 text-slate-600 hover:text-amber-600 hover:bg-amber-50 rounded-xl transition-colors cursor-pointer border border-slate-200"
                       title="Reset / Change Server Login PIN"
                     >
                       <KeyRound className="w-4 h-4" />
@@ -333,7 +333,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                     <button
                       type="button"
                       onClick={onLockServer}
-                      className="p-2 text-rose-600 hover:bg-rose-50 rounded-xl transition-colors cursor-pointer border border-rose-200 bg-rose-50/50"
+                      className="p-1.5 text-rose-600 hover:bg-rose-50 rounded-xl transition-colors cursor-pointer border border-rose-200 bg-rose-50/50"
                       title="Lock Server Control"
                     >
                       <Lock className="w-4 h-4 text-rose-600" />
@@ -347,7 +347,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             <button
               id="navbar-tablet-menu-btn"
               onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-              className="p-2 rounded-lg text-slate-700 hover:bg-slate-100 border border-slate-200 lg:hidden flex items-center justify-center transition-colors"
+              className="p-1.5 rounded-lg text-slate-700 hover:bg-slate-100 border border-slate-200 lg:hidden flex items-center justify-center transition-colors"
               aria-label="Toggle navigation menu"
               title="Menu navigation"
             >
@@ -472,7 +472,7 @@ export const Navbar: React.FC<NavbarProps> = ({
         {/* Client-side Live Meet Status Scrolling Label (below brand subtitle in top fixed bar) */}
         {currentMode === 'client' && liveMeetTicker.items.length > 0 && (
           <div
-            className="w-full h-5 flex items-center border-t border-slate-100 bg-slate-50/80 overflow-hidden"
+            className="w-full h-[18px] flex items-center border-t border-slate-100 bg-slate-50/80 overflow-hidden"
             aria-live="polite"
           >
             <div className="flex-1 min-w-0 h-full flex items-center overflow-hidden">
@@ -529,7 +529,7 @@ export const Navbar: React.FC<NavbarProps> = ({
         )}
 
         {/* Desktop Tab Navigation */}
-        <nav className="hidden lg:flex items-center space-x-1 py-2 border-t border-slate-100 overflow-visible relative">
+        <nav className="hidden lg:flex items-center space-x-1 py-1 border-t border-slate-100 overflow-visible relative">
           {currentTabs.map((tab) => {
             const Icon = tab.icon;
             const isActive = activeTab === tab.id;
@@ -539,7 +539,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 key={tab.id}
                 id={`tab-${tab.id}`}
                 onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center gap-2 px-3 py-2 text-xs sm:text-sm font-semibold rounded-lg transition-colors whitespace-nowrap cursor-pointer relative ${
+                className={`flex items-center gap-2 px-3 py-1 text-xs sm:text-sm font-semibold rounded-lg transition-colors whitespace-nowrap cursor-pointer relative ${
                   isActive
                     ? currentMode === 'server'
                       ? 'bg-blue-600 text-white shadow-xs'
@@ -571,7 +571,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                   updateMenuPosition();
                   setShowSettingsMenu((prev) => !prev);
                 }}
-                className={`flex items-center gap-1.5 px-3 py-2 text-xs sm:text-sm font-semibold rounded-lg transition-colors whitespace-nowrap cursor-pointer relative ${
+                className={`flex items-center gap-1.5 px-3 py-1 text-xs sm:text-sm font-semibold rounded-lg transition-colors whitespace-nowrap cursor-pointer relative ${
                   activeTab === 'admin' || activeTab === 'db'
                     ? 'bg-blue-600 text-white shadow-xs'
                     : showSettingsMenu

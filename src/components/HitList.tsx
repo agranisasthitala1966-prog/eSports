@@ -33,13 +33,12 @@ import {
 } from '../utils/thermalBluetoothPrint';
 import { ThermalLogo } from './ThermalLogo';
 import { ThermalTwoLineRecord } from './ThermalTwoLineRecord';
+import { receiptDomToOfflineHtmlBlob } from '../utils/thermalLogo';
 import { parseJumpToInches, formatJumpBenchmark } from './RankingList';
 import {
   WhatsAppIcon,
-  generateHitListWhatsAppText,
-  generateFinalListWhatsAppText,
-  generateRankListWhatsAppText,
-  openWhatsAppWithText,
+  buildServerReportFileName,
+  shareThermalHtmlBlob,
 } from '../utils/whatsappThermalReport';
 import { ClubEchoPrintModal } from './ClubEchoPrintModal';
 import {
@@ -398,17 +397,23 @@ export const HitList: React.FC<HitListProps> = ({
   // Can print final list: true when event has been promoted to final OR for direct final events
   const canPrintFinalList = (isAlreadyPromoted && savedFinalists.length > 0) || (!isHitRequired && enrolledCandidates.length > 0);
 
+  const getShortGender = (gender?: string): string => {
+    if (gender === 'BOYS') return 'B';
+    if (gender === 'GIRLS') return 'G';
+    return 'C';
+  };
+
   // Prepare formatted heading
   const getDynamicEventHeading = (evt?: SportEvent) => {
     if (!evt) return '';
     const h = evt.Height ? evt.Height.replace(/`/g, "'") : 'ALL';
-    return `Event #${evt.Evt_No}: ${evt.Evt_Name} (${evt.Gender} • ${h})`;
+    return `Event #${evt.Evt_No}: ${evt.Evt_Name} (${getShortGender(evt.Gender)} • ${h})`;
   };
 
   const getFormattedHeightGender = (evt?: SportEvent) => {
     if (!evt) return '';
     const h = evt.Height ? evt.Height.replace(/`/g, "'") : 'ALL';
-    return `${evt.Gender} • ${h}`;
+    return `${getShortGender(evt.Gender)} • ${h}`;
   };
 
   // "Prepare Final List" action with smooth auto-scroll to the list
@@ -636,7 +641,10 @@ export const HitList: React.FC<HitListProps> = ({
   };
 
   const [isDirectPrinting, setIsDirectPrinting] = useState<boolean>(false);
+  const [isSharingWhatsApp, setIsSharingWhatsApp] = useState<boolean>(false);
   const [directPrintStatus, setDirectPrintStatus] = useState<string | null>(null);
+  const thermalModalSheetRef = useRef<HTMLDivElement | null>(null);
+  const offscreenThermalShareRef = useRef<HTMLDivElement | null>(null);
 
   // Trigger print: Direct Bluetooth thermal on mobile when in thermal mode, without opening any other mobile app!
   const executeActualPrint = async () => {
@@ -696,20 +704,50 @@ export const HitList: React.FC<HitListProps> = ({
     await executeActualPrint();
   };
 
-  // Trigger WhatsApp share with thermal report formatting
-  const handleShareWhatsApp = (type: 'hit' | 'final' | 'results') => {
+  // Trigger WhatsApp share with complete white-page offline HTML thermal report
+  const handleShareWhatsApp = async (type: 'hit' | 'final' | 'results') => {
     if (!currentEvent) return;
-    let text = '';
-    if (type === 'hit') {
-      text = generateHitListWhatsAppText(currentEvent, enrolledCandidates, settings);
-    } else if (type === 'final') {
-      text = generateFinalListWhatsAppText(currentEvent, effectiveFinalists, settings);
-    } else if (type === 'results') {
-      text = generateRankListWhatsAppText(currentEvent, rankedWinners, settings);
+    const targetEl =
+      (modalFormat === 'thermal' ? thermalModalSheetRef.current : offscreenThermalShareRef.current) ||
+      (document.querySelector('.receipt') as HTMLElement | null);
+
+    const reportKind = type === 'results' ? 'ranking' : type;
+    const reportLabel = type === 'hit' ? 'Hit List' : type === 'final' ? 'Final List' : 'Ranking List';
+    const fileName = buildServerReportFileName(reportKind, {
+      eventNo: currentEvent.Evt_No,
+      extension: 'html',
+    });
+    const docTitle = fileName.replace(/\.html$/i, '');
+
+    if (!targetEl) {
+      setDirectPrintStatus(`Unable to locate ${reportLabel} thermal sheet for offline HTML export.`);
+      setTimeout(() => setDirectPrintStatus(null), 4000);
+      return;
     }
-    const res = openWhatsAppWithText(text);
-    setDirectPrintStatus(res.message);
-    setTimeout(() => setDirectPrintStatus(null), 4000);
+
+    setIsSharingWhatsApp(true);
+    setDirectPrintStatus(`Generating offline HTML for ${reportLabel}...`);
+
+    try {
+      const htmlBlob = await receiptDomToOfflineHtmlBlob(targetEl, {
+        title: docTitle,
+        printableWidthMm: thermalConfig.printableWidth,
+      });
+      if (!htmlBlob) {
+        setDirectPrintStatus(`Failed to generate offline HTML for ${reportLabel}.`);
+        setTimeout(() => setDirectPrintStatus(null), 4000);
+        return;
+      }
+      const res = await shareThermalHtmlBlob(htmlBlob, fileName, docTitle);
+      if (!res.cancelled) {
+        setDirectPrintStatus(res.message);
+        setTimeout(() => setDirectPrintStatus(null), 5000);
+      } else {
+        setDirectPrintStatus(null);
+      }
+    } finally {
+      setIsSharingWhatsApp(false);
+    }
   };
 
   // Helper to find club info
@@ -837,303 +875,89 @@ export const HitList: React.FC<HitListProps> = ({
       <div className={`space-y-4 ${printModalType !== null ? 'print:hidden' : ''}`}>
 
       {/* ========================================================================= */}
-      {/* 1. NON-SCROLLING STICKY TOP ACTION BAR                                   */}
-      {/* Displays: Event summary & action buttons with mobile-optimized layout     */}
+      {/* 1. FIXED ACTION BUTTONS DIRECTLY ON PAGE BODY (NO BLACK SECTION)          */}
       {/* ========================================================================= */}
-      <div className="sticky top-16 sm:top-20 z-30 bg-[#0b1120]/95 backdrop-blur-md border-b border-slate-800 -mx-2 sm:-mx-6 lg:-mx-8 px-2 sm:px-6 lg:px-8 py-2.5 sm:py-3 shadow-xl print:hidden">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 sm:gap-3">
-          
-          {/* Left: Dynamic Event Summary */}
-          <div className="flex items-center gap-2 min-w-0">
-            <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg sm:rounded-xl bg-amber-400 text-slate-950 font-black flex items-center justify-center text-xs sm:text-sm shrink-0 shadow-md">
-              #{currentEvent?.Evt_No}
-            </div>
-            <div className="min-w-0 flex-1">
-              <h2 className="text-white font-bold text-xs sm:text-base truncate leading-tight">
-                {currentEvent?.Evt_Name}
-              </h2>
-              <div className="flex flex-wrap items-center gap-1.5 text-[10px] sm:text-xs text-amber-400 font-semibold truncate">
-                <span>{currentEvent ? getEventShorthand(currentEvent) : ''} • {enrolledCandidates.length} Enrolled</span>
-                {!isHitRequired && (
-                  <span className="px-1.5 py-0.5 rounded-full bg-amber-400 text-slate-950 font-black border border-amber-300 text-[9px] sm:text-xs shadow-xs tracking-wider">
-                    FINAL
+      <div className="sticky top-[45px] sm:top-[49px] lg:top-[86px] z-30 bg-slate-100/95 backdrop-blur-xs -mx-3 sm:-mx-6 lg:-mx-8 px-3 sm:px-6 lg:px-8 py-1.5 print:hidden">
+        <div className="flex items-center justify-between gap-2">
+          {(() => {
+            const isPromoteVisible = !isRankingPrepared && !isAlreadyPromoted && qualifiedParticipants.length > 0;
+            const isMakeFinalDisabled = enrolledCandidates.length === 0 || isAlreadyPromoted || isRankingPrepared;
+            const isMeritDisabled = isRankingPrepared || !isAlreadyPromoted;
+
+            return (
+              <>
+                {/* LEFT: Make Final List */}
+                <button
+                  type="button"
+                  id="btn-prepare-final-list"
+                  onClick={() => handlePrepareFinalList()}
+                  disabled={isMakeFinalDisabled}
+                  className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg sm:rounded-xl font-black text-xs sm:text-sm flex items-center justify-center gap-1.5 transition-all shadow-sm whitespace-nowrap ${
+                    isRankingPrepared
+                      ? 'bg-emerald-600 text-white border border-emerald-700 cursor-default animate-pulse'
+                      : isMakeFinalDisabled
+                      ? 'bg-slate-200 text-slate-500 border border-slate-300 cursor-not-allowed opacity-70'
+                      : showQualifyCheckbox
+                      ? `bg-amber-300 ring-2 ring-amber-500 text-slate-950 border border-amber-400 cursor-pointer active:scale-98 ${!isPromoteVisible ? 'animate-pulse' : ''}`
+                      : `bg-amber-400 hover:bg-amber-300 text-slate-950 border border-amber-500/60 cursor-pointer active:scale-98 ${!isPromoteVisible ? 'animate-pulse' : ''}`
+                  }`}
+                  title={
+                    isRankingPrepared
+                      ? 'Event ranking completed. Further final list preparation is restricted.'
+                      : isAlreadyPromoted
+                      ? 'Final list already prepared and promoted.'
+                      : 'Make final list, auto scroll down and enable qualify checkboxes'
+                  }
+                >
+                  <Shuffle className="w-3.5 h-3.5 sm:w-4 sm:h-4 stroke-[2.5] shrink-0" />
+                  <span>
+                    {isRankingPrepared ? 'Completed' : isAlreadyPromoted ? 'Final Prepared' : 'Make Final List'}
                   </span>
-                )}
-                {isAlreadyPromoted && (
-                  <span className="px-1.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/30 text-[9px] sm:text-xs">
-                    Promoted ({savedFinalists.length})
-                  </span>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* Right: The Mandatory Action Buttons (Compact & Wrapping on mobile) */}
-          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
-            
-            {/* BUTTON 0: Print Results (Prominent & Enabled ONLY when event Ranking has been prepared) */}
-            {isRankingPrepared && (
-              <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  id="btn-print-results"
-                  onClick={() => {
-                    setModalFormat('a4');
-                    setPrintModalType('results');
-                  }}
-                  className="px-3 sm:px-3.5 py-1.5 sm:py-2 rounded-lg sm:rounded-xl bg-emerald-600 hover:bg-emerald-500 active:scale-98 text-white font-black text-xs sm:text-sm flex items-center justify-center gap-1.5 transition-all shadow-md cursor-pointer ring-2 ring-emerald-400/60 whitespace-nowrap animate-in fade-in"
-                  title="Print Official Event Results & Rankings on Plain A4 Paper"
-                >
-                  <Printer className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
-                  <span>Print Results</span>
                 </button>
-                <button
-                  type="button"
-                  id="btn-thermal-results"
-                  onClick={() => {
-                    setModalFormat('thermal');
-                    setPrintModalType('results');
-                  }}
-                  className="px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-lg sm:rounded-xl bg-amber-500 hover:bg-amber-400 active:scale-98 text-slate-950 font-black text-xs sm:text-sm flex items-center justify-center gap-1 transition-all shadow-md cursor-pointer whitespace-nowrap"
-                  title="Print Results on 2&quot; Roll Thermal Printer"
-                >
-                  <Receipt className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
-                  <span className="text-[11px] font-black hidden sm:inline">2" Thermal</span>
-                </button>
-                <button
-                  type="button"
-                  id="btn-whatsapp-results-card"
-                  onClick={() => handleShareWhatsApp('results')}
-                  className="px-2 sm:px-2.5 py-1.5 sm:py-2 rounded-lg sm:rounded-xl bg-emerald-600 hover:bg-emerald-500 active:scale-98 text-white font-black text-xs sm:text-sm flex items-center justify-center gap-1 transition-all shadow-md cursor-pointer whitespace-nowrap"
-                  title={`Share (Event: ${currentEvent?.Evt_No} Rank) to WhatsApp`}
-                >
-                  <WhatsAppIcon className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
-                  <span className="text-[11px] font-bold hidden sm:inline">WhatsApp</span>
-                </button>
-              </div>
-            )}
 
-            {/* BUTTON 1: Print Hit List (A4 & 2" Thermal) */}
-            {/* Enabled before final list is prepared; disabled after final list is prepared or ranking completed */}
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                id="btn-print-hit-list"
-                onClick={() => {
-                  if (enrolledCandidates.length > 0 && !isAlreadyPromoted && !isRankingPrepared) {
-                    setModalFormat('a4');
-                    setPrintModalType('hit');
-                  }
-                }}
-                disabled={enrolledCandidates.length === 0 || isAlreadyPromoted || isRankingPrepared}
-                className={`px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-lg sm:rounded-xl font-bold text-xs sm:text-sm flex items-center justify-center gap-1 sm:gap-1.5 transition-all shadow-md whitespace-nowrap ${
-                  isRankingPrepared
-                    ? 'bg-slate-800 text-slate-500 border border-slate-700/60 cursor-not-allowed opacity-40'
-                    : isAlreadyPromoted
-                    ? 'bg-slate-800 text-slate-500 border border-slate-700/60 cursor-not-allowed opacity-40'
-                    : enrolledCandidates.length === 0
-                    ? 'bg-slate-800 text-slate-500 border border-slate-700/60 cursor-not-allowed opacity-40'
-                    : 'bg-blue-600 hover:bg-blue-500 active:scale-98 text-white cursor-pointer'
-                }`}
-                title={
-                  isRankingPrepared
-                    ? 'Disabled: Event ranking completed. Only print of results is possible.'
-                    : isAlreadyPromoted
-                    ? 'Disabled: Final list has already been prepared. Hit list printing is disabled.'
-                    : enrolledCandidates.length === 0
-                    ? 'Disabled: No candidates enrolled for this event.'
-                    : 'Print field working copy on Plain A4 Paper'
-                }
-              >
-                <Printer className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
-                <span>Print Hit List</span>
-              </button>
-
-              <button
-                type="button"
-                id="btn-thermal-hit-list"
-                onClick={() => {
-                  if (enrolledCandidates.length > 0 && !isAlreadyPromoted && !isRankingPrepared) {
-                    setModalFormat('thermal');
-                    setPrintModalType('hit');
-                  }
-                }}
-                disabled={enrolledCandidates.length === 0 || isAlreadyPromoted || isRankingPrepared}
-                className={`p-1.5 sm:px-2.5 sm:py-2 rounded-lg sm:rounded-xl font-black text-xs sm:text-sm flex items-center justify-center gap-1 transition-all shadow-md whitespace-nowrap ${
-                  isRankingPrepared || isAlreadyPromoted || enrolledCandidates.length === 0
-                    ? 'bg-slate-800 text-slate-500 border border-slate-700/60 cursor-not-allowed opacity-40'
-                    : 'bg-amber-500 hover:bg-amber-400 active:scale-98 text-slate-950 cursor-pointer'
-                }`}
-                title="Print Hit List on 2&quot; Roll Thermal Printer"
-              >
-                <Receipt className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
-                <span className="text-[11px] font-black hidden md:inline">2" Thermal</span>
-              </button>
-              <button
-                type="button"
-                id="btn-whatsapp-hit-card"
-                onClick={() => handleShareWhatsApp('hit')}
-                disabled={enrolledCandidates.length === 0 || isAlreadyPromoted || isRankingPrepared}
-                className={`p-1.5 sm:px-2 sm:py-2 rounded-lg sm:rounded-xl font-black text-xs sm:text-sm flex items-center justify-center gap-1 transition-all shadow-md whitespace-nowrap ${
-                  isRankingPrepared || isAlreadyPromoted || enrolledCandidates.length === 0
-                    ? 'bg-slate-800 text-slate-500 border border-slate-700/60 cursor-not-allowed opacity-40'
-                    : 'bg-emerald-600 hover:bg-emerald-500 active:scale-98 text-white cursor-pointer'
-                }`}
-                title={`Share (Event: ${currentEvent?.Evt_No} Hit) to WhatsApp`}
-              >
-                <WhatsAppIcon className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
-                <span className="text-[11px] font-bold hidden md:inline">WhatsApp</span>
-              </button>
-            </div>
-
-            {/* BUTTON 2: Prepare Final List */}
-            {/* Enabled before final list is prepared; disabled after final list is prepared or ranking completed */}
-            <button
-              type="button"
-              id="btn-prepare-final-list"
-              onClick={() => handlePrepareFinalList()}
-              disabled={enrolledCandidates.length === 0 || isAlreadyPromoted || isRankingPrepared}
-              className={`px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-lg sm:rounded-xl font-black text-xs sm:text-sm flex items-center justify-center gap-1 sm:gap-1.5 transition-all shadow-md whitespace-nowrap ${
-                isRankingPrepared
-                  ? 'bg-slate-800 text-slate-500 border border-slate-700/60 cursor-not-allowed opacity-40'
-                  : isAlreadyPromoted
-                  ? 'bg-slate-700 text-slate-400 border border-slate-600 cursor-not-allowed opacity-60'
-                  : showQualifyCheckbox
-                  ? 'bg-amber-300 ring-2 ring-amber-400 text-slate-950 cursor-pointer active:scale-98'
-                  : 'bg-amber-400 hover:bg-amber-300 text-slate-950 cursor-pointer active:scale-98'
-              }`}
-              title={
-                isRankingPrepared
-                  ? 'Event ranking completed. Further final list preparation is restricted.'
-                  : isAlreadyPromoted
-                  ? 'Final list already prepared and promoted.'
-                  : 'Prepare final list, auto scroll down and enable qualify checkboxes'
-              }
-            >
-              <Shuffle className="w-3.5 h-3.5 sm:w-4 sm:h-4 stroke-[2.5] shrink-0" />
-              <span>
-                {isRankingPrepared ? 'Completed' : isAlreadyPromoted ? 'Final Prepared' : 'Prepare Final List'}
-              </span>
-            </button>
-
-            {/* BUTTON: Promote to Final (Visible & Enabled ONLY when qualify checkmarks exist and neither promoted nor ranking prepared) */}
-            {!isRankingPrepared && !isAlreadyPromoted && qualifiedParticipants.length > 0 && (
-              <button
-                type="button"
-                id="btn-promote-to-final"
-                onClick={handleSendToFinal}
-                className="px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-lg sm:rounded-xl bg-emerald-600 hover:bg-emerald-500 active:scale-98 text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-1 sm:gap-1.5 transition-all shadow-md cursor-pointer animate-pulse whitespace-nowrap"
-                title="Promote checked qualifiers to Final List"
-              >
-                <Award className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
-                <span>Promote ({qualifiedParticipants.length})</span>
-              </button>
-            )}
-
-            {/* BUTTON 3: Print Final List (A4 & 2" Thermal) */}
-            {/* Enabled after final list is prepared OR for Direct Final (requiredHit=no) events with enrolled athletes */}
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                id="btn-print-final-list"
-                onClick={() => {
-                  const canPrintFinal = (isAlreadyPromoted || (!isHitRequired && enrolledCandidates.length > 0)) && !isRankingPrepared;
-                  if (canPrintFinal) {
-                    setModalFormat('a4');
-                    setPrintModalType('final');
-                  }
-                }}
-                disabled={(!isAlreadyPromoted && (isHitRequired || enrolledCandidates.length === 0)) || isRankingPrepared}
-                className={`px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-lg sm:rounded-xl font-bold text-xs sm:text-sm flex items-center justify-center gap-1 sm:gap-1.5 transition-all shadow-md whitespace-nowrap ${
-                  isRankingPrepared
-                    ? 'bg-slate-800 text-slate-500 border border-slate-700/60 cursor-not-allowed opacity-40'
-                    : (isAlreadyPromoted || (!isHitRequired && enrolledCandidates.length > 0))
-                    ? 'bg-blue-600 hover:bg-blue-500 active:scale-98 text-white cursor-pointer'
-                    : 'bg-slate-800 text-slate-500 border border-slate-700/60 cursor-not-allowed opacity-50'
-                }`}
-                title={
-                  isRankingPrepared
-                    ? 'Disabled: Event ranking completed. Only print of results is possible.'
-                    : (isAlreadyPromoted || (!isHitRequired && enrolledCandidates.length > 0))
-                    ? 'Print Finalist Start List on Plain A4 Paper'
-                    : 'Disabled: Final list has not been prepared yet. Click "Prepare Final List" and promote candidates to enable.'
-                }
-              >
-                <Printer className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
-                <span>Print Final List</span>
-              </button>
-
-              <button
-                type="button"
-                id="btn-thermal-final-list"
-                onClick={() => {
-                  const canPrintFinal = (isAlreadyPromoted || (!isHitRequired && enrolledCandidates.length > 0)) && !isRankingPrepared;
-                  if (canPrintFinal) {
-                    setModalFormat('thermal');
-                    setPrintModalType('final');
-                  }
-                }}
-                disabled={(!isAlreadyPromoted && (isHitRequired || enrolledCandidates.length === 0)) || isRankingPrepared}
-                className={`p-1.5 sm:px-2.5 sm:py-2 rounded-lg sm:rounded-xl font-black text-xs sm:text-sm flex items-center justify-center gap-1 transition-all shadow-md whitespace-nowrap ${
-                  (!isAlreadyPromoted && (isHitRequired || enrolledCandidates.length === 0)) || isRankingPrepared
-                    ? 'bg-slate-800 text-slate-500 border border-slate-700/60 cursor-not-allowed opacity-40'
-                    : 'bg-amber-500 hover:bg-amber-400 active:scale-98 text-slate-950 cursor-pointer'
-                }`}
-                title="Print Final List on 2&quot; Roll Thermal Printer"
-              >
-                <Receipt className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
-                <span className="text-[11px] font-black hidden md:inline">2" Thermal</span>
-              </button>
-              <button
-                type="button"
-                id="btn-whatsapp-final-card"
-                onClick={() => handleShareWhatsApp('final')}
-                disabled={!isAlreadyPromoted || isRankingPrepared}
-                className={`p-1.5 sm:px-2 sm:py-2 rounded-lg sm:rounded-xl font-black text-xs sm:text-sm flex items-center justify-center gap-1 transition-all shadow-md whitespace-nowrap ${
-                  !isAlreadyPromoted || isRankingPrepared
-                    ? 'bg-slate-800 text-slate-500 border border-slate-700/60 cursor-not-allowed opacity-40'
-                    : 'bg-emerald-600 hover:bg-emerald-500 active:scale-98 text-white cursor-pointer'
-                }`}
-                title={`Share (Event: ${currentEvent?.Evt_No} Final) to WhatsApp`}
-              >
-                <WhatsAppIcon className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
-                <span className="text-[11px] font-bold hidden md:inline">WhatsApp</span>
-              </button>
-            </div>
-
-            {/* LINK BUTTON: Shift to Ranking & Points page */}
-            {onNavigateToRanking && (
-              <button
-                type="button"
-                id="btn-shift-to-rankings"
-                onClick={() => {
-                  if (isAlreadyPromoted || isRankingPrepared) {
-                    onNavigateToRanking(selectedEvtNo);
-                  }
-                }}
-                disabled={!isAlreadyPromoted && !isRankingPrepared}
-                className={`flex-1 sm:flex-none px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-lg sm:rounded-xl font-bold text-xs sm:text-sm flex items-center justify-center gap-1 sm:gap-1.5 transition-all shadow-2xs whitespace-nowrap ${
-                  isRankingPrepared
-                    ? 'bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-400 text-emerald-300 cursor-pointer active:scale-98'
-                    : isAlreadyPromoted
-                    ? 'bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400 text-amber-300 hover:text-amber-200 cursor-pointer active:scale-98 ring-1 ring-amber-400/40'
-                    : 'bg-slate-800 text-slate-500 border border-slate-700/60 cursor-not-allowed opacity-50'
-                }`}
-                title={
-                  isRankingPrepared
-                    ? 'View or review rankings on Ranking & Points page'
-                    : isAlreadyPromoted
-                    ? 'Shift to Ranking & Points page to record official results'
-                    : 'Disabled: Promote finalists to prepare the Final List first'
-                }
-              >
-                <Trophy className={`w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0 ${isRankingPrepared ? 'text-emerald-400' : isAlreadyPromoted ? 'text-amber-400' : 'text-slate-500'}`} />
-                <span>Ranking &amp; Points</span>
-                <ArrowRight className={`w-3 h-3 sm:w-3.5 sm:h-3.5 shrink-0 ${isRankingPrepared ? 'text-emerald-400' : isAlreadyPromoted ? 'text-amber-400' : 'text-slate-500'}`} />
-              </button>
-            )}
-
-          </div>
+                {/* RIGHT: Promote button (when unhidden) OR Prepare Merit List -> (mutually exclusive) */}
+                {isPromoteVisible ? (
+                  <button
+                    type="button"
+                    id="btn-promote-to-final"
+                    onClick={handleSendToFinal}
+                    className="px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg sm:rounded-xl bg-emerald-600 hover:bg-emerald-500 active:scale-98 text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-1.5 transition-all shadow-sm cursor-pointer animate-pulse whitespace-nowrap"
+                    title="Promote checked qualifiers to Final List"
+                  >
+                    <Award className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+                    <span>Promote ({qualifiedParticipants.length})</span>
+                  </button>
+                ) : onNavigateToRanking ? (
+                  <button
+                    type="button"
+                    id="btn-shift-to-rankings"
+                    onClick={() => {
+                      if (!isMeritDisabled) {
+                        onNavigateToRanking(selectedEvtNo);
+                      }
+                    }}
+                    disabled={isMeritDisabled}
+                    className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg sm:rounded-xl font-bold text-xs sm:text-sm flex items-center justify-center gap-1.5 transition-all shadow-sm whitespace-nowrap ${
+                      !isMeritDisabled
+                        ? 'bg-indigo-600 hover:bg-indigo-500 border border-indigo-700 text-white cursor-pointer active:scale-98 ring-2 ring-indigo-300'
+                        : 'bg-slate-200 text-slate-500 border border-slate-300 cursor-not-allowed opacity-70'
+                    }`}
+                    title={
+                      isRankingPrepared
+                        ? 'Disabled: Ranking has already been prepared for this event.'
+                        : isAlreadyPromoted
+                        ? 'Open Ranking & Points page to prepare merit list'
+                        : 'Disabled: Promote finalists to prepare the Final List first'
+                    }
+                  >
+                    <Trophy className={`w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0 ${!isMeritDisabled ? 'text-amber-300' : 'text-slate-400'}`} />
+                    <span>Prepare Merit List</span>
+                    <ArrowRight className={`w-3 h-3 sm:w-3.5 sm:h-3.5 shrink-0 ${!isMeritDisabled ? 'text-white' : 'text-slate-400'}`} />
+                  </button>
+                ) : null}
+              </>
+            );
+          })()}
         </div>
       </div>
 
@@ -1146,13 +970,10 @@ export const HitList: React.FC<HitListProps> = ({
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-1.5">
             <Flame className="w-4 h-4 text-amber-400" />
-            <h3 className="text-xs sm:text-sm font-black uppercase tracking-wider text-amber-400">
-              Select Athletic Event
+            <h3 className="text-xs sm:text-sm font-black tracking-wide text-amber-400">
+              Click/Tap to select Event
             </h3>
           </div>
-          <span className="text-[10px] sm:text-xs text-slate-400 font-mono">
-            #{currentEvent?.Evt_No} Selected • {enrolledCandidates.length} Enrolled {isRankingPrepared ? '• ✓ Completed' : ''}
-          </span>
         </div>
 
         {/* Thumbnails Grid: 2 columns on Mobile, 3 on sm, 4 on md, 6 on lg */}
@@ -1251,7 +1072,27 @@ export const HitList: React.FC<HitListProps> = ({
                           </button>
                         )}
                       </div>
-                    ) : null}
+                    ) : (
+                      <div className="flex items-center gap-1">
+                        <span className="text-[9px] sm:text-[10px] font-bold uppercase px-2 py-0.5 rounded-md bg-purple-500/10 text-purple-200/50 border border-purple-400/20 tracking-wider font-mono">
+                          HIT
+                        </span>
+                        {count > 0 && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedEvtNo(evt.Evt_No);
+                              setPrintModalType('hit');
+                            }}
+                            className="p-0.5 rounded bg-slate-700 hover:bg-slate-600 text-white transition-all cursor-pointer"
+                            title="Print Hit List"
+                          >
+                            <Printer className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
+                          </button>
+                        )}
+                      </div>
+                    )}
                     <span className={`font-mono text-[9px] sm:text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
                       evtCompleted
                         ? isSelected ? 'bg-emerald-400 text-slate-950' : 'bg-emerald-800 text-emerald-100'
@@ -1274,7 +1115,7 @@ export const HitList: React.FC<HitListProps> = ({
       {/* ========================================================================= */}
       {/* 3. HIT LIST WORKING TABLE (Target of auto-scroll upon Prepare Final List)  */}
       {/* ========================================================================= */}
-      <div ref={workingTableRef} id="hit-list-working-container" className="scroll-mt-36 sm:scroll-mt-32">
+      <div ref={workingTableRef} id="hit-list-working-container" className="scroll-mt-24 sm:scroll-mt-28 lg:scroll-mt-36">
         {isRankingPrepared && (
           <div className="mb-3 p-3 sm:p-4 rounded-xl bg-emerald-950/80 border-2 border-emerald-500 text-emerald-100 flex flex-wrap items-center justify-between gap-3 shadow-lg print:hidden">
             <div className="flex items-center gap-2.5">
@@ -1697,9 +1538,10 @@ export const HitList: React.FC<HitListProps> = ({
                   <button
                     type="button"
                     id="btn-whatsapp-share-hit-modal"
+                    disabled={isSharingWhatsApp}
                     onClick={() => handleShareWhatsApp('hit')}
-                    className="px-2.5 sm:px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-xs cursor-pointer shrink-0"
-                    title={`Share (Event: ${currentEvent?.Evt_No} Hit) to WhatsApp`}
+                    className={`px-2.5 sm:px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-xs cursor-pointer shrink-0 ${isSharingWhatsApp ? 'opacity-60 cursor-wait' : ''}`}
+                    title={`Share Hit List Thermal Report (Offline HTML)`}
                   >
                     <WhatsAppIcon className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-white shrink-0" />
                     <span className="hidden xs:inline sm:inline">WhatsApp</span>
@@ -1740,6 +1582,7 @@ export const HitList: React.FC<HitListProps> = ({
                   <span>58mm Roll Preview ({thermalConfig.printableWidth}mm • {thermalConfig.fontSize}pt)</span>
                 </div>
                 <div
+                  ref={thermalModalSheetRef}
                   className="receipt thermal-printable-sheet bg-white text-black p-0 shadow-2xl rounded-xs select-none print:shadow-none print:p-0"
                   style={{
                     width: `${thermalConfig.printableWidth}mm`,
@@ -2017,9 +1860,10 @@ export const HitList: React.FC<HitListProps> = ({
                   <button
                     type="button"
                     id="btn-whatsapp-share-final-modal"
+                    disabled={isSharingWhatsApp}
                     onClick={() => handleShareWhatsApp('final')}
-                    className="px-2.5 sm:px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-xs cursor-pointer shrink-0"
-                    title={`Share (Event: ${currentEvent?.Evt_No} Final) to WhatsApp`}
+                    className={`px-2.5 sm:px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-xs cursor-pointer shrink-0 ${isSharingWhatsApp ? 'opacity-60 cursor-wait' : ''}`}
+                    title={`Share Final List Thermal Report (Offline HTML)`}
                   >
                     <WhatsAppIcon className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-white shrink-0" />
                     <span className="hidden xs:inline sm:inline">WhatsApp</span>
@@ -2060,6 +1904,7 @@ export const HitList: React.FC<HitListProps> = ({
                   <span>58mm Roll Preview ({thermalConfig.printableWidth}mm • {thermalConfig.fontSize}pt)</span>
                 </div>
                 <div
+                  ref={thermalModalSheetRef}
                   className="receipt thermal-printable-sheet bg-white text-black p-0 shadow-2xl rounded-xs select-none print:shadow-none print:p-0"
                   style={{
                     width: `${thermalConfig.printableWidth}mm`,
@@ -2364,9 +2209,10 @@ export const HitList: React.FC<HitListProps> = ({
                   <button
                     type="button"
                     id="btn-whatsapp-share-results-modal"
+                    disabled={isSharingWhatsApp}
                     onClick={() => handleShareWhatsApp('results')}
-                    className="px-2.5 sm:px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-xs cursor-pointer shrink-0"
-                    title={`Share (Event: ${currentEvent?.Evt_No} Rank) to WhatsApp`}
+                    className={`px-2.5 sm:px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-xs cursor-pointer shrink-0 ${isSharingWhatsApp ? 'opacity-60 cursor-wait' : ''}`}
+                    title={`Share Ranking List Thermal Report (Offline HTML)`}
                   >
                     <WhatsAppIcon className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-white shrink-0" />
                     <span className="hidden xs:inline sm:inline">WhatsApp</span>
@@ -2407,6 +2253,7 @@ export const HitList: React.FC<HitListProps> = ({
                   <span>58mm Roll Preview ({thermalConfig.printableWidth}mm • {thermalConfig.fontSize}pt)</span>
                 </div>
                 <div
+                  ref={thermalModalSheetRef}
                   className="receipt thermal-printable-sheet bg-white text-black p-0 shadow-2xl rounded-xs select-none print:shadow-none print:p-0"
                   style={{
                     width: `${thermalConfig.printableWidth}mm`,
@@ -2757,6 +2604,162 @@ export const HitList: React.FC<HitListProps> = ({
         }}
         onCancel={() => setEchoPrintModalState(null)}
       />
+
+      {/* Offscreen Thermal sheet so WhatsApp Offline HTML share works even while Normal (A4) preview is active */}
+      {printModalType && modalFormat !== 'thermal' && currentEvent && (
+        <div
+          aria-hidden="true"
+          className="fixed -left-[99999px] top-0 pointer-events-none opacity-0 print:hidden"
+        >
+          <div
+            ref={offscreenThermalShareRef}
+            className="thermal-printable-sheet bg-white text-black p-0"
+            style={{
+              width: `${thermalConfig.printableWidth}mm`,
+              maxWidth: `${thermalConfig.printableWidth}mm`,
+              boxSizing: 'border-box',
+              paddingLeft: `${thermalConfig.marginHorizontal}mm`,
+              paddingRight: `${thermalConfig.marginHorizontal}mm`,
+              paddingTop: `${thermalConfig.topMargin ?? 5}mm`,
+              paddingBottom: `${thermalConfig.feedBeforeCut}mm`,
+              fontSize: `${thermalConfig.fontSize}pt`,
+              lineHeight: thermalConfig.lineSpacing,
+              fontFamily: 'Arial, "Segoe UI", Helvetica, sans-serif',
+            }}
+          >
+            {renderThermalHeader()}
+            <div className="text-center py-0.5 tracking-tight text-black leading-tight">
+              <div className="font-bold uppercase">
+                {printModalType === 'hit' ? 'HIT LIST' : printModalType === 'final' ? 'FINAL LIST' : 'RANKING LIST'}
+              </div>
+              <div className="thermal-event-details font-normal mt-0.5 uppercase tracking-tight break-words leading-tight">
+                <span className="thermal-event-no font-bold">EVT {currentEvent.Evt_No}</span>
+                {formatThermalEventSuffix(currentEvent.Evt_Name, currentEvent.Height, currentEvent.Gender)}
+              </div>
+            </div>
+            <div className="w-full border-b border-dashed border-black my-1"></div>
+            {printModalType === 'results' ? (
+              (() => {
+                const isBroadJump = (currentEvent.Evt_Name || '').toUpperCase().includes('BROAD JUMP');
+                return (
+                  <>
+                    <div className="flex items-center font-normal text-black uppercase pt-1">
+                      <span className="w-[2.2em] text-left shrink-0">RK</span>
+                      <span className="w-[2.6em] text-left shrink-0">CH</span>
+                      <span className="flex-1 text-left pl-1">ATHLETE (CLUB)</span>
+                      {isBroadJump && <span className="text-right pl-1 shrink-0">JMP</span>}
+                    </div>
+                    <div className="w-full border-b-2 border-black mb-1 mt-0.5"></div>
+                    <div className="space-y-0 text-black">
+                      {rankedWinners.length === 0 ? (
+                        <div className="italic text-center py-2 text-slate-600">No rankings declared yet for this event.</div>
+                      ) : (
+                        rankedWinners.map((w, idx) => {
+                          const p = w.position && w.position > 0 ? w.position : idx + 1;
+                          const rankLabel = p === 1 ? '1st' : p === 2 ? '2nd' : p === 3 ? '3rd' : `${p}th`;
+                          const club = getClubInfo(w.club || '');
+                          const isSelf = (w.club || '').trim().toUpperCase() === 'SELF';
+                          const clubNameStr = isSelf ? '' : (club?.name || w.club || '').trim();
+                          const athleteDisplay = clubNameStr ? `${w.candidateName} (${clubNameStr})` : w.candidateName;
+                          const jumpVal = isBroadJump ? (w.jumpRecord || w.resultValue || '—') : undefined;
+                          return (
+                            <div key={w.chestNo}>
+                              <div className="flex items-start py-1 text-black leading-tight">
+                                <span className="w-[2.2em] text-left font-normal shrink-0">{rankLabel}</span>
+                                <span className="w-[2.6em] text-left font-normal shrink-0 thermal-chest-no">{w.chestNo}</span>
+                                <div className="flex-1 min-w-0 text-left font-normal uppercase pl-1">
+                                  <ThermalTwoLineRecord
+                                    text={athleteDisplay}
+                                    rightText={jumpVal}
+                                    rightClassName="thermal-jump-record whitespace-nowrap"
+                                    deps={[thermalConfig.printableWidth, thermalConfig.fontSize, thermalConfig.lineSpacing, thermalConfig.marginHorizontal]}
+                                  />
+                                </div>
+                              </div>
+                              <div className="w-full border-b border-dotted border-black/80"></div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+
+                    {isBroadJump && (() => {
+                      const prevRecord = settings.broadJumpPreviousRecords?.[Number(currentEvent?.Evt_No)] ||
+                        (currentResult?.highestRecord?.previousRecordValue ? {
+                          recordValue: currentResult.highestRecord.previousRecordValue,
+                          recordHolderName: currentResult.highestRecord.previousRecordHolder || 'Record Holder',
+                          recordHolderClub: '',
+                          recordYear: currentResult.highestRecord.previousRecordYear || '',
+                        } : null);
+
+                      if (!prevRecord) return null;
+
+                      const prevInches = parseJumpToInches(prevRecord.recordValue);
+                      let maxJumpInches = 0;
+                      rankedWinners.forEach((r) => {
+                        const jInches = parseJumpToInches(r.jumpRecord || (r as any).resultValue);
+                        if (jInches > maxJumpInches) maxJumpInches = jInches;
+                      });
+                      if (currentResult?.highestRecord?.recordValue) {
+                        const hrInches = parseJumpToInches(currentResult.highestRecord.recordValue);
+                        if (hrInches > maxJumpInches) maxJumpInches = hrInches;
+                      }
+                      const isBroken = prevInches > 0 ? maxJumpInches > prevInches : maxJumpInches > 0;
+                      const formattedPrev = formatJumpBenchmark(prevRecord.recordValue) || prevRecord.recordValue;
+                      const holderClub = prevRecord.recordHolderClub ? ` (${prevRecord.recordHolderClub})` : '';
+                      const holderYear = prevRecord.recordYear ? `, ${prevRecord.recordYear}` : '';
+
+                      if (!isBroken) {
+                        return (
+                          <div className="thermal-new-record-callout py-1 font-normal text-center text-black leading-tight border-b border-dotted border-black/80 break-words">
+                            New Record: N
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <div className="thermal-new-record-callout py-1 font-normal text-center text-black leading-tight border-b border-dotted border-black/80 break-words">
+                          <span className="font-bold">New Record: Y</span>
+                          <span> | Prev: {formattedPrev} by {prevRecord.recordHolderName}{holderClub}{holderYear}</span>
+                        </div>
+                      );
+                    })()}
+                  </>
+                );
+              })()
+            ) : (
+              <>
+                <div className="flex items-center font-normal text-black uppercase pt-1">
+                  <span className="w-[1.8em] text-left shrink-0">SL</span>
+                  <span className="w-[2.6em] text-left shrink-0">CH</span>
+                  <span className="flex-1 text-left pl-1">ATHLETE (CLUB)</span>
+                </div>
+                <div className="w-full border-b-2 border-black mb-1 mt-0.5"></div>
+                <div className="space-y-0 text-black">
+                  {(printModalType === 'hit'
+                    ? enrolledCandidates.map((c) => ({ chestNo: c.chestNo, name: c.name, club: c.club }))
+                    : effectiveFinalists.map((f) => ({ chestNo: f.chestNo, name: f.candidateName, club: f.club }))
+                  ).map((row, idx) => (
+                    <div key={`${row.chestNo}-${idx}`}>
+                      <div className="flex items-start py-1 text-black leading-tight">
+                        <span className="w-[1.8em] text-left font-normal shrink-0">{idx + 1}</span>
+                        <span className="w-[2.6em] text-left font-normal shrink-0 thermal-chest-no">{row.chestNo}</span>
+                        <div className="flex-1 min-w-0 text-left pl-1">
+                          <div className="font-normal uppercase thermal-record-clamp-1">
+                            {row.name} ({row.club || 'BANDIPUR'})
+                          </div>
+                        </div>
+                      </div>
+                      <div className="w-full border-b border-dotted border-black/80"></div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+            {renderThermalFooter()}
+          </div>
+        </div>
+      )}
 
     </div>
   );

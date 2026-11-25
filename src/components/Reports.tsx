@@ -17,12 +17,10 @@ import {
   Medal, 
   Receipt, 
   Sparkles,
-  FileSpreadsheet,
   Sliders,
   Bluetooth,
   RefreshCw
 } from 'lucide-react';
-import { downloadSportsMeetExcel } from '../services/excelExport';
 import { parseJumpToInches, formatJumpBenchmark } from './RankingList';
 import { ThermalPageSetupModal } from './ThermalPageSetupModal';
 import { 
@@ -41,11 +39,11 @@ import { ThermalTwoLineRecord } from './ThermalTwoLineRecord';
 import { receiptDomToOfflineHtmlBlob } from '../utils/thermalLogo';
 import {
   WhatsAppIcon,
-  generateClubWiseWhatsAppText,
-  generateChampionshipWhatsAppText,
-  openWhatsAppWithText,
+  buildServerReportFileName,
   shareThermalHtmlBlob,
+  shareA4PdfBlob,
 } from '../utils/whatsappThermalReport';
+import { generateNameListA4PdfBlob } from '../utils/nameListA4Pdf';
 import { isExcludedClubForRanking } from '../utils/clubRankingFilter';
 import { ClubEchoPrintModal } from './ClubEchoPrintModal';
 import {
@@ -497,57 +495,33 @@ export const Reports: React.FC<ReportsProps> = ({
       return;
     }
 
-    // Exclusive for Name List, Hit List, Final List, and Ranking List thermal report sharing:
-    // share the complete page data including white page in offline HTML format
-    if (reportType === 'chest' || reportType === 'ranking' || reportType === 'hit' || reportType === 'final') {
-      const targetEl =
-        (paperFormat === 'thermal' ? thermalReceiptRef.current : offscreenThermalShareRef.current) ||
-        (document.querySelector('.receipt') as HTMLElement | null);
+    const currentYear = new Date().getFullYear();
 
-      const reportLabel =
-        reportType === 'chest'
-          ? 'Name List'
-          : reportType === 'hit'
-          ? 'Hit List'
-          : reportType === 'final'
-          ? 'Final List'
-          : 'Ranking List';
-      const fileName =
-        reportType === 'chest'
-          ? 'Name_List_Thermal.html'
-          : reportType === 'hit'
-          ? (selectedHitEvtNo && selectedHitEvtNo !== 'all'
-              ? `Hit_List_Evt_${selectedHitEvtNo}_Thermal.html`
-              : 'Hit_List_Thermal.html')
-          : reportType === 'final'
-          ? (selectedFinalEvtNo && selectedFinalEvtNo !== 'all'
-              ? `Final_List_Evt_${selectedFinalEvtNo}_Thermal.html`
-              : 'Final_List_Thermal.html')
-          : (selectedRankingEvtNo && selectedRankingEvtNo !== 'all'
-              ? `Ranking_List_Evt_${selectedRankingEvtNo}_Thermal.html`
-              : 'Ranking_List_Thermal.html');
-      const docTitle = `${reportLabel} Thermal Report`;
-
-      if (!targetEl) {
-        setDirectPrintStatus({ message: `Unable to locate ${reportLabel} thermal sheet for offline HTML export.`, type: 'error' });
+    // Name List in Normal (A4) mode: share as pure A4 PDF file
+    if (reportType === 'chest' && paperFormat === 'a4') {
+      if (chestWiseCandidates.length === 0) {
+        setDirectPrintStatus({ message: 'No candidate records available to share.', type: 'error' });
         setTimeout(() => setDirectPrintStatus(null), 4000);
         return;
       }
 
+      const fileName = buildServerReportFileName('chest', { year: currentYear, extension: 'pdf' });
+      const docTitle = `Name List - ${currentYear}`;
       setIsSharingWhatsApp(true);
-      setDirectPrintStatus({ message: `Generating offline HTML for ${reportLabel}...`, type: 'info' });
+      setDirectPrintStatus({ message: 'Generating Name List A4 PDF...', type: 'info' });
 
       try {
-        const htmlBlob = await receiptDomToOfflineHtmlBlob(targetEl, {
-          title: docTitle,
-          printableWidthMm: thermalConfig.printableWidth,
+        const pdfBlob = await generateNameListA4PdfBlob({
+          candidates: chestWiseCandidates,
+          settings,
+          clubs,
         });
-        if (!htmlBlob) {
-          setDirectPrintStatus({ message: `Failed to generate offline HTML for ${reportLabel}.`, type: 'error' });
+        if (!pdfBlob) {
+          setDirectPrintStatus({ message: 'Failed to generate Name List A4 PDF.', type: 'error' });
           setTimeout(() => setDirectPrintStatus(null), 4000);
           return;
         }
-        const res = await shareThermalHtmlBlob(htmlBlob, fileName, docTitle);
+        const res = await shareA4PdfBlob(pdfBlob, fileName, docTitle);
         if (!res.cancelled) {
           setDirectPrintStatus({ message: res.message, type: res.success ? 'success' : 'error' });
           setTimeout(() => setDirectPrintStatus(null), 5000);
@@ -560,25 +534,66 @@ export const Reports: React.FC<ReportsProps> = ({
       return;
     }
 
-    let text = '';
+    // Thermal reports (Name List, Hit List, Final List, Ranking List, Club Wise Candidate, Club Ranking):
+    // share complete page data including white thermal paper in offline HTML format
+    const targetEl =
+      (paperFormat === 'thermal' ? thermalReceiptRef.current : offscreenThermalShareRef.current) ||
+      (document.querySelector('.receipt') as HTMLElement | null);
 
-    if (reportType === 'club') {
-      text = displayedClubNames
-        .map((clubName) => generateClubWiseWhatsAppText(clubName, clubGroupedCandidates[clubName] || []))
-        .join('\n\n');
-    } else if (reportType === 'championship') {
-      text = generateChampionshipWhatsAppText(top3Clubs);
-    }
+    const reportLabelMap: Record<ReportType, string> = {
+      chest: 'Name List',
+      hit: 'Hit List',
+      final: 'Final List',
+      ranking: 'Ranking List',
+      club: 'Club Wise Candidate Report',
+      championship: 'Club Ranking Report',
+    };
+    const reportLabel = reportLabelMap[reportType];
 
-    if (!text.trim()) {
-      setDirectPrintStatus({ message: 'No report records available to share.', type: 'error' });
+    const fileName = buildServerReportFileName(reportType, {
+      year: currentYear,
+      extension: 'html',
+      eventNo:
+        reportType === 'hit'
+          ? selectedHitEvtNo
+          : reportType === 'final'
+          ? selectedFinalEvtNo
+          : reportType === 'ranking'
+          ? selectedRankingEvtNo
+          : undefined,
+      clubName: reportType === 'club' ? selectedClubFilter : undefined,
+    });
+    const docTitle = fileName.replace(/\.html$/i, '');
+
+    if (!targetEl) {
+      setDirectPrintStatus({ message: `Unable to locate ${reportLabel} thermal sheet for offline HTML export.`, type: 'error' });
       setTimeout(() => setDirectPrintStatus(null), 4000);
       return;
     }
 
-    const res = openWhatsAppWithText(text);
-    setDirectPrintStatus({ message: res.message, type: res.success ? 'success' : 'error' });
-    setTimeout(() => setDirectPrintStatus(null), 4000);
+    setIsSharingWhatsApp(true);
+    setDirectPrintStatus({ message: `Generating offline HTML for ${reportLabel}...`, type: 'info' });
+
+    try {
+      const htmlBlob = await receiptDomToOfflineHtmlBlob(targetEl, {
+        title: docTitle,
+        printableWidthMm: thermalConfig.printableWidth,
+      });
+      if (!htmlBlob) {
+        setDirectPrintStatus({ message: `Failed to generate offline HTML for ${reportLabel}.`, type: 'error' });
+        setTimeout(() => setDirectPrintStatus(null), 4000);
+        return;
+      }
+      const res = await shareThermalHtmlBlob(htmlBlob, fileName, docTitle);
+      if (!res.cancelled) {
+        setDirectPrintStatus({ message: res.message, type: res.success ? 'success' : 'error' });
+        setTimeout(() => setDirectPrintStatus(null), 5000);
+      } else {
+        setDirectPrintStatus(null);
+      }
+    } finally {
+      setIsSharingWhatsApp(false);
+    }
   };
 
   return (
@@ -633,7 +648,7 @@ export const Reports: React.FC<ReportsProps> = ({
       {/* ================= CONTROLS & CONFIGURATION PANEL ================= */}
       <div className="bg-white rounded-xl p-3 sm:p-3.5 border border-slate-200 shadow-xs space-y-2.5 print-hidden-element">
         
-        {/* Row 1: "Reports & Registers" Label on Left | Thermal Page Setup Button on Right (Disabled when Normal mode) */}
+        {/* Row 1: "Reports & Registers" Label */}
         <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-100">
           <div className="flex items-center gap-2 min-w-0">
             <Printer className="w-5 h-5 text-blue-600 shrink-0" />
@@ -641,53 +656,9 @@ export const Reports: React.FC<ReportsProps> = ({
               Reports &amp; Registers
             </h1>
           </div>
-
-          {/* Thermal Page Setup (Icon Only) + WhatsApp Share (Icon Only) on right side */}
-          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-            <button
-              type="button"
-              id="btn-thermal-page-setup"
-              onClick={() => setShowThermalSetup(true)}
-              className="p-2 rounded-lg border border-amber-300 bg-amber-50 hover:bg-amber-100 text-slate-900 transition-all flex items-center justify-center shrink-0 shadow-2xs active:scale-98 cursor-pointer"
-              title="Thermal Printer Setup"
-              aria-label="Thermal Printer Setup"
-            >
-              <Sliders className="w-4 h-4 text-amber-600 shrink-0" />
-            </button>
-
-            <button
-              type="button"
-              id="btn-reports-whatsapp-share"
-              disabled={isSharingWhatsApp || isFilterRequiredAndMissing}
-              onClick={handleShareWhatsApp}
-              className={`p-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white transition-all flex items-center justify-center shrink-0 shadow-2xs active:scale-98 cursor-pointer ${
-                isSharingWhatsApp ? 'opacity-60 cursor-wait' : isFilterRequiredAndMissing ? 'opacity-40 cursor-not-allowed' : ''
-              }`}
-              title={
-                isFilterRequiredAndMissing
-                  ? 'Select a club or event first before sharing'
-                  : reportType === 'chest'
-                  ? 'Share Name List Thermal Report (Offline HTML)'
-                  : reportType === 'hit'
-                  ? 'Share Hit List Thermal Report (Offline HTML)'
-                  : reportType === 'final'
-                  ? 'Share Final List Thermal Report (Offline HTML)'
-                  : reportType === 'ranking'
-                  ? 'Share Ranking List Thermal Report (Offline HTML)'
-                  : 'Share Report via WhatsApp'
-              }
-              aria-label="Share via WhatsApp"
-            >
-              {isSharingWhatsApp ? (
-                <RefreshCw className="w-4 h-4 animate-spin text-white shrink-0" />
-              ) : (
-                <WhatsAppIcon className="w-4 h-4 text-white shrink-0" />
-              )}
-            </button>
-          </div>
         </div>
 
-        {/* Row 2: Format Switcher (Normal/Thermal) on Left | "Print" and "Excel" Buttons (Icon Only) on Right */}
+        {/* Row 2: Format Switcher (Normal/Thermal) on Left | Thermal Setup, Print & WhatsApp Buttons (Icon Only) on Right */}
         <div className="flex items-center justify-between gap-2">
           {/* Format Switcher: "Normal" & "Thermal" */}
           <div className="flex items-center bg-slate-100 p-0.5 rounded-lg border border-slate-200">
@@ -720,8 +691,29 @@ export const Reports: React.FC<ReportsProps> = ({
             </button>
           </div>
 
-          {/* Action Buttons: "Print" and "Excel" (Icon Only) */}
-          <div className="flex items-center gap-1.5 sm:gap-2">
+          {/* Action Buttons: Thermal Setup (left of Print, disabled when Normal), Print, WhatsApp (right of Print) */}
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            {/* Thermal Page Setup (Icon Only, disabled when toggled to Normal) */}
+            <button
+              type="button"
+              id="btn-thermal-page-setup"
+              disabled={paperFormat !== 'thermal'}
+              onClick={() => setShowThermalSetup(true)}
+              className={`p-2 rounded-lg border transition-all flex items-center justify-center shrink-0 shadow-2xs ${
+                paperFormat === 'thermal'
+                  ? 'border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-700 active:scale-98 cursor-pointer'
+                  : 'border-slate-200 bg-slate-100 text-slate-400 opacity-45 cursor-not-allowed'
+              }`}
+              title={
+                paperFormat === 'thermal'
+                  ? 'Thermal Printer Setup'
+                  : 'Switch to Thermal mode to configure thermal page setup'
+              }
+              aria-label="Thermal Printer Setup"
+            >
+              <Sliders className="w-4 h-4 shrink-0" />
+            </button>
+
             {/* Single Print Button (Icon Only) */}
             <button
               type="button"
@@ -744,32 +736,44 @@ export const Reports: React.FC<ReportsProps> = ({
             >
               {isPrintingDirect ? (
                 <RefreshCw className="w-4 h-4 animate-spin text-slate-950" />
-              ) : paperFormat === 'thermal' ? (
-                <Printer className="w-4 h-4" />
               ) : (
                 <Printer className="w-4 h-4" />
               )}
             </button>
 
-            {/* Option: Download Database & Data as Excel (Icon Only) */}
+            {/* WhatsApp Share Button (Icon Only, right of Print) */}
             <button
               type="button"
-              id="btn-reports-download-excel"
-              onClick={() => {
-                downloadSportsMeetExcel({
-                  candidates,
-                  events,
-                  clubs,
-                  heats,
-                  results,
-                  settings,
-                });
-              }}
-              className="p-2 rounded-lg text-xs font-bold bg-emerald-700 hover:bg-emerald-600 active:scale-98 text-white flex items-center justify-center transition-all shadow-xs cursor-pointer"
-              title="Download database & data in Excel (.xlsx) format"
-              aria-label="Download Excel (.xlsx)"
+              id="btn-reports-whatsapp-share"
+              disabled={isSharingWhatsApp || isFilterRequiredAndMissing}
+              onClick={handleShareWhatsApp}
+              className={`p-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white transition-all flex items-center justify-center shrink-0 shadow-2xs active:scale-98 cursor-pointer ${
+                isSharingWhatsApp ? 'opacity-60 cursor-wait' : isFilterRequiredAndMissing ? 'opacity-40 cursor-not-allowed' : ''
+              }`}
+              title={
+                isFilterRequiredAndMissing
+                  ? 'Select a club or event first before sharing'
+                  : reportType === 'chest'
+                  ? paperFormat === 'a4'
+                    ? 'Share Name List A4 Report (PDF)'
+                    : 'Share Name List Thermal Report (Offline HTML)'
+                  : reportType === 'hit'
+                  ? 'Share Hit List Thermal Report (Offline HTML)'
+                  : reportType === 'final'
+                  ? 'Share Final List Thermal Report (Offline HTML)'
+                  : reportType === 'ranking'
+                  ? 'Share Ranking List Thermal Report (Offline HTML)'
+                  : reportType === 'club'
+                  ? 'Share Club Wise Bill Thermal Report (Offline HTML)'
+                  : 'Share Club Ranking Thermal Report (Offline HTML)'
+              }
+              aria-label="Share via WhatsApp"
             >
-              <FileSpreadsheet className="w-4 h-4 text-white" />
+              {isSharingWhatsApp ? (
+                <RefreshCw className="w-4 h-4 animate-spin text-white shrink-0" />
+              ) : (
+                <WhatsAppIcon className="w-4 h-4 text-white shrink-0" />
+              )}
             </button>
           </div>
         </div>
@@ -1110,8 +1114,8 @@ export const Reports: React.FC<ReportsProps> = ({
         </div>
       )}
 
-      {/* Offscreen Thermal sheet for Name List, Hit List, Final List & Ranking List so offline HTML share works even while Normal (A4) view is active */}
-      {(reportType === 'chest' || reportType === 'ranking' || reportType === 'hit' || reportType === 'final') && paperFormat !== 'thermal' && !isFilterRequiredAndMissing && (
+      {/* Offscreen Thermal sheet for Club Wise, Hit List, Final List, Ranking List & Club Ranking so offline HTML share works even while Normal (A4) view is active */}
+      {reportType !== 'chest' && paperFormat !== 'thermal' && !isFilterRequiredAndMissing && (
         <div
           aria-hidden="true"
           className="fixed -left-[99999px] top-0 pointer-events-none opacity-0 print:hidden"
@@ -1132,13 +1136,15 @@ export const Reports: React.FC<ReportsProps> = ({
               fontFamily: 'Arial, "Segoe UI", Helvetica, sans-serif',
             }}
           >
-            {reportType === 'chest'
-              ? renderThermalCandidateList()
+            {reportType === 'club'
+              ? renderThermalClubWise()
               : reportType === 'hit'
               ? renderThermalHitList()
               : reportType === 'final'
               ? renderThermalFinalList()
-              : renderThermalRankingSheet()}
+              : reportType === 'ranking'
+              ? renderThermalRankingSheet()
+              : renderThermalChampionship()}
           </div>
         </div>
       )}

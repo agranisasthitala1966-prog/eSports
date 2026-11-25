@@ -1410,7 +1410,7 @@ export default function App() {
       )}
 
       {/* Main Content Viewport */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-3 sm:py-4 lg:py-4">
+      <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 pt-3 sm:pt-4 pb-14 sm:pb-16 print:py-0">
         <Suspense
           fallback={
             <div className="flex flex-col items-center justify-center py-16 gap-3 text-slate-600">
@@ -1590,9 +1590,9 @@ export default function App() {
         </Suspense>
       </main>
 
-      {/* Footer with Minimal Height, Left-Aligned Club Details & Right-Aligned Direct-Call Mobile */}
-      <footer className="bg-white border-t border-slate-200 py-1.5 px-3 sm:px-4 text-xs text-slate-500 print:hidden shrink-0">
-        <div className="max-w-7xl mx-auto flex items-center justify-between gap-3">
+      {/* Fixed Footer with Balanced Compact Height, Left-Aligned Club Details & Right-Aligned Direct-Call Mobile */}
+      <footer className="fixed bottom-0 inset-x-0 z-30 bg-white border-t border-slate-200 py-1.5 sm:py-2 px-3 sm:px-4 text-xs text-slate-500 shadow-[0_-2px_8px_rgba(15,23,42,0.04)] print:hidden">
+        <div className="max-w-7xl mx-auto flex items-center justify-between gap-2.5">
           {/* Left Aligned: Registered Club Logo, Registered Club Name, and Meet Ordinal */}
           <div className="flex items-center gap-2.5 min-w-0 text-left">
             <div 
@@ -1617,7 +1617,7 @@ export default function App() {
                 draggable={false}
                 onContextMenu={(e) => e.preventDefault()}
                 onDragStart={(e) => e.preventDefault()}
-                className="w-7 h-7 sm:w-8 sm:h-8 rounded-full object-contain p-0.5 border border-slate-200 shadow-2xs shrink-0 bg-white protected-logo select-none pointer-events-none"
+                className="w-[calc(1.0625rem+12.5px)] h-[calc(1.0625rem+12.5px)] sm:w-[calc(1.21875rem+13.75px)] sm:h-[calc(1.21875rem+13.75px)] rounded-full object-contain border border-slate-200 shadow-2xs shrink-0 bg-white protected-logo select-none pointer-events-none"
                 onError={(e) => {
                   (e.target as HTMLImageElement).src = '/icon.png';
                 }}
@@ -1628,7 +1628,7 @@ export default function App() {
                 onContextMenu={(e) => e.preventDefault()} 
               />
             </div>
-            <div className="flex flex-col justify-center min-w-0 leading-tight">
+            <div className="flex flex-col justify-center min-w-0">
               <span className="text-xs sm:text-sm font-bold text-slate-900 tracking-tight truncate leading-tight">
                 {settings.registeredClubName ||
                   clubs.find((c) => c.id === 'club_1')?.name ||
@@ -1636,7 +1636,7 @@ export default function App() {
                   settings.organizer ||
                   'Agrani Sasthitala Sangha'}
               </span>
-              <span className="text-[10px] sm:text-xs font-semibold text-slate-500 truncate leading-tight">
+              <span className="text-[10px] sm:text-[11px] font-semibold text-slate-500 truncate leading-tight mt-0.5">
                 {settings.ordinalTitle || '47th Annual Sports Meet 2027'}
               </span>
             </div>
@@ -1655,7 +1655,7 @@ export default function App() {
               <a
                 href={`tel:${digitsOnly}`}
                 title={`Call ${digitsOnly}`}
-                className="shrink-0 flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-700 hover:text-emerald-800 border border-emerald-200 text-xs sm:text-sm font-mono font-bold transition-all active:scale-95 shadow-2xs"
+                className="shrink-0 flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-700 hover:text-emerald-800 border border-emerald-200 text-xs font-mono font-bold transition-all active:scale-95 shadow-2xs leading-tight"
               >
                 <Phone className="w-3.5 h-3.5 text-emerald-600 shrink-0 animate-pulse" />
                 <span className="tracking-wide">{digitsOnly}</span>

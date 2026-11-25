@@ -4,7 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getFirestore, collection, doc, getDoc, getDocs, setDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
+import { getFirestore, collection, doc, getDoc, getDocFromServer, getDocs, setDoc, deleteDoc } from 'firebase/firestore';
 import * as XLSX from 'xlsx';
 import { isExcludedClubForRanking } from './src/utils/clubRankingFilter.ts';
 import { isDirectEvent, getAdditionalEventsForCandidate, normalizeGender } from './src/utils/eventEligibilityCore.ts';
@@ -535,7 +535,7 @@ function setCloudQuotaExceeded(exceeded = true) {
 
 function handleCloudError(err: any, context: string) {
   const errMsg = err?.message || String(err);
-  const errCode = err?.code || '';
+  const errCode = String(err?.code || '').toLowerCase();
   if (
     errCode === 'resource-exhausted' ||
     errMsg.includes('Quota') ||
@@ -545,8 +545,15 @@ function handleCloudError(err: any, context: string) {
   ) {
     setCloudQuotaExceeded(true);
     console.warn(`[Firestore Quota] ${context}: Daily write quota limit reached. Pausing Cloud Firestore writes. Local DB remains primary and active.`);
+  } else if (
+    errCode === 'internal' ||
+    errCode === 'unavailable' ||
+    errCode === 'deadline-exceeded' ||
+    errMsg.includes('RST_STREAM')
+  ) {
+    console.warn(`[Firestore] ${context} transient connection notice (${errCode || 'network'}): ${errMsg}`);
   } else {
-    console.warn(`[Firestore] ${context} notice:`, err);
+    console.warn(`[Firestore] ${context} notice:`, errMsg);
   }
 }
 
@@ -703,29 +710,39 @@ async function replaceFirestoreCollection(colName: string, items: any[], getDocI
   }
 }
 
-// Pull live data from Cloud Firestore on startup (authoritative for all collections including empty ones)
+let lastFirestoreSyncAt = 0;
+let activeFirestoreSyncPromise: Promise<void> | null = null;
+
+// Pull live data from Cloud Firestore using unary RPCs (avoids long-lived Node gRPC Listen stream RST_STREAM drops)
 async function syncFromFirestore() {
   if (!cloudDb) return;
-  try {
-    const [
-      evtSnap,
-      clubSnap,
-      settingsSnap,
-      candSnap,
-      heatsSnap,
-      resSnap,
-      uploadsSnap,
-      sessionSnap,
-    ] = await Promise.all([
-      getDocs(collection(cloudDb, 'events')),
-      getDocs(collection(cloudDb, 'clubs')),
-      getDocs(collection(cloudDb, 'settings')),
-      getDocs(collection(cloudDb, 'candidates')),
-      getDocs(collection(cloudDb, 'heats')),
-      getDocs(collection(cloudDb, 'results')),
-      getDocs(collection(cloudDb, 'uploads')),
-      getDoc(doc(cloudDb, 'serverSession', 'active')).catch(() => null),
-    ]);
+  if (activeFirestoreSyncPromise) {
+    return activeFirestoreSyncPromise;
+  }
+  activeFirestoreSyncPromise = (async () => {
+    try {
+      await getDocFromServer(doc(cloudDb, 'test', 'connection')).catch(() => null);
+      const [
+        evtSnap,
+        clubSnap,
+        settingsSnap,
+        candSnap,
+        heatsSnap,
+        resSnap,
+        uploadsSnap,
+        sessionSnap,
+        lockoutSnap,
+      ] = await Promise.all([
+        getDocs(collection(cloudDb, 'events')),
+        getDocs(collection(cloudDb, 'clubs')),
+        getDocs(collection(cloudDb, 'settings')),
+        getDocs(collection(cloudDb, 'candidates')),
+        getDocs(collection(cloudDb, 'heats')),
+        getDocs(collection(cloudDb, 'results')),
+        getDocs(collection(cloudDb, 'uploads')),
+        getDoc(doc(cloudDb, 'serverSession', 'active')).catch(() => null),
+        getDoc(doc(cloudDb, 'serverSession', 'pinLockout')).catch(() => null),
+      ]);
 
     // 1. Settings
     let hasSettingsInCloud = false;
@@ -852,173 +869,38 @@ async function syncFromFirestore() {
       activeServerSession = null;
     }
 
+    // 9. PIN lockout state
+    if (lockoutSnap && lockoutSnap.exists()) {
+      const d = lockoutSnap.data() as any;
+      serverPinLockout = {
+        failedAttempts: Number(d.failedAttempts || 0),
+        lockedUntil: typeof d.lockedUntil === 'number' ? d.lockedUntil : null,
+        lastAttemptAt: d.lastAttemptAt || null,
+        lastDeviceLabel: d.lastDeviceLabel || null,
+      };
+    }
+
+    lastFirestoreSyncAt = Date.now();
     saveDBLocalOnly('all');
     console.log(
       `[eSports] Server state synchronized from Live Cloud Firestore: ${db.events.length} events, ${db.candidates.length} candidates, ${db.clubs.length} clubs, ${db.heats.length} heats, ${db.results.length} results, ${db.clientUploads.length} uploads.`
     );
-  } catch (err) {
-    handleCloudError(err, 'Initial syncFromFirestore');
-  }
+    } catch (err) {
+      handleCloudError(err, 'syncFromFirestore');
+    } finally {
+      activeFirestoreSyncPromise = null;
+    }
+  })();
+  return activeFirestoreSyncPromise;
 }
 
-// Subscribe to real-time Cloud Firestore updates in server.ts
-function setupFirestoreServerSubscriptions() {
-  if (!cloudDb) return;
-  try {
-    onSnapshot(collection(cloudDb, 'events'), (snap) => {
-      if (snap.empty) {
-        db.events = [];
-        saveDBLocalOnly('events');
-        return;
-      }
-      const itemsMap = new Map<number, any>();
-      snap.forEach((d) => {
-        const data = d.data();
-        if (data && data.Evt_No !== undefined) {
-          const evtNo = Number(data.Evt_No);
-          const isCanonical = d.id === `evt_${evtNo}`;
-          if (!itemsMap.has(evtNo) || isCanonical) {
-            itemsMap.set(evtNo, {
-              ...data,
-              Evt_No: evtNo,
-              Fees: Number(data.Fees ?? 0),
-              requiredHit: data.requiredHit !== undefined ? data.requiredHit : (evtNo === 15 ? false : true),
-              requiredFinal: data.requiredFinal !== undefined ? data.requiredFinal : true,
-            });
-          }
-        }
-      });
-      db.events = Array.from(itemsMap.values()).sort((a, b) => a.Evt_No - b.Evt_No);
-      saveDBLocalOnly('events');
-    }, (err) => handleCloudError(err, 'Server events subscription'));
-
-    onSnapshot(collection(cloudDb, 'candidates'), (snap) => {
-      const items: any[] = [];
-      const seenNames = new Set<string>();
-      const seenIds = new Set<string>();
-      snap.forEach((d) => {
-        const data = d.data();
-        if (!data) return;
-        const id = data.id || d.id;
-        if (id && seenIds.has(id)) return;
-        if (id) seenIds.add(id);
-
-        const name = (data.name || '').trim().toUpperCase();
-        const isCancelled = data.isCancelled || data.status === 'cancelled';
-        if (!isCancelled && name) {
-          if (seenNames.has(name)) return;
-          seenNames.add(name);
-        }
-        items.push({ ...data, id });
-      });
-      items.sort((a, b) => (Number(a.chestNo) || 0) - (Number(b.chestNo) || 0));
-      db.candidates = items;
-      saveDBLocalOnly('candidates');
-    }, (err) => handleCloudError(err, 'Server candidates subscription'));
-
-    onSnapshot(collection(cloudDb, 'clubs'), (snap) => {
-      const itemsMap = new Map<string, any>();
-      snap.forEach((d) => {
-        const data = d.data();
-        if (data && (data.Reg_Club || data.name)) {
-          const regName = String(data.Reg_Club || data.name).trim().toUpperCase();
-          if (!regName) return;
-          const isDummy = ['AGRANI SASTHITALA SANGHA', 'MILAN SAMITY ATHLETIC CLUB', 'TARUN SANGHA SPORTS CLUB', 'SUBHASH NAGAR YUBA PARISHAD', 'INDEPENDENT / UNATTACHED'].includes(regName) && !db.candidates.some(c => (c.club || '').trim().toUpperCase() === regName);
-          if (!isDummy) {
-            const id = String(data.id || d.id);
-            const mob = (data.Mob || data.mobile || data.phone || '').trim();
-            const existing = itemsMap.get(regName);
-            const canonicalId = makeCanonicalClubDocId(regName);
-            if (!existing) {
-              itemsMap.set(regName, {
-                id,
-                Sl: Number(data.Sl) || 1,
-                Reg_Club: regName,
-                Mob: mob,
-                Count_1stPlace: Number(data.Count_1stPlace || 0),
-                Count_2ndPlace: Number(data.Count_2ndPlace || 0),
-                Count_3rdPlace: Number(data.Count_3rdPlace || 0),
-                TotPoints: Number(data.TotPoints || 0),
-                name: regName,
-                mobile: mob,
-              });
-            } else {
-              const existingMob = (existing.Mob || existing.mobile || '').trim();
-              itemsMap.set(regName, {
-                ...existing,
-                id: id === canonicalId ? canonicalId : existing.id,
-                Mob: mob || existingMob,
-                mobile: mob || existingMob,
-                Count_1stPlace: Math.max(Number(existing.Count_1stPlace || 0), Number(data.Count_1stPlace || 0)),
-                Count_2ndPlace: Math.max(Number(existing.Count_2ndPlace || 0), Number(data.Count_2ndPlace || 0)),
-                Count_3rdPlace: Math.max(Number(existing.Count_3rdPlace || 0), Number(data.Count_3rdPlace || 0)),
-                TotPoints: Math.max(Number(existing.TotPoints || 0), Number(data.TotPoints || 0)),
-              });
-            }
-          }
-        }
-      });
-      db.clubs = Array.from(itemsMap.values());
-      saveDBLocalOnly('clubs');
-    }, (err) => handleCloudError(err, 'Server clubs subscription'));
-
-    onSnapshot(collection(cloudDb, 'heats'), (snap) => {
-      const items: any[] = [];
-      snap.forEach((d) => items.push({ id: d.id, ...d.data() }));
-      db.heats = items;
-      saveDBLocalOnly('heats');
-    }, (err) => handleCloudError(err, 'Server heats subscription'));
-
-    onSnapshot(collection(cloudDb, 'results'), (snap) => {
-      const items: any[] = [];
-      snap.forEach((d) => items.push({ id: d.id, ...d.data() }));
-      db.results = items;
-      saveDBLocalOnly('results');
-    }, (err) => handleCloudError(err, 'Server results subscription'));
-
-    onSnapshot(collection(cloudDb, 'settings'), (snap) => {
-      snap.forEach((d) => {
-        if (d.id === 'meet_settings') {
-          db.settings = { ...DEFAULT_SETTINGS, ...d.data() };
-          saveDBLocalOnly('settings');
-        }
-      });
-    }, (err) => handleCloudError(err, 'Server settings subscription'));
-
-    onSnapshot(collection(cloudDb, 'uploads'), (snap) => {
-      const items: any[] = [];
-      snap.forEach((d) => items.push({ ...d.data(), id: d.id }));
-      db.clientUploads = items;
-      saveDBLocalOnly('clientUploads');
-    }, (err) => handleCloudError(err, 'Server uploads subscription'));
-
-    onSnapshot(doc(cloudDb, 'serverSession', 'active'), (snap) => {
-      if (snap.exists()) {
-        activeServerSession = snap.data() as ServerSession;
-      } else {
-        activeServerSession = null;
-      }
-    }, (err) => handleCloudError(err, 'Server active session subscription'));
-
-    onSnapshot(doc(cloudDb, 'serverSession', 'pinLockout'), (snap) => {
-      if (snap.exists()) {
-        const d = snap.data() as any;
-        serverPinLockout = {
-          failedAttempts: Number(d.failedAttempts || 0),
-          lockedUntil: typeof d.lockedUntil === 'number' ? d.lockedUntil : null,
-          lastAttemptAt: d.lastAttemptAt || null,
-          lastDeviceLabel: d.lastDeviceLabel || null,
-        };
-      }
-    }, (err) => handleCloudError(err, 'Server pinLockout subscription'));
-  } catch (err) {
-    handleCloudError(err, 'setupFirestoreServerSubscriptions');
-  }
+async function ensureFreshFirestoreSync(maxAgeMs = 120_000) {
+  if (!cloudDb || isCloudQuotaExceeded) return;
+  if (Date.now() - lastFirestoreSyncAt < maxAgeMs) return;
+  await syncFromFirestore();
 }
 
-const firestoreSyncReady = syncFromFirestore().then(() => {
-  setupFirestoreServerSubscriptions();
-});
+const firestoreSyncReady = syncFromFirestore();
 
 // ----------------------------------------------------
 // API ROUTES
@@ -1074,7 +956,8 @@ app.get('/api/app-version', (_req: Request, res: Response) => {
 });
 
 // Single consolidated bootstrap endpoint to eliminate multi-request overhead and prevent rate limit issues
-app.get('/api/bootstrap', (req: Request, res: Response) => {
+app.get('/api/bootstrap', async (req: Request, res: Response) => {
+  await ensureFreshFirestoreSync().catch(() => {});
   const currentActive = getValidActiveSession();
   res.json({
     events: db.events,
@@ -2919,7 +2802,8 @@ app.delete('/api/db/raw/:table/:id', (req: Request, res: Response) => {
 });
 
 // DB Backup (Export JSON)
-app.get('/api/db/export', (req: Request, res: Response) => {
+app.get('/api/db/export', async (req: Request, res: Response) => {
+  await ensureFreshFirestoreSync(30_000).catch(() => {});
   const dump = {
     ...db,
     clubs: (db.clubs || []).map((c: any) => ({
@@ -2937,8 +2821,9 @@ app.get('/api/db/export', (req: Request, res: Response) => {
 });
 
 // DB Export (.xlsx) - Two sheets: 'General Entry' and 'Event Allocation'
-app.get(['/api/db/export-excel', '/api/db/export-xlsx'], (req: Request, res: Response) => {
+app.get(['/api/db/export-excel', '/api/db/export-xlsx'], async (req: Request, res: Response) => {
   try {
+    await ensureFreshFirestoreSync(30_000).catch(() => {});
     const currencySymbol = db.settings?.currencySymbol || '₹';
 
     // 1. Sheet: General Entry
