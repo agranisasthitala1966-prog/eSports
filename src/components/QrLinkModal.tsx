@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { QrCode, X, Copy, Check, ExternalLink } from 'lucide-react';
 
 interface QrLinkModalProps {
@@ -7,17 +7,94 @@ interface QrLinkModalProps {
   mode?: 'client' | 'server';
 }
 
+async function copyTextReliably(
+  text: string,
+  inputEl?: HTMLInputElement | null,
+): Promise<boolean> {
+  // 1. Modern Clipboard API (may reject inside sandboxed iframes without clipboard-write permission)
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // Fall through to execCommand fallback
+    }
+  }
+
+  // 2. Fallback via offscreen textarea + document.execCommand('copy')
+  if (typeof document !== 'undefined') {
+    let textarea: HTMLTextAreaElement | null = null;
+    try {
+      textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.setAttribute('readonly', '');
+      textarea.style.position = 'fixed';
+      textarea.style.top = '0';
+      textarea.style.left = '0';
+      textarea.style.width = '2em';
+      textarea.style.height = '2em';
+      textarea.style.padding = '0';
+      textarea.style.border = 'none';
+      textarea.style.outline = 'none';
+      textarea.style.boxShadow = 'none';
+      textarea.style.background = 'transparent';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.focus({ preventScroll: true });
+      textarea.select();
+      textarea.setSelectionRange(0, text.length);
+      const copied = document.execCommand('copy');
+      if (copied) return true;
+    } catch {
+      // Fall through to input selection fallback
+    } finally {
+      if (textarea && textarea.parentNode) {
+        textarea.parentNode.removeChild(textarea);
+      }
+    }
+
+    // 3. Fallback directly on the visible readonly URL input
+    if (inputEl) {
+      try {
+        inputEl.focus({ preventScroll: true });
+        inputEl.select();
+        inputEl.setSelectionRange(0, text.length);
+        if (document.execCommand('copy')) {
+          return true;
+        }
+      } catch {
+        // Ignore
+      }
+    }
+  }
+
+  return false;
+}
+
 export const QrLinkModal: React.FC<QrLinkModalProps> = ({ isOpen, onClose, mode = 'server' }) => {
   const [qrTargetMode, setQrTargetMode] = useState<'desktop' | 'shared'>('shared');
   const [copiedLink, setCopiedLink] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
+  const [popupBlockedNotice, setPopupBlockedNotice] = useState(false);
+  const urlInputRef = useRef<HTMLInputElement>(null);
+  const popupCheckTimerRef = useRef<number | null>(null);
 
   const isClientOnly = mode === 'client';
 
-  // Reset target mode when opened
-  React.useEffect(() => {
+  // Reset modal transient states when opened or closed
+  useEffect(() => {
     if (isOpen) {
       setQrTargetMode('shared');
+      setCopiedLink(false);
+      setCopyFailed(false);
+      setPopupBlockedNotice(false);
     }
+    return () => {
+      if (popupCheckTimerRef.current !== null) {
+        window.clearTimeout(popupCheckTimerRef.current);
+        popupCheckTimerRef.current = null;
+      }
+    };
   }, [isOpen]);
 
   const clientClubName = typeof window !== 'undefined' 
@@ -27,7 +104,6 @@ export const QrLinkModal: React.FC<QrLinkModalProps> = ({ isOpen, onClose, mode 
   const appUrl = useMemo(() => {
     if (typeof window === 'undefined') return '/?mode=client';
     const origin = window.location.origin || '';
-    const pathname = window.location.pathname || '/';
 
     const sharedOrigin = origin.includes('ais-dev-')
       ? origin.replace('ais-dev-', 'ais-pre-')
@@ -37,18 +113,71 @@ export const QrLinkModal: React.FC<QrLinkModalProps> = ({ isOpen, onClose, mode 
 
     // For client enroll page QR code, strictly link to client mode
     if (isClientOnly || qrTargetMode === 'shared') {
-      return `${sharedOrigin}${pathname}?mode=client`;
+      return `${sharedOrigin}/?mode=client`;
     }
 
-    return `${origin}${pathname}?mode=server`;
+    return `${origin}/?mode=server`;
   }, [qrTargetMode, isClientOnly]);
 
-  const handleCopyLink = () => {
-    if (navigator.clipboard) {
-      navigator.clipboard.writeText(appUrl);
+  const handleCopyLink = async () => {
+    const ok = await copyTextReliably(appUrl, urlInputRef.current);
+    if (ok) {
+      setCopyFailed(false);
       setCopiedLink(true);
-      setTimeout(() => setCopiedLink(false), 2000);
+      window.setTimeout(() => setCopiedLink(false), 2200);
+    } else {
+      setCopiedLink(false);
+      setCopyFailed(true);
+      if (urlInputRef.current) {
+        urlInputRef.current.focus();
+        urlInputRef.current.select();
+        urlInputRef.current.setSelectionRange(0, appUrl.length);
+      }
+      window.setTimeout(() => setCopyFailed(false), 3500);
     }
+  };
+
+  const handleOpenLinkClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
+    if (typeof window === 'undefined') return;
+
+    const isStandalonePwa =
+      window.matchMedia?.('(display-mode: standalone)').matches ||
+      (window.navigator as any).standalone === true;
+    const ua = window.navigator?.userAgent || '';
+    const isEmbeddedWebView = /;\s*wv\)|FBAN|FBAV|Instagram|Line\/|MicroMessenger/i.test(ua);
+    const isInIframe = window.self !== window.top;
+
+    // Standalone PWAs and embedded mobile WebViews often drop target="_blank"
+    if (!isInIframe && (isStandalonePwa || isEmbeddedWebView)) {
+      e.preventDefault();
+      onClose();
+      window.location.assign(appUrl);
+      return;
+    }
+
+    // Inside an iframe (or desktop browser with popup blocker), detect if new tab stayed blocked
+    if (popupCheckTimerRef.current !== null) {
+      window.clearTimeout(popupCheckTimerRef.current);
+    }
+    const handleWindowBlur = () => {
+      if (popupCheckTimerRef.current !== null) {
+        window.clearTimeout(popupCheckTimerRef.current);
+        popupCheckTimerRef.current = null;
+      }
+      window.removeEventListener('blur', handleWindowBlur);
+    };
+    window.addEventListener('blur', handleWindowBlur, { once: true });
+
+    popupCheckTimerRef.current = window.setTimeout(async () => {
+      window.removeEventListener('blur', handleWindowBlur);
+      popupCheckTimerRef.current = null;
+      if (document.visibilityState === 'visible' && document.hasFocus()) {
+        await copyTextReliably(appUrl, urlInputRef.current);
+        setPopupBlockedNotice(true);
+        setCopiedLink(true);
+        window.setTimeout(() => setCopiedLink(false), 2500);
+      }
+    }, 450);
   };
 
   if (!isOpen) return null;
@@ -73,6 +202,7 @@ export const QrLinkModal: React.FC<QrLinkModalProps> = ({ isOpen, onClose, mode 
             </div>
           </div>
           <button
+            type="button"
             onClick={onClose}
             className="p-1 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 cursor-pointer"
           >
@@ -85,7 +215,10 @@ export const QrLinkModal: React.FC<QrLinkModalProps> = ({ isOpen, onClose, mode 
           <div className="grid grid-cols-2 gap-1 p-1 bg-[#070b15] rounded-xl border border-slate-800 mb-3 text-xs font-bold">
             <button
               type="button"
-              onClick={() => setQrTargetMode('shared')}
+              onClick={() => {
+                setQrTargetMode('shared');
+                setPopupBlockedNotice(false);
+              }}
               className={`py-1.5 px-2 rounded-lg transition-all cursor-pointer text-center truncate ${
                 qrTargetMode === 'shared'
                   ? 'bg-emerald-400 text-slate-950 shadow'
@@ -97,7 +230,10 @@ export const QrLinkModal: React.FC<QrLinkModalProps> = ({ isOpen, onClose, mode 
             </button>
             <button
               type="button"
-              onClick={() => setQrTargetMode('desktop')}
+              onClick={() => {
+                setQrTargetMode('desktop');
+                setPopupBlockedNotice(false);
+              }}
               className={`py-1.5 px-2 rounded-lg transition-all cursor-pointer text-center truncate ${
                 qrTargetMode === 'desktop'
                   ? 'bg-blue-600 text-white shadow'
@@ -140,10 +276,17 @@ export const QrLinkModal: React.FC<QrLinkModalProps> = ({ isOpen, onClose, mode 
           {/* URL Box + Copy Button */}
           <div className="w-full flex items-center gap-2 bg-[#0b1326] p-2 rounded-xl border border-slate-800">
             <input
+              ref={urlInputRef}
               type="text"
               readOnly
               value={appUrl}
-              className="bg-transparent text-xs font-mono text-slate-300 w-full focus:outline-hidden px-2 truncate select-all"
+              onClick={(e) => {
+                const input = e.currentTarget;
+                input.select();
+                input.setSelectionRange(0, appUrl.length);
+              }}
+              aria-label="Portal Link URL"
+              className="bg-transparent text-xs font-mono text-slate-300 w-full focus:outline-hidden px-2 overflow-x-auto select-all"
             />
             <button
               type="button"
@@ -155,6 +298,11 @@ export const QrLinkModal: React.FC<QrLinkModalProps> = ({ isOpen, onClose, mode 
                   <Check className="w-3.5 h-3.5 text-slate-950" />
                   <span>Copied!</span>
                 </>
+              ) : copyFailed ? (
+                <>
+                  <Copy className="w-3.5 h-3.5 text-slate-950" />
+                  <span>Ctrl+C</span>
+                </>
               ) : (
                 <>
                   <Copy className="w-3.5 h-3.5 text-slate-950" />
@@ -164,11 +312,30 @@ export const QrLinkModal: React.FC<QrLinkModalProps> = ({ isOpen, onClose, mode 
             </button>
           </div>
 
+          {popupBlockedNotice && (
+            <div className="w-full px-3 py-2 rounded-xl bg-amber-500/15 border border-amber-400/40 text-amber-200 text-[11px] flex items-center justify-between gap-2 text-left">
+              <span>
+                New tab blocked by preview frame — link copied! Paste in a browser tab or open here.
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  window.location.assign(appUrl);
+                }}
+                className="shrink-0 px-2.5 py-1 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold cursor-pointer"
+              >
+                Open Here
+              </button>
+            </div>
+          )}
+
           <div className="w-full grid grid-cols-2 gap-2 pt-1">
             <a
               href={appUrl}
               target="_blank"
-              rel="noopener noreferrer"
+              rel="noopener"
+              onClick={handleOpenLinkClick}
               className="py-2.5 px-3 rounded-xl bg-emerald-700 hover:bg-emerald-600 text-white font-bold text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
             >
               <ExternalLink className="w-3.5 h-3.5" />
