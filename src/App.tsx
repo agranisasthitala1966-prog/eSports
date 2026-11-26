@@ -24,23 +24,86 @@ import {
 } from './utils/heightRules';
 import { INITIAL_EVENTS, INITIAL_CLUBS, INITIAL_SETTINGS } from './constants/initialData';
 
-// Immediate critical Client Portal views
+// Immediate critical Client Portal & Auth views
 import { Navbar } from './components/Navbar';
 import { CandidateEnroll } from './components/CandidateEnroll';
+import { PinLoginModal } from './components/PinLoginModal';
 import { Phone } from 'lucide-react';
 
+function lazyWithRetry<T extends React.ComponentType<any>>(
+  factory: () => Promise<{ default: T }>,
+) {
+  return lazy(async () => {
+    try {
+      return await factory();
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      try {
+        return await factory();
+      } catch (err) {
+        throw err;
+      }
+    }
+  });
+}
+
+class LazyErrorBoundary extends React.Component<
+  { children: React.ReactNode; onReset?: () => void },
+  { hasError: boolean }
+> {
+  constructor(props: { children: React.ReactNode; onReset?: () => void }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="flex flex-col items-center justify-center py-12 px-4 text-center gap-3">
+          <p className="text-sm font-bold text-slate-700">
+            View failed to load due to a temporary connection issue.
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                this.setState({ hasError: false });
+                this.props.onReset?.();
+              }}
+              className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold cursor-pointer"
+            >
+              Retry
+            </button>
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="px-4 py-2 rounded-xl bg-slate-200 hover:bg-slate-300 text-slate-800 text-xs font-bold cursor-pointer"
+            >
+              Reload Page
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 // Lazy-loaded secondary tabs, server views, and modals for ultra-fast mobile first paint
-const CandidateList = lazy(() => import('./components/CandidateList').then((m) => ({ default: m.CandidateList })));
-const EventMaster = lazy(() => import('./components/EventMaster').then((m) => ({ default: m.EventMaster })));
-const HitList = lazy(() => import('./components/HitList').then((m) => ({ default: m.HitList })));
-const RankingList = lazy(() => import('./components/RankingList').then((m) => ({ default: m.RankingList })));
-const Reports = lazy(() => import('./components/Reports').then((m) => ({ default: m.Reports })));
-const AdminPanel = lazy(() => import('./components/AdminPanel').then((m) => ({ default: m.AdminPanel })));
-const DbExplorer = lazy(() => import('./components/DbExplorer').then((m) => ({ default: m.DbExplorer })));
-const ClubUploadsReview = lazy(() => import('./components/ClubUploadsReview').then((m) => ({ default: m.ClubUploadsReview })));
-const PinLoginModal = lazy(() => import('./components/PinLoginModal').then((m) => ({ default: m.PinLoginModal })));
-const ResetPinModal = lazy(() => import('./components/ResetPinModal').then((m) => ({ default: m.ResetPinModal })));
-const ThermalPageSetupModal = lazy(() => import('./components/ThermalPageSetupModal').then((m) => ({ default: m.ThermalPageSetupModal })));
+const CandidateList = lazyWithRetry(() => import('./components/CandidateList').then((m) => ({ default: m.CandidateList })));
+const EventMaster = lazyWithRetry(() => import('./components/EventMaster').then((m) => ({ default: m.EventMaster })));
+const HitList = lazyWithRetry(() => import('./components/HitList').then((m) => ({ default: m.HitList })));
+const RankingList = lazyWithRetry(() => import('./components/RankingList').then((m) => ({ default: m.RankingList })));
+const Reports = lazyWithRetry(() => import('./components/Reports').then((m) => ({ default: m.Reports })));
+const AdminPanel = lazyWithRetry(() => import('./components/AdminPanel').then((m) => ({ default: m.AdminPanel })));
+const DbExplorer = lazyWithRetry(() => import('./components/DbExplorer').then((m) => ({ default: m.DbExplorer })));
+const ClubUploadsReview = lazyWithRetry(() => import('./components/ClubUploadsReview').then((m) => ({ default: m.ClubUploadsReview })));
+const ResetPinModal = lazyWithRetry(() => import('./components/ResetPinModal').then((m) => ({ default: m.ResetPinModal })));
+const ThermalPageSetupModal = lazyWithRetry(() => import('./components/ThermalPageSetupModal').then((m) => ({ default: m.ThermalPageSetupModal })));
 
 function sanitizeUniqueCandidates(list: Candidate[]): Candidate[] {
   if (!Array.isArray(list)) return [];
@@ -1415,6 +1478,7 @@ export default function App() {
 
       {/* Main Content Viewport */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 pt-3 sm:pt-4 pb-14 sm:pb-16 print:py-0">
+        <LazyErrorBoundary key={activeTab}>
         <Suspense
           fallback={
             <div className="flex flex-col items-center justify-center py-16 gap-3 text-slate-600">
@@ -1594,6 +1658,7 @@ export default function App() {
           />
         )}
         </Suspense>
+        </LazyErrorBoundary>
       </main>
 
       {/* Fixed Footer with Balanced Compact Height, Left-Aligned Club Details & Right-Aligned Direct-Call Mobile */}
@@ -1671,23 +1736,24 @@ export default function App() {
         </div>
       </footer>
 
-      {/* Lazy-Loaded Modals */}
-      <Suspense fallback={null}>
-        {showPinModal && (
-          <PinLoginModal
-            isOpen={showPinModal}
-            onSuccess={handlePinSuccess}
-            onCancel={() => {
-              setShowPinModal(false);
-              setMode('client');
-              setActiveTab('enroll');
-              if (!isServerAuthenticated) {
-                updateUrlMode('client');
-              }
-            }}
-          />
-        )}
+      {/* Pin Login Modal (eagerly imported) & Lazy-Loaded Modals */}
+      {showPinModal && (
+        <PinLoginModal
+          isOpen={showPinModal}
+          onSuccess={handlePinSuccess}
+          onCancel={() => {
+            setShowPinModal(false);
+            setMode('client');
+            setActiveTab('enroll');
+            if (!isServerAuthenticated) {
+              updateUrlMode('client');
+            }
+          }}
+        />
+      )}
 
+      <LazyErrorBoundary>
+      <Suspense fallback={null}>
         {showResetPinModal && (
           <ResetPinModal
             isOpen={showResetPinModal}
@@ -1707,6 +1773,7 @@ export default function App() {
           />
         )}
       </Suspense>
+      </LazyErrorBoundary>
     </div>
   );
 }
