@@ -1,8 +1,7 @@
 // eSports Lightweight Service Worker for Reliable Updates & Fast Asset Caching
-const CACHE_NAME = 'esports-shell-v3';
+const CACHE_NAME = 'esports-shell-__ESPORTS_SW_VERSION__';
 const PRECACHE_URLS = [
-  '/icon.png',
-  '/manifest.json'
+  '/icon.png'
 ];
 
 self.addEventListener('install', (event) => {
@@ -10,6 +9,12 @@ self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => cache.addAll(PRECACHE_URLS)).catch(() => {})
   );
+});
+
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
 });
 
 self.addEventListener('activate', (event) => {
@@ -32,7 +37,7 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(event.request.url);
 
-  // Never intercept cross-origin requests, API routes, SSE streams, or Vite dev modules/queries
+  // Never intercept cross-origin requests, API routes, SSE streams, manifest, sw.js, or Vite dev modules/queries
   if (
     url.origin !== self.location.origin ||
     url.pathname.startsWith('/api') ||
@@ -41,10 +46,12 @@ self.addEventListener('fetch', (event) => {
     url.pathname.startsWith('/src') ||
     url.pathname.includes('node_modules') ||
     url.pathname === '/sw.js' ||
+    url.pathname === '/manifest.json' ||
     url.searchParams.has('t') ||
     url.searchParams.has('v') ||
     url.searchParams.has('import') ||
-    url.searchParams.has('direct')
+    url.searchParams.has('direct') ||
+    url.searchParams.has('_sw_bust')
   ) {
     return;
   }
@@ -58,14 +65,14 @@ self.addEventListener('fetch', (event) => {
     accept.includes('text/html')
   ) {
     event.respondWith(
-      fetch(event.request, { cache: 'no-store' })
+      fetch(event.request.url, { cache: 'no-store', credentials: 'same-origin' })
         .then((networkResponse) => {
           const contentType = networkResponse.headers.get('content-type') || '';
           if (networkResponse.ok && contentType.includes('text/html')) {
             const copy = networkResponse.clone();
             const copyRoot = networkResponse.clone();
             caches.open(CACHE_NAME).then((cache) => {
-              cache.put(event.request, copy).catch(() => {});
+              cache.put(event.request.url, copy).catch(() => {});
               if (url.pathname === '/') {
                 cache.put('/', copyRoot).catch(() => {});
               }
@@ -73,7 +80,7 @@ self.addEventListener('fetch', (event) => {
           }
           return networkResponse;
         })
-        .catch(() => caches.match(event.request).then((m) => m || caches.match('/')))
+        .catch(() => caches.match(event.request.url).then((m) => m || caches.match('/')))
     );
     return;
   }
@@ -102,17 +109,17 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Other static files (manifest, icons, unhashed assets): Network-First so updates appear immediately on mobile & desktop
+  // Other static files (icons, unhashed assets): Network-First so updates appear immediately on mobile & desktop
   event.respondWith(
-    fetch(event.request, { cache: 'no-cache' })
+    fetch(event.request.url, { cache: 'no-cache', credentials: 'same-origin' })
       .then((networkResponse) => {
         const contentType = networkResponse.headers.get('content-type') || '';
         if (networkResponse.ok && networkResponse.type === 'basic' && !contentType.includes('text/html')) {
           const copy = networkResponse.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy)).catch(() => {});
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request.url, copy)).catch(() => {});
         }
         return networkResponse;
       })
-      .catch(() => caches.match(event.request))
+      .catch(() => caches.match(event.request.url))
   );
 });

@@ -95,6 +95,7 @@ export default function App() {
       return [];
     }
   });
+  const [serverCandidates, setServerCandidates] = useState<Candidate[]>([]);
   const [events, setEvents] = useState<SportEvent[]>(() => {
     const cached = clientStorage.getEventsCache();
     return cached && cached.length > 0 ? cached : INITIAL_EVENTS;
@@ -229,6 +230,7 @@ export default function App() {
       setSettings(srvSettings);
       setHeats(srvHeats);
       setResults(srvResults);
+      setServerCandidates(sanitizeUniqueCandidates(srvCandidates || []));
       if (uploadsLoaded) {
         setUploads(srvUploads);
       }
@@ -466,8 +468,10 @@ export default function App() {
 
       // 2. Official Candidates subscription
       unsubs.push(firestoreSync.subscribeCandidates((cloudCandidates) => {
+        const cleanCloud = sanitizeUniqueCandidates(cloudCandidates);
+        setServerCandidates(cleanCloud);
         if (mode === 'server') {
-          setCandidates(sanitizeUniqueCandidates(cloudCandidates));
+          setCandidates(cleanCloud);
         } else {
           const localCandidates = clientStorage.getCandidates();
           if (cloudCandidates.length > 0) {
@@ -1449,6 +1453,7 @@ export default function App() {
             onCancelEdit={() => setCandidateToEdit(null)}
             suggestedChestNo={suggestedChestNo}
             candidates={candidates}
+            serverCandidates={serverCandidates}
             heats={heats}
             results={results}
             onNavigateToCandidates={() => setActiveTab('candidates')}
@@ -1458,6 +1463,7 @@ export default function App() {
             onDeleteCandidate={handleDeleteCandidate}
             onCancelChest={handleCancelCandidateChest}
             onSaveClub={handleSaveClub}
+            onRefreshLiveStatus={() => loadData(true)}
           />
         )}
 

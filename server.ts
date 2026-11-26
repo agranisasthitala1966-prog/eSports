@@ -4,7 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getFirestore, collection, doc, getDoc, getDocFromServer, getDocs, setDoc, deleteDoc } from 'firebase/firestore';
+import { getFirestore, initializeFirestore, collection, doc, getDoc, getDocFromServer, getDocs, setDoc, deleteDoc } from 'firebase/firestore';
 import * as XLSX from 'xlsx';
 import { isExcludedClubForRanking } from './src/utils/clubRankingFilter.ts';
 import { isDirectEvent, getAdditionalEventsForCandidate, normalizeGender } from './src/utils/eventEligibilityCore.ts';
@@ -38,21 +38,28 @@ app.use((req, res, next) => {
 
 app.use(express.json({ limit: '20mb' }));
 app.use(express.urlencoded({ extended: true, limit: '20mb' }));
+
+function applyNoStoreHeaders(res: Response) {
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate, proxy-revalidate');
+  res.setHeader('CDN-Cache-Control', 'no-store');
+  res.setHeader('Surrogate-Control', 'no-store');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+}
+
+app.get('/sw.js', (req: Request, res: Response) => sendDynamicServiceWorker(req, res));
+
 app.use(express.static(path.join(process.cwd(), 'public'), {
   setHeaders: (res, filePath) => {
     if (filePath.endsWith('sw.js') || filePath.endsWith('manifest.json')) {
-      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-      res.setHeader('Pragma', 'no-cache');
-      res.setHeader('Expires', '0');
+      applyNoStoreHeaders(res);
     }
   },
 }));
 
 // Never cache API responses across devices (ensures desktop/mobile always receive latest data)
 app.use('/api', (req, res, next) => {
-  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-  res.setHeader('Pragma', 'no-cache');
-  res.setHeader('Expires', '0');
+  applyNoStoreHeaders(res);
   next();
 });
 
@@ -652,7 +659,16 @@ try {
   if (fs.existsSync(firebaseConfigPath)) {
     const firebaseConfig = JSON.parse(fs.readFileSync(firebaseConfigPath, 'utf8'));
     const firebaseApp = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
-    cloudDb = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId || '(default)');
+    const firestoreDbId = firebaseConfig.firestoreDatabaseId || '(default)';
+    try {
+      cloudDb = initializeFirestore(
+        firebaseApp,
+        { experimentalAutoDetectLongPolling: true },
+        firestoreDbId
+      );
+    } catch {
+      cloudDb = getFirestore(firebaseApp, firestoreDbId);
+    }
     console.log('[eSports] Connected to Cloud Firestore database:', firebaseConfig.firestoreDatabaseId);
   }
 } catch (err) {
@@ -920,16 +936,43 @@ app.get(['/health', '/api/health'], (req: Request, res: Response) => {
 let cachedAppVersionValue = '';
 let cachedAppVersionAt = 0;
 
+function isProductionRuntime(): boolean {
+  const distIndexPath = path.join(process.cwd(), 'dist', 'index.html');
+  const hasDist = fs.existsSync(distIndexPath);
+  const isDev = process.env.npm_lifecycle_event === 'dev' || (!hasDist && process.env.NODE_ENV !== 'production');
+  return !isDev;
+}
+
 function getAppVersion(): string {
   const now = Date.now();
-  if (cachedAppVersionValue && now - cachedAppVersionAt < 3000) {
+  if (cachedAppVersionValue && now - cachedAppVersionAt < 1000) {
     return cachedAppVersionValue;
   }
+
+  if (isProductionRuntime()) {
+    const versionFile = path.join(process.cwd(), 'dist', 'app-version.json');
+    try {
+      if (fs.existsSync(versionFile)) {
+        const parsed = JSON.parse(fs.readFileSync(versionFile, 'utf8'));
+        if (parsed?.version) {
+          cachedAppVersionValue = String(parsed.version);
+          cachedAppVersionAt = now;
+          return cachedAppVersionValue;
+        }
+      }
+    } catch {}
+    try {
+      const st = fs.statSync(path.join(process.cwd(), 'dist', 'index.html'));
+      cachedAppVersionValue = `build-${Math.round(st.mtimeMs)}`;
+      cachedAppVersionAt = now;
+      return cachedAppVersionValue;
+    } catch {}
+  }
+
   const targets = [
     path.join(process.cwd(), 'index.html'),
     path.join(process.cwd(), 'public', 'sw.js'),
     path.join(process.cwd(), 'public', 'manifest.json'),
-    path.join(process.cwd(), 'dist', 'index.html'),
     path.join(process.cwd(), 'src'),
   ];
   let maxMtime = 0;
@@ -946,12 +989,27 @@ function getAppVersion(): string {
     } catch {}
   };
   targets.forEach(scan);
-  cachedAppVersionValue = String(Math.round(maxMtime) || now);
+  cachedAppVersionValue = `dev-${Math.round(maxMtime) || now}`;
   cachedAppVersionAt = now;
   return cachedAppVersionValue;
 }
 
+function sendDynamicServiceWorker(_req: Request, res: Response) {
+  applyNoStoreHeaders(res);
+  res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+  res.setHeader('Service-Worker-Allowed', '/');
+  try {
+    const swPath = path.join(process.cwd(), 'public', 'sw.js');
+    const raw = fs.readFileSync(swPath, 'utf8');
+    const dynamicSw = raw.replace(/__ESPORTS_SW_VERSION__/g, getAppVersion());
+    res.send(dynamicSw);
+  } catch {
+    res.status(404).type('text/plain').send('Service worker not found');
+  }
+}
+
 app.get('/api/app-version', (_req: Request, res: Response) => {
+  applyNoStoreHeaders(res);
   res.json({ version: getAppVersion() });
 });
 
@@ -3589,41 +3647,29 @@ app.post('/api/db/factory-reset', async (req: Request, res: Response) => {
 // VITE OR STATIC SERVING
 // ----------------------------------------------------
 async function startServer() {
-  // Ensure initial sync from Live Cloud Firestore completes before accepting HTTP requests
-  try {
-    await Promise.race([
-      firestoreSyncReady,
-      new Promise((resolve) => setTimeout(resolve, 4000)),
-    ]);
-  } catch (e) {
-    console.warn('[eSports] Startup Firestore sync race notice:', e);
-  }
+  // Initial Firestore sync runs in the background (and is awaited on-demand by /api/bootstrap)
+  // so the HTTP server and Vite middleware bind port 3000 immediately.
+  firestoreSyncReady.catch((e) => {
+    console.warn('[eSports] Background startup Firestore sync notice:', e);
+  });
   const distPath = path.join(process.cwd(), 'dist');
-  const hasDist = fs.existsSync(path.join(distPath, 'index.html'));
-
-  // In AI Studio dev environment: 'npm run dev' is executed (process.env.npm_lifecycle_event === 'dev')
-  // In AI Studio production deployment: 'npm start' runs 'node server.ts' and dist exists.
-  const isDev = process.env.npm_lifecycle_event === 'dev' || (!hasDist && process.env.NODE_ENV !== 'production');
-  const isProduction = !isDev;
+  const isProduction = isProductionRuntime();
 
   if (isProduction) {
     console.log('[eSports] Production mode: Serving static build from dist');
-    app.get('/sw.js', (_req: Request, res: Response) => {
-      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-      res.setHeader('Pragma', 'no-cache');
-      res.setHeader('Expires', '0');
-      res.sendFile(path.join(process.cwd(), 'public', 'sw.js'));
-    });
     app.use('/assets', express.static(path.join(distPath, 'assets'), {
       maxAge: '365d',
       immutable: true,
     }));
     app.use(express.static(distPath, {
       setHeaders: (res, filePath) => {
-        if (filePath.endsWith('index.html') || filePath.endsWith('sw.js') || filePath.endsWith('manifest.json')) {
-          res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-          res.setHeader('Pragma', 'no-cache');
-          res.setHeader('Expires', '0');
+        if (
+          filePath.endsWith('index.html') ||
+          filePath.endsWith('sw.js') ||
+          filePath.endsWith('manifest.json') ||
+          filePath.endsWith('app-version.json')
+        ) {
+          applyNoStoreHeaders(res);
         }
       },
     }));
@@ -3635,18 +3681,22 @@ async function startServer() {
       if (req.path.startsWith('/assets/') || /\.[a-zA-Z0-9]{1,8}$/.test(req.path)) {
         return res.status(404).type('text/plain').send('Asset not found');
       }
-      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-      res.setHeader('Pragma', 'no-cache');
-      res.setHeader('Expires', '0');
-      res.sendFile(path.join(distPath, 'index.html'));
+      applyNoStoreHeaders(res);
+      res.sendFile(path.join(distPath, 'index.html'), { cacheControl: false });
     });
   } else {
     console.log('[eSports] Development mode: Starting Vite dev server middleware');
     app.use((req: Request, res: Response, next) => {
-      if (req.path === '/' || req.path === '/index.html' || req.path === '/sw.js' || req.path === '/manifest.json') {
-        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-        res.setHeader('Pragma', 'no-cache');
-        res.setHeader('Expires', '0');
+      if (
+        req.path === '/' ||
+        req.path === '/index.html' ||
+        req.path === '/sw.js' ||
+        req.path === '/manifest.json' ||
+        req.path.startsWith('/src/') ||
+        req.path.startsWith('/@') ||
+        (req.headers.accept && req.headers.accept.includes('text/html'))
+      ) {
+        applyNoStoreHeaders(res);
       }
       next();
     });

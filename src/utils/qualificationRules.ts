@@ -327,44 +327,35 @@ export function buildLiveMeetTicker(
   const items: LiveMeetTickerItem[] = [];
   const isEchoEnabled = settings?.clientResponseEnabled !== false;
 
-  if (isBeforeMeetStartDate(settings?.dates) && settings?.ordinalTitle?.trim()) {
-    items.push({ key: 'ordinal', text: settings.ordinalTitle.trim(), isAlert: false });
-  }
-
-  if (!isEchoEnabled) {
-    items.push({ key: 'echo', text: 'নাম নেওয়া বন্ধ', isAlert: true });
-  } else {
+  if (isEchoEnabled) {
+    const meetTitle = settings?.ordinalTitle?.trim() || '55th Annual Sports 2027';
+    items.push({ key: 'ordinal', text: meetTitle, isAlert: false });
     items.push({ key: 'echo', text: 'নাম নেওয়া চলছে...', isAlert: false });
-    items.push({
-      key: 'helpline',
-      text: 'App Helpline: 9830780772',
-      isAlert: false,
-      prefix: 'App Helpline: ',
-      phoneDigits: '9830780772',
-    });
-  }
+  } else {
+    items.push({ key: 'echo', text: 'নাম নেওয়া বন্ধ', isAlert: true });
 
-  const sortedEvents = [...events].sort((a, b) => Number(a.Evt_No) - Number(b.Evt_No));
+    const sortedEvents = [...events].sort((a, b) => Number(a.Evt_No) - Number(b.Evt_No));
 
-  const hitCompletedEvts = sortedEvents
-    .filter((e) => isEventHitRequired(e) && isEventFinalListPrepared(e.Evt_No, results))
-    .map((e) => Number(e.Evt_No));
-  if (hitCompletedEvts.length > 0) {
-    items.push({ key: 'hit', text: `HIT completed: ${hitCompletedEvts.join(', ')}`, isAlert: false });
-  }
+    const hitCompletedEvts = sortedEvents
+      .filter((e) => isEventHitRequired(e) && isEventFinalListPrepared(e.Evt_No, results))
+      .map((e) => Number(e.Evt_No));
+    if (hitCompletedEvts.length > 0) {
+      items.push({ key: 'hit', text: `HIT completed: ${hitCompletedEvts.join(', ')}`, isAlert: false });
+    }
 
-  const finalCompletedEvts = sortedEvents
-    .filter((e) => isEventFinalListPrepared(e.Evt_No, results))
-    .map((e) => Number(e.Evt_No));
-  if (finalCompletedEvts.length > 0) {
-    items.push({ key: 'final', text: `Final Prepared: ${finalCompletedEvts.join(', ')}`, isAlert: false });
-  }
+    const finalCompletedEvts = sortedEvents
+      .filter((e) => isEventFinalListPrepared(e.Evt_No, results) && !isEventRankingCompleted(e.Evt_No, results))
+      .map((e) => Number(e.Evt_No));
+    if (finalCompletedEvts.length > 0) {
+      items.push({ key: 'final', text: `Final Prepared: ${finalCompletedEvts.join(', ')}`, isAlert: false });
+    }
 
-  const resultDeclaredEvts = sortedEvents
-    .filter((e) => isEventRankingCompleted(e.Evt_No, results))
-    .map((e) => Number(e.Evt_No));
-  if (resultDeclaredEvts.length > 0) {
-    items.push({ key: 'rank', text: `Result declared: ${resultDeclaredEvts.join(', ')}`, isAlert: false });
+    const resultDeclaredEvts = sortedEvents
+      .filter((e) => isEventRankingCompleted(e.Evt_No, results))
+      .map((e) => Number(e.Evt_No));
+    if (resultDeclaredEvts.length > 0) {
+      items.push({ key: 'rank', text: `Result declared: ${resultDeclaredEvts.join(', ')}`, isAlert: false });
+    }
   }
 
   const totalChars = items.reduce((sum, item) => sum + item.text.length + 4, 0);

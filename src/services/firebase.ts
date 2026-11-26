@@ -1,13 +1,25 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
+import { getFirestore, initializeFirestore, doc, getDocFromServer } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 // Initialize Firebase App (singleton)
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 
-// Use the dedicated database ID provisioned for this project
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId || '(default)');
+const firestoreDbId = firebaseConfig.firestoreDatabaseId || '(default)';
+
+// Use dedicated database ID with auto-detected long polling to prevent 10s WebChannel stalls behind proxies or mobile networks
+export const db = (() => {
+  try {
+    return initializeFirestore(
+      app,
+      { experimentalAutoDetectLongPolling: true },
+      firestoreDbId
+    );
+  } catch {
+    return getFirestore(app, firestoreDbId);
+  }
+})();
 export const auth = getAuth(app);
 
 export enum OperationType {

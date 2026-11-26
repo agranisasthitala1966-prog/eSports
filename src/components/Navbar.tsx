@@ -264,13 +264,8 @@ export const Navbar: React.FC<NavbarProps> = ({
             <button
               type="button"
               id="header-qr-link-btn"
-              disabled={currentMode === 'client' && !(settings?.clientResponseEnabled ?? true)}
               onClick={() => setShowQrModal(true)}
-              className={`flex items-center gap-1.5 px-3 py-1 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-2xs active:scale-98 ${
-                currentMode === 'client' && !(settings?.clientResponseEnabled ?? true)
-                  ? 'opacity-40 cursor-not-allowed bg-slate-100 text-slate-400 border border-slate-200'
-                  : 'bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300'
-              }`}
+              className="flex items-center gap-1.5 px-3 py-1 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-2xs active:scale-98 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300"
               title="View & Share QR Link"
             >
               <QrCode className="w-3.5 h-3.5 text-amber-600 shrink-0" />
@@ -410,14 +405,9 @@ export const Navbar: React.FC<NavbarProps> = ({
                 <button
                   type="button"
                   id="mobile-client-qr-btn"
-                  disabled={!(settings?.clientResponseEnabled ?? true)}
                   onClick={() => setShowQrModal(true)}
-                  className={`p-1.5 rounded-lg border transition-all cursor-pointer shrink-0 ${
-                    !(settings?.clientResponseEnabled ?? true)
-                      ? 'opacity-40 cursor-not-allowed bg-slate-100 text-slate-400 border-slate-200'
-                      : 'bg-amber-50 hover:bg-amber-100 text-amber-700 border-amber-300'
-                  }`}
-                  title={!(settings?.clientResponseEnabled ?? true) ? 'Client responses paused by server' : 'QR Link'}
+                  className="p-1.5 rounded-lg border transition-all cursor-pointer shrink-0 bg-amber-50 hover:bg-amber-100 text-amber-700 border-amber-300"
+                  title="QR Link"
                   aria-label="QR Link"
                 >
                   <QrCode className="w-4 h-4 text-amber-600" />
@@ -469,8 +459,8 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
         </div>
 
-        {/* Client-side Live Meet Status Scrolling Label (below brand subtitle in top fixed bar) */}
-        {currentMode === 'client' && liveMeetTicker.items.length > 0 && (
+        {/* Client-side Live Meet Status Scrolling Label (hidden only on client enroll page when club echo is off) */}
+        {currentMode === 'client' && !(activeTab === 'enroll' && settings?.clientResponseEnabled === false) && liveMeetTicker.items.length > 0 && (
           <div
             className="w-full h-[18px] flex items-center border-t border-slate-100 bg-slate-50/80 overflow-hidden"
             aria-live="polite"

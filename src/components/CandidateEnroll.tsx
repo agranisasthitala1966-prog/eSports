@@ -24,9 +24,21 @@ import {
   ExternalLink,
   Eye,
   History,
+  Lock,
+  Trophy,
+  Flame,
+  Award,
+  Clock,
+  RefreshCw,
 } from 'lucide-react';
 import { EventHeat, EventResult } from '../types';
-import { getServerEventEnrollmentDisableReason } from '../utils/qualificationRules';
+import {
+  getServerEventEnrollmentDisableReason,
+  isEventHitRequired,
+  isEventFinalListPrepared,
+  isEventRankingCompleted,
+} from '../utils/qualificationRules';
+import { isExcludedClubForRanking } from '../utils/clubRankingFilter';
 
 interface CandidateEnrollProps {
   events: SportEvent[];
@@ -38,6 +50,7 @@ interface CandidateEnrollProps {
   onCancelEdit?: () => void;
   suggestedChestNo: number;
   candidates: Candidate[];
+  serverCandidates?: Candidate[];
   heats?: EventHeat[];
   results?: EventResult[];
   onNavigateToCandidates: () => void;
@@ -47,6 +60,7 @@ interface CandidateEnrollProps {
   onDeleteCandidate?: (id: string) => Promise<void> | void;
   onCancelChest?: (id: string) => Promise<void> | void;
   onSaveClub?: (clubData: Partial<Club>) => Promise<void> | void;
+  onRefreshLiveStatus?: () => Promise<void> | void;
 }
 
 interface LastTwoEntriesDisplayProps {
@@ -54,6 +68,127 @@ interface LastTwoEntriesDisplayProps {
   events: SportEvent[];
   onEditCandidate?: (cand: Candidate) => void;
 }
+
+const AnimatedCounter: React.FC<{ value: number; className?: string }> = ({ value, className }) => {
+  const [displayValue, setDisplayValue] = useState<number>(0);
+  const prevValueRef = useRef<number>(0);
+
+  useEffect(() => {
+    const startValue = prevValueRef.current;
+    const endValue = Number.isFinite(value) ? value : 0;
+    if (startValue === endValue) {
+      setDisplayValue(endValue);
+      return;
+    }
+
+    const duration = 650;
+    const startTime = performance.now();
+    let rafId = 0;
+
+    const tick = (now: number) => {
+      const progress = Math.min((now - startTime) / duration, 1);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      const current = Math.round(startValue + (endValue - startValue) * eased);
+      setDisplayValue(current);
+      if (progress < 1) {
+        rafId = requestAnimationFrame(tick);
+      } else {
+        prevValueRef.current = endValue;
+      }
+    };
+
+    rafId = requestAnimationFrame(tick);
+    return () => {
+      cancelAnimationFrame(rafId);
+      prevValueRef.current = endValue;
+    };
+  }, [value]);
+
+  return (
+    <span key={value} className={`animate-live-num-pop tabular-nums ${className || ''}`}>
+      {displayValue}
+    </span>
+  );
+};
+
+interface PieSlice {
+  label: string;
+  value: number;
+  color: string;
+  textColor?: string;
+  isLeading?: boolean;
+}
+
+const MiniPieChart: React.FC<{
+  slices: PieSlice[];
+  emptyColor?: string;
+}> = ({ slices, emptyColor = '#e2e8f0' }) => {
+  const validSlices = slices.filter((s) => s.value > 0);
+  const total = validSlices.reduce((sum, s) => sum + s.value, 0);
+  const cx = 24;
+  const cy = 24;
+  const r = 21;
+
+  const polarToCartesian = (angleDeg: number) => {
+    const rad = ((angleDeg - 90) * Math.PI) / 180;
+    return {
+      x: cx + r * Math.cos(rad),
+      y: cy + r * Math.sin(rad),
+    };
+  };
+
+  let currentAngle = 0;
+
+  return (
+    <div
+      aria-hidden="true"
+      className="relative shrink-0 w-11 h-11 sm:w-12 sm:h-12 p-1 rounded-full bg-white/95 border border-slate-300/80 shadow-[0_2px_6px_rgba(15,23,42,0.14)] ring-1 ring-white group-hover:scale-105 transition-transform duration-150 flex items-center justify-center live-status-card-enter"
+    >
+      <svg viewBox="0 0 48 48" className="w-full h-full overflow-visible">
+        {total <= 0 ? (
+          <circle cx={cx} cy={cy} r={r} fill={emptyColor} stroke="#ffffff" strokeWidth="1.5" />
+        ) : validSlices.length === 1 ? (
+          <circle
+            cx={cx}
+            cy={cy}
+            r={r}
+            fill={validSlices[0].color}
+            stroke="#ffffff"
+            strokeWidth="1.5"
+          />
+        ) : (
+          validSlices.map((slice, idx) => {
+            const sliceAngle = (slice.value / total) * 360;
+            const startAngle = currentAngle;
+            const endAngle = currentAngle + sliceAngle;
+            currentAngle = endAngle;
+
+            const start = polarToCartesian(startAngle);
+            const end = polarToCartesian(endAngle);
+            const largeArcFlag = sliceAngle > 180 ? 1 : 0;
+            const d = [
+              `M ${cx} ${cy}`,
+              `L ${start.x.toFixed(2)} ${start.y.toFixed(2)}`,
+              `A ${r} ${r} 0 ${largeArcFlag} 1 ${end.x.toFixed(2)} ${end.y.toFixed(2)}`,
+              'Z',
+            ].join(' ');
+
+            return (
+              <path
+                key={`${slice.label}-${idx}`}
+                d={d}
+                fill={slice.color}
+                stroke="#ffffff"
+                strokeWidth="1.4"
+                strokeLinejoin="round"
+              />
+            );
+          })
+        )}
+      </svg>
+    </div>
+  );
+};
 
 const LastTwoEntriesDisplay: React.FC<LastTwoEntriesDisplayProps> = ({
   candidates,
@@ -302,6 +437,7 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
   onCancelEdit,
   suggestedChestNo,
   candidates,
+  serverCandidates = [],
   heats = [],
   results = [],
   onNavigateToCandidates,
@@ -311,6 +447,7 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
   onDeleteCandidate,
   onCancelChest,
   onSaveClub,
+  onRefreshLiveStatus,
 }) => {
   // Client's Club Name: starts empty when app is opened fresh every time
   const [clientClubName, setClientClubName] = useState<string>(() => {
@@ -427,6 +564,43 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
   const [summaryFeeDetail, setSummaryFeeDetail] = useState<'paid' | 'due' | null>(null);
   const [activeSummaryRowPopup, setActiveSummaryRowPopup] = useState<{ key: string; placement: 'above' | 'below' } | null>(null);
   const summaryListContainerRef = useRef<HTMLDivElement | null>(null);
+
+  // Client Club Echo OFF state: only on client's enroll page
+  const isClientEchoOff = mode === 'client' && settings?.clientResponseEnabled === false;
+  const [activePieModalKey, setActivePieModalKey] = useState<
+    'totalCandidates' | 'hitPending' | 'hitCompleted' | 'finalPrepared' | 'resultDeclared' | 'totalClubs' | null
+  >(null);
+  const [isRefreshingLiveStatus, setIsRefreshingLiveStatus] = useState(false);
+
+  const handleRefreshLiveStatus = async () => {
+    if (isRefreshingLiveStatus) return;
+    setIsRefreshingLiveStatus(true);
+    try {
+      await Promise.all([
+        Promise.resolve(onRefreshLiveStatus?.()),
+        new Promise((resolve) => setTimeout(resolve, 450)),
+      ]);
+    } finally {
+      setIsRefreshingLiveStatus(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!isClientEchoOff) {
+      setActivePieModalKey(null);
+    }
+  }, [isClientEchoOff]);
+
+  useEffect(() => {
+    if (!activePieModalKey) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setActivePieModalKey(null);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [activePieModalKey]);
 
   // Save client club name to sessionStorage on change (persists during active session, blank on fresh open)
   const handleClientClubChange = (val: string) => {
@@ -923,6 +1097,148 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
     return candidates.filter(c => !c.synced || c.isDirty).length;
   }, [candidates]);
 
+  // Live meet status metrics for client enroll page when club echo is paused
+  const liveCandidateSummary = useMemo(() => {
+    let total = 0;
+    let cCount = 0;
+    let bCount = 0;
+    let gCount = 0;
+    const pool = mode === 'client' ? serverCandidates : candidates;
+    pool.forEach((c) => {
+      if (c.isCancelled || c.status === 'cancelled') return;
+      total++;
+      const g = (c.gender || '').trim().toUpperCase();
+      if (g === 'BOYS' || g === 'BOY' || g === 'B') bCount++;
+      else if (g === 'GIRLS' || g === 'GIRL' || g === 'G') gCount++;
+      else cCount++;
+    });
+    return { total, cCount, bCount, gCount };
+  }, [mode, serverCandidates, candidates]);
+
+  const liveEventStages = useMemo(() => {
+    const sorted = [...events].sort((a, b) => Number(a.Evt_No) - Number(b.Evt_No));
+    const hitPending = sorted
+      .filter((e) => isEventHitRequired(e) && !isEventFinalListPrepared(e.Evt_No, results))
+      .map((e) => Number(e.Evt_No));
+    const hitCompleted = sorted
+      .filter((e) => isEventHitRequired(e) && isEventFinalListPrepared(e.Evt_No, results))
+      .map((e) => Number(e.Evt_No));
+    const finalPrepared = sorted
+      .filter((e) => isEventFinalListPrepared(e.Evt_No, results) && !isEventRankingCompleted(e.Evt_No, results))
+      .map((e) => Number(e.Evt_No));
+    const resultDeclared = sorted
+      .filter((e) => isEventRankingCompleted(e.Evt_No, results))
+      .map((e) => Number(e.Evt_No));
+    return {
+      hitPending,
+      hitCompleted,
+      finalPrepared,
+      resultDeclared,
+      totalEvents: sorted.length,
+    };
+  }, [events, results]);
+
+  const liveClubStandings = useMemo(() => {
+    const clubMap = new Map<string, {
+      key: string;
+      name: string;
+      candidateCount: number;
+      gold: number;
+      silver: number;
+      bronze: number;
+      points: number;
+    }>();
+
+    const ensureClub = (rawName?: string | null) => {
+      const trimmed = String(rawName || '').trim();
+      if (isExcludedClubForRanking(trimmed)) return null;
+      const key = trimmed.toUpperCase().replace(/\s+/g, ' ');
+      let entry = clubMap.get(key);
+      if (!entry) {
+        entry = {
+          key,
+          name: trimmed,
+          candidateCount: 0,
+          gold: 0,
+          silver: 0,
+          bronze: 0,
+          points: 0,
+        };
+        clubMap.set(key, entry);
+      }
+      return entry;
+    };
+
+    clubs.forEach((cl) => {
+      ensureClub(cl.name);
+    });
+
+    const pool = mode === 'client' ? serverCandidates : candidates;
+    const cancelledChestSet = new Set<number>();
+    pool.forEach((c) => {
+      if (c.isCancelled || c.status === 'cancelled') {
+        if (Number(c.chestNo) > 0) cancelledChestSet.add(Number(c.chestNo));
+        return;
+      }
+      const entry = ensureClub(c.club);
+      if (entry) entry.candidateCount += 1;
+    });
+
+    results.forEach((res) => {
+      const resCancelled = new Set((res.cancelledChestNos || []).map(Number));
+      const participants = res.winners && res.winners.length > 0 ? res.winners : (res.finalists || []);
+      participants.forEach((f) => {
+        const ch = Number(f.chestNo);
+        if (ch > 0 && (cancelledChestSet.has(ch) || resCancelled.has(ch))) return;
+        const entry = ensureClub(f.club);
+        if (!entry) return;
+        if (f.position === 1) {
+          entry.gold += 1;
+          entry.points += 7;
+        } else if (f.position === 2) {
+          entry.silver += 1;
+          entry.points += 5;
+        } else if (f.position === 3) {
+          entry.bronze += 1;
+          entry.points += 4;
+        } else if (f.position === 4) {
+          entry.points += 3;
+        } else if (f.position === 5) {
+          entry.points += 2;
+        } else if (f.position === 6) {
+          entry.points += 1;
+        }
+      });
+    });
+
+    const list = Array.from(clubMap.values()).sort(
+      (a, b) =>
+        b.points - a.points ||
+        b.gold - a.gold ||
+        b.silver - a.silver ||
+        b.bronze - a.bronze ||
+        b.candidateCount - a.candidateCount ||
+        a.name.localeCompare(b.name)
+    );
+
+    const topPoints = list.length > 0 ? list[0].points : 0;
+    const leaders = topPoints > 0
+      ? list.filter(
+          (c) =>
+            c.points === list[0].points &&
+            c.gold === list[0].gold &&
+            c.silver === list[0].silver
+        )
+      : [];
+
+    return {
+      totalClubs: list.length,
+      clubs: list,
+      leaders,
+      topPoints,
+    };
+  }, [clubs, serverCandidates, candidates, results, mode]);
+
   // Expanded gender short form helper: C, B, G, All
   const getShortGenderDisplay = (cand: Candidate): string => {
     const g = (cand.gender || '').trim().toUpperCase();
@@ -946,95 +1262,121 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
   return (
     <div className="max-w-6xl xl:max-w-7xl mx-auto space-y-2.5">
       {/* Deep Midnight Navy Card Frame (#002047) */}
-      <div className="bg-[#002047] rounded-2xl border border-[#123c73] shadow-2xl overflow-hidden text-slate-100 font-sans">
+      <div
+        id="enrollment-blue-section"
+        aria-disabled={isClientEchoOff || undefined}
+        className={`bg-[#002047] rounded-2xl border border-[#123c73] shadow-2xl overflow-hidden text-slate-100 font-sans transition-all ${
+          isClientEchoOff ? 'opacity-70 select-none pointer-events-none' : ''
+        }`}
+      >
         
-        {/* FIXED / STICKY TOP SECTION: Client Club Name (client mode only) / Server Info (server mode) + Meet Title + QR Link */}
-        <div className="sticky top-0 z-30 bg-[#002047]/95 backdrop-blur-md border-b border-[#123c73] px-4 sm:px-6 py-2.5 shadow-md">
-          <div className="flex items-center justify-between gap-3">
-            
-            {/* Ask Client's Club Name and Club Mobile beside each other in client mode; remove from server mode */}
-            {mode === 'client' ? (
-              <div className="flex-1 min-w-0 flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 sm:gap-4">
-                <div className="flex-1 min-w-[150px] sm:max-w-xs md:max-w-sm">
-                  <label htmlFor="client-club-input" className="block text-[11px] font-bold text-amber-400 uppercase tracking-wider mb-1">
-                    Your Club Name
-                  </label>
-                  <input
-                    id="client-club-input"
-                    type="text"
-                    value={clientClubName}
-                    onChange={(e) => handleClientClubChange(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        const mobileInput = document.getElementById('client-club-mobile-input') as HTMLInputElement | null;
-                        if (mobileInput) {
-                          mobileInput.focus();
-                          mobileInput.select();
+        {/* FIXED / STICKY TOP SECTION: Minimized disabled strip when club echo is off; full club header otherwise */}
+        <div
+          className={`sticky top-0 z-30 bg-[#002047]/95 backdrop-blur-md px-4 sm:px-6 shadow-md ${
+            isClientEchoOff ? 'py-2 border-b-0' : 'py-2.5 border-b border-[#123c73]'
+          }`}
+        >
+          {isClientEchoOff ? (
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <Lock className="w-3.5 h-3.5 text-rose-300 shrink-0" />
+                <span className="text-xs sm:text-sm font-extrabold text-amber-400/90 uppercase tracking-wide truncate">
+                  Candidate Enrollment
+                  {clientClubName.trim() ? ` • ${clientClubName.trim()}` : ''}
+                </span>
+              </div>
+              <span className="shrink-0 px-2 py-0.5 rounded-md bg-rose-500/20 border border-rose-400/40 text-rose-200 text-[10px] font-bold uppercase tracking-wider">
+                Paused / Disabled
+              </span>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between gap-3">
+              {/* Ask Client's Club Name and Club Mobile beside each other in client mode; remove from server mode */}
+              {mode === 'client' ? (
+                <div className="flex-1 min-w-0 flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 sm:gap-4">
+                  <div className="flex-1 min-w-[150px] sm:max-w-xs md:max-w-sm">
+                    <label htmlFor="client-club-input" className="block text-[11px] font-bold text-amber-400 uppercase tracking-wider mb-1">
+                      Your Club Name
+                    </label>
+                    <input
+                      id="client-club-input"
+                      type="text"
+                      disabled={isClientEchoOff}
+                      value={clientClubName}
+                      onChange={(e) => handleClientClubChange(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          const mobileInput = document.getElementById('client-club-mobile-input') as HTMLInputElement | null;
+                          if (mobileInput) {
+                            mobileInput.focus();
+                            mobileInput.select();
+                          }
                         }
-                      }
-                    }}
-                    placeholder="e.g. YOUR CLUB NAME"
-                    className="w-full px-3 py-1.5 rounded-xl bg-[#001736] border border-amber-400/80 text-amber-400 font-extrabold uppercase text-xs sm:text-sm focus:outline-hidden focus:ring-2 focus:ring-amber-400/40 transition-all shadow-inner"
-                  />
-                </div>
-                <div className="w-full sm:w-56 md:w-64 min-w-[140px]">
-                  <label htmlFor="client-club-mobile-input" className="block text-[11px] font-bold text-amber-400 uppercase tracking-wider mb-1">
-                    Club Mobile
-                  </label>
-                  <input
-                    id="client-club-mobile-input"
-                    type="tel"
-                    inputMode="numeric"
-                    pattern="[0-9]*"
-                    value={clientClubMobile}
-                    onChange={(e) => handleClientClubMobileChange(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        const candNameInput = document.getElementById('candidate-name') as HTMLInputElement | null;
-                        if (candNameInput) {
-                          candNameInput.focus();
-                          candNameInput.select();
+                      }}
+                      placeholder="e.g. YOUR CLUB NAME"
+                      className="w-full px-3 py-1.5 rounded-xl bg-[#001736] border border-amber-400/80 text-amber-400 font-extrabold uppercase text-xs sm:text-sm focus:outline-hidden focus:ring-2 focus:ring-amber-400/40 transition-all shadow-inner"
+                    />
+                  </div>
+                  <div className="w-full sm:w-56 md:w-64 min-w-[140px]">
+                    <label htmlFor="client-club-mobile-input" className="block text-[11px] font-bold text-amber-400 uppercase tracking-wider mb-1">
+                      Club Mobile
+                    </label>
+                    <input
+                      id="client-club-mobile-input"
+                      type="tel"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      disabled={isClientEchoOff}
+                      value={clientClubMobile}
+                      onChange={(e) => handleClientClubMobileChange(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          const candNameInput = document.getElementById('candidate-name') as HTMLInputElement | null;
+                          if (candNameInput) {
+                            candNameInput.focus();
+                            candNameInput.select();
+                          }
                         }
-                      }
-                    }}
-                    maxLength={10}
-                    className="w-full px-3 py-1.5 rounded-xl bg-[#001736] border border-amber-400/80 text-amber-400 font-extrabold text-xs sm:text-sm focus:outline-hidden focus:ring-2 focus:ring-amber-400/40 transition-all shadow-inner"
-                  />
+                      }}
+                      maxLength={10}
+                      className="w-full px-3 py-1.5 rounded-xl bg-[#001736] border border-amber-400/80 text-amber-400 font-extrabold text-xs sm:text-sm focus:outline-hidden focus:ring-2 focus:ring-amber-400/40 transition-all shadow-inner"
+                    />
+                  </div>
                 </div>
-              </div>
-            ) : (
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs sm:text-sm font-extrabold text-amber-400 truncate">
-                    {settings.ordinalTitle || '47th Annual Sports Meet 2026'}
-                  </span>
+              ) : (
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs sm:text-sm font-extrabold text-amber-400 truncate">
+                      {settings.ordinalTitle || '47th Annual Sports Meet 2026'}
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-slate-300/80 font-medium mt-0.5">
+                    Official Candidate Enrollment & Direct Registry
+                  </p>
                 </div>
-                <p className="text-[10px] text-slate-300/80 font-medium mt-0.5">
-                  Official Candidate Enrollment & Direct Registry
-                </p>
-              </div>
-            )}
+              )}
 
-            {/* Right: Actions */}
-            {candidateToEdit && (
-              <div className="shrink-0 flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={resetForm}
-                  className="px-2.5 py-1.5 text-xs font-semibold text-slate-200 bg-[#002c61] hover:bg-[#003a7d] rounded-xl transition-colors flex items-center gap-1 border border-[#194a8a] cursor-pointer"
-                >
-                  <RotateCcw className="w-3.5 h-3.5 text-amber-400" />
-                  <span className="hidden sm:inline">Cancel</span>
-                </button>
-              </div>
-            )}
-
-          </div>
+              {/* Right: Actions */}
+              {candidateToEdit && (
+                <div className="shrink-0 flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={resetForm}
+                    className="px-2.5 py-1.5 text-xs font-semibold text-slate-200 bg-[#002c61] hover:bg-[#003a7d] rounded-xl transition-colors flex items-center gap-1 border border-[#194a8a] cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5 text-amber-400" />
+                    <span className="hidden sm:inline">Cancel</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
-        {/* Content Container (Compact on desktop to fit without page scroll) */}
+        {/* Content Container: Minimized/collapsed when club echo is off on client enroll page; Auto-maximized when ON */}
+        {!isClientEchoOff && (
         <div className="p-3 sm:p-4 lg:p-4">
           
           {/* Form */}
@@ -1645,7 +1987,615 @@ export const CandidateEnroll: React.FC<CandidateEnrollProps> = ({
           </form>
 
         </div>
+        )}
       </div>
+
+      {/* CLIENT ECHO OFF: Paused Message + Live Meet Update Cards */}
+      {isClientEchoOff && (
+        <div className="space-y-3 animate-in fade-in duration-200">
+          {/* Paused message directly at the bottom of the minimized enrollment section */}
+          <div
+            id="client-echo-paused-banner"
+            role="status"
+            className="px-3.5 py-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 shadow-xs flex items-center gap-2.5"
+          >
+            <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+            <p className="text-xs sm:text-sm font-bold leading-snug">
+              নাম নেওয়া বন্ধ . Paused by the Server
+            </p>
+          </div>
+
+          {/* Live Update Cards: 2 columns mobile-friendly, clickable cards opening enlarged pie chart view */}
+          <div className="grid grid-cols-2 lg:grid-cols-3 gap-2 sm:gap-2.5">
+            {/* 1. Total Candidate (Blue / Indigo) */}
+            <button
+              type="button"
+              id="live-card-total-candidates"
+              onClick={() => setActivePieModalKey('totalCandidates')}
+              style={{ animationDelay: '0ms' }}
+              aria-label="Open Total Candidate pie chart"
+              className="group live-status-card-enter rounded-xl bg-gradient-to-br from-blue-50 via-white to-indigo-50/80 border border-blue-300 p-2.5 sm:p-3.5 shadow-xs hover:shadow-md hover:-translate-y-0.5 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 transition-all duration-200 flex flex-col justify-between gap-1.5 min-w-0 w-full text-left cursor-pointer"
+            >
+              <div className="flex items-start justify-between gap-1.5 w-full min-w-0">
+                <span className="px-1.5 sm:px-2 py-0.5 rounded-md bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-[9.5px] sm:text-[11px] font-extrabold uppercase tracking-wide whitespace-normal break-words leading-tight shadow-2xs">
+                  Total Candidate:
+                </span>
+                <Users className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-blue-600 shrink-0 mt-0.5 animate-live-icon-float" />
+              </div>
+              <div className="flex items-center justify-between gap-2 w-full min-w-0">
+                <div className="text-2xl sm:text-3xl font-mono font-black text-blue-950 leading-none min-w-0">
+                  <AnimatedCounter value={liveCandidateSummary.total} />
+                </div>
+                <MiniPieChart
+                  emptyColor="#dbeafe"
+                  slices={[
+                    { label: 'Child (C)', value: liveCandidateSummary.cCount, color: '#3b82f6' },
+                    { label: 'Boys (B)', value: liveCandidateSummary.bCount, color: '#4f46e5' },
+                    { label: 'Girls (G)', value: liveCandidateSummary.gCount, color: '#ec4899' },
+                  ]}
+                />
+              </div>
+              <div className="text-[10px] sm:text-xs font-mono font-bold text-blue-800/90 pt-1 border-t border-blue-200/70 w-full truncate">
+                C:<AnimatedCounter value={liveCandidateSummary.cCount} /> / B:<AnimatedCounter value={liveCandidateSummary.bCount} /> / G:<AnimatedCounter value={liveCandidateSummary.gCount} />
+              </div>
+            </button>
+
+            {/* 2. HIT Pending (Amber / Orange) */}
+            <button
+              type="button"
+              id="live-card-hit-pending"
+              onClick={() => setActivePieModalKey('hitPending')}
+              style={{ animationDelay: '60ms' }}
+              aria-label="Open HIT Pending pie chart"
+              className="group live-status-card-enter rounded-xl bg-gradient-to-br from-amber-50 via-white to-orange-50/80 border border-amber-300 p-2.5 sm:p-3.5 shadow-xs hover:shadow-md hover:-translate-y-0.5 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 transition-all duration-200 flex flex-col justify-between gap-1.5 min-w-0 w-full text-left cursor-pointer"
+            >
+              <div className="flex items-start justify-between gap-1.5 w-full min-w-0">
+                <span className="px-1.5 sm:px-2 py-0.5 rounded-md bg-gradient-to-r from-amber-500 to-orange-500 text-white text-[9.5px] sm:text-[11px] font-extrabold uppercase tracking-wide whitespace-normal break-words leading-tight shadow-2xs">
+                  HIT Pending:
+                </span>
+                <span className="relative flex items-center justify-center shrink-0 mt-0.5">
+                  {liveEventStages.hitPending.length > 0 && (
+                    <span className="absolute inline-flex h-3 w-3 rounded-full bg-amber-400 opacity-50 animate-ping" />
+                  )}
+                  <Clock className="relative w-3.5 h-3.5 sm:w-4 sm:h-4 text-amber-600 animate-live-icon-sway" />
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-2 w-full min-w-0">
+                <div className="text-base sm:text-lg font-mono font-black text-amber-950 break-words leading-snug tracking-tight min-w-0 flex-1">
+                  {liveEventStages.hitPending.length > 0 ? (
+                    liveEventStages.hitPending.map((evtNo, idx) => (
+                      <React.Fragment key={`hp-${evtNo}`}>
+                        {idx > 0 && <span className="text-amber-500 mr-1">,</span>}
+                        <span
+                          style={{ animationDelay: `${Math.min(idx * 40, 400)}ms` }}
+                          className="animate-live-num-pop tabular-nums"
+                        >
+                          {evtNo}
+                        </span>
+                      </React.Fragment>
+                    ))
+                  ) : (
+                    <span className="text-sm font-bold text-slate-400">None</span>
+                  )}
+                </div>
+                <MiniPieChart
+                  emptyColor="#fef3c7"
+                  slices={[
+                    { label: 'HIT Pending', value: liveEventStages.hitPending.length, color: '#f59e0b' },
+                    { label: 'HIT Completed', value: liveEventStages.hitCompleted.length, color: '#fde68a' },
+                  ]}
+                />
+              </div>
+              <div className="text-[10px] sm:text-[11px] font-semibold text-amber-800/80 pt-1 border-t border-amber-200/70 w-full truncate">
+                <AnimatedCounter value={liveEventStages.hitPending.length} /> event(s) awaiting hit
+              </div>
+            </button>
+
+            {/* 3. HIT Completed (Emerald / Teal) */}
+            <button
+              type="button"
+              id="live-card-hit-completed"
+              onClick={() => setActivePieModalKey('hitCompleted')}
+              style={{ animationDelay: '120ms' }}
+              aria-label="Open HIT Completed pie chart"
+              className="group live-status-card-enter rounded-xl bg-gradient-to-br from-emerald-50 via-white to-teal-50/80 border border-emerald-300 p-2.5 sm:p-3.5 shadow-xs hover:shadow-md hover:-translate-y-0.5 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 transition-all duration-200 flex flex-col justify-between gap-1.5 min-w-0 w-full text-left cursor-pointer"
+            >
+              <div className="flex items-start justify-between gap-1.5 w-full min-w-0">
+                <span className="px-1.5 sm:px-2 py-0.5 rounded-md bg-gradient-to-r from-emerald-600 to-teal-600 text-white text-[9.5px] sm:text-[11px] font-extrabold uppercase tracking-wide whitespace-normal break-words leading-tight shadow-2xs">
+                  HIT Completed:
+                </span>
+                <Flame className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-emerald-600 shrink-0 mt-0.5 animate-live-icon-pulse" />
+              </div>
+              <div className="flex items-center justify-between gap-2 w-full min-w-0">
+                <div className="text-base sm:text-lg font-mono font-black text-emerald-950 break-words leading-snug tracking-tight min-w-0 flex-1">
+                  {liveEventStages.hitCompleted.length > 0 ? (
+                    liveEventStages.hitCompleted.map((evtNo, idx) => (
+                      <React.Fragment key={`hc-${evtNo}`}>
+                        {idx > 0 && <span className="text-emerald-500 mr-1">,</span>}
+                        <span
+                          style={{ animationDelay: `${Math.min(idx * 40, 400)}ms` }}
+                          className="animate-live-num-pop tabular-nums"
+                        >
+                          {evtNo}
+                        </span>
+                      </React.Fragment>
+                    ))
+                  ) : (
+                    <span className="text-sm font-bold text-slate-400">None</span>
+                  )}
+                </div>
+                <MiniPieChart
+                  emptyColor="#d1fae5"
+                  slices={[
+                    { label: 'HIT Completed', value: liveEventStages.hitCompleted.length, color: '#10b981' },
+                    { label: 'HIT Pending', value: liveEventStages.hitPending.length, color: '#a7f3d0' },
+                  ]}
+                />
+              </div>
+              <div className="text-[10px] sm:text-[11px] font-semibold text-emerald-800/80 pt-1 border-t border-emerald-200/70 w-full truncate">
+                <AnimatedCounter value={liveEventStages.hitCompleted.length} /> hit event(s) done
+              </div>
+            </button>
+
+            {/* 4. Final Prepared (Sky / Cyan) */}
+            <button
+              type="button"
+              id="live-card-final-prepared"
+              onClick={() => setActivePieModalKey('finalPrepared')}
+              style={{ animationDelay: '180ms' }}
+              aria-label="Open Final Prepared pie chart"
+              className="group live-status-card-enter rounded-xl bg-gradient-to-br from-sky-50 via-white to-cyan-50/80 border border-sky-300 p-2.5 sm:p-3.5 shadow-xs hover:shadow-md hover:-translate-y-0.5 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 transition-all duration-200 flex flex-col justify-between gap-1.5 min-w-0 w-full text-left cursor-pointer"
+            >
+              <div className="flex items-start justify-between gap-1.5 w-full min-w-0">
+                <span className="px-1.5 sm:px-2 py-0.5 rounded-md bg-gradient-to-r from-sky-600 to-cyan-600 text-white text-[9.5px] sm:text-[11px] font-extrabold uppercase tracking-wide whitespace-normal break-words leading-tight shadow-2xs">
+                  Final Prepared:
+                </span>
+                <CheckCircle2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-sky-600 shrink-0 mt-0.5 animate-live-icon-pulse" />
+              </div>
+              <div className="flex items-center justify-between gap-2 w-full min-w-0">
+                <div className="text-base sm:text-lg font-mono font-black text-sky-950 break-words leading-snug tracking-tight min-w-0 flex-1">
+                  {liveEventStages.finalPrepared.length > 0 ? (
+                    liveEventStages.finalPrepared.map((evtNo, idx) => (
+                      <React.Fragment key={`fp-${evtNo}`}>
+                        {idx > 0 && <span className="text-sky-500 mr-1">,</span>}
+                        <span
+                          style={{ animationDelay: `${Math.min(idx * 40, 400)}ms` }}
+                          className="animate-live-num-pop tabular-nums"
+                        >
+                          {evtNo}
+                        </span>
+                      </React.Fragment>
+                    ))
+                  ) : (
+                    <span className="text-sm font-bold text-slate-400">None</span>
+                  )}
+                </div>
+                <MiniPieChart
+                  emptyColor="#e0f2fe"
+                  slices={[
+                    { label: 'Final Prepared', value: liveEventStages.finalPrepared.length, color: '#0284c7' },
+                    {
+                      label: 'Other Events',
+                      value: Math.max(0, liveEventStages.totalEvents - liveEventStages.finalPrepared.length),
+                      color: '#bae6fd',
+                    },
+                  ]}
+                />
+              </div>
+              <div className="text-[10px] sm:text-[11px] font-semibold text-sky-800/80 pt-1 border-t border-sky-200/70 w-full truncate">
+                <AnimatedCounter value={liveEventStages.finalPrepared.length} /> event(s) ready for rank
+              </div>
+            </button>
+
+            {/* 5. Result Declared (Purple / Fuchsia) */}
+            <button
+              type="button"
+              id="live-card-result-declared"
+              onClick={() => setActivePieModalKey('resultDeclared')}
+              style={{ animationDelay: '240ms' }}
+              aria-label="Open Result Declared pie chart"
+              className="group live-status-card-enter rounded-xl bg-gradient-to-br from-purple-50 via-white to-fuchsia-50/80 border border-purple-300 p-2.5 sm:p-3.5 shadow-xs hover:shadow-md hover:-translate-y-0.5 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-500 transition-all duration-200 flex flex-col justify-between gap-1.5 min-w-0 w-full text-left cursor-pointer"
+            >
+              <div className="flex items-start justify-between gap-1.5 w-full min-w-0">
+                <span className="px-1.5 sm:px-2 py-0.5 rounded-md bg-gradient-to-r from-purple-600 to-fuchsia-600 text-white text-[9.5px] sm:text-[11px] font-extrabold uppercase tracking-wide whitespace-normal break-words leading-tight shadow-2xs">
+                  Result Declared:
+                </span>
+                <Award className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-purple-600 shrink-0 mt-0.5 animate-live-icon-sway" />
+              </div>
+              <div className="flex items-center justify-between gap-2 w-full min-w-0">
+                <div className="text-base sm:text-lg font-mono font-black text-purple-950 break-words leading-snug tracking-tight min-w-0 flex-1">
+                  {liveEventStages.resultDeclared.length > 0 ? (
+                    liveEventStages.resultDeclared.map((evtNo, idx) => (
+                      <React.Fragment key={`rd-${evtNo}`}>
+                        {idx > 0 && <span className="text-purple-500 mr-1">,</span>}
+                        <span
+                          style={{ animationDelay: `${Math.min(idx * 40, 400)}ms` }}
+                          className="animate-live-num-pop tabular-nums"
+                        >
+                          {evtNo}
+                        </span>
+                      </React.Fragment>
+                    ))
+                  ) : (
+                    <span className="text-sm font-bold text-slate-400">None</span>
+                  )}
+                </div>
+                <MiniPieChart
+                  emptyColor="#f3e8ff"
+                  slices={[
+                    { label: 'Result Declared', value: liveEventStages.resultDeclared.length, color: '#9333ea' },
+                    {
+                      label: 'Remaining Events',
+                      value: Math.max(0, liveEventStages.totalEvents - liveEventStages.resultDeclared.length),
+                      color: '#e9d5ff',
+                    },
+                  ]}
+                />
+              </div>
+              <div className="text-[10px] sm:text-[11px] font-semibold text-purple-800/80 pt-1 border-t border-purple-200/70 w-full truncate">
+                <AnimatedCounter value={liveEventStages.resultDeclared.length} /> event(s) ranked
+              </div>
+            </button>
+
+            {/* 6. Total Clubs (Rose / Pink — Sub status: blinking "Leading Club"; click card opens enlarged club pie chart modal) */}
+            <button
+              type="button"
+              id="live-card-total-clubs"
+              onClick={() => setActivePieModalKey('totalClubs')}
+              style={{ animationDelay: '300ms' }}
+              aria-label="Open Top 3 leading clubs pie chart"
+              className="group live-status-card-enter rounded-xl bg-gradient-to-br from-rose-50 via-white to-pink-50/80 border border-rose-300 p-2.5 sm:p-3.5 shadow-xs hover:shadow-md hover:-translate-y-0.5 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 flex flex-col justify-between gap-1.5 transition-all duration-200 min-w-0 w-full text-left cursor-pointer"
+            >
+              <div className="flex items-start justify-between gap-1.5 w-full min-w-0">
+                <span className="px-1.5 sm:px-2 py-0.5 rounded-md bg-gradient-to-r from-rose-600 to-pink-600 text-white text-[9.5px] sm:text-[11px] font-extrabold uppercase tracking-wide whitespace-normal break-words leading-tight shadow-2xs">
+                  Total Clubs:
+                </span>
+                <Building2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-rose-600 shrink-0 mt-0.5 animate-live-icon-float" />
+              </div>
+              <div className="flex items-center justify-between gap-2 w-full min-w-0">
+                <div className="text-2xl sm:text-3xl font-mono font-black text-rose-950 leading-none min-w-0">
+                  <AnimatedCounter value={liveClubStandings.totalClubs} />
+                </div>
+                <MiniPieChart
+                  emptyColor="#fef3c7"
+                  slices={(() => {
+                    const hasPoints = liveClubStandings.topPoints > 0;
+                    const metric = (c: typeof liveClubStandings.clubs[number]) =>
+                      hasPoints ? c.points : c.candidateCount;
+                    const topThree = liveClubStandings.clubs.slice(0, 3);
+                    const palette = ['#16a34a', '#eab308', '#dc2626'];
+                    return topThree.map((c, i) => ({
+                      label: c.name,
+                      value: metric(c),
+                      color: palette[i],
+                    }));
+                  })()}
+                />
+              </div>
+              <div className="flex items-center gap-1 text-[10px] sm:text-[11px] font-semibold pt-1 border-t border-rose-200/70 w-full min-w-0">
+                <Trophy className="w-3 h-3 text-amber-600 shrink-0 animate-live-icon-sway" />
+                <span className="animate-leader-blink text-rose-700 font-black uppercase tracking-wide whitespace-normal break-words">
+                  Leading Club
+                </span>
+              </div>
+            </button>
+          </div>
+
+          {/* Centered Refresh button after the live status cards */}
+          <div className="flex justify-center pt-1.5">
+            <button
+              type="button"
+              id="live-status-refresh-btn"
+              onClick={handleRefreshLiveStatus}
+              disabled={isRefreshingLiveStatus}
+              className="inline-flex items-center justify-center gap-2 px-5 py-2 rounded-lg bg-gradient-to-r from-[#002857] to-[#003b80] hover:from-[#00336e] hover:to-[#00489b] active:scale-[0.98] text-amber-300 border border-[#1d569e] shadow-sm text-xs sm:text-sm font-bold tracking-wide transition-all cursor-pointer disabled:opacity-70"
+              title="Refresh live status"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 sm:w-4 sm:h-4 ${isRefreshingLiveStatus ? 'animate-spin' : ''}`} />
+              <span>{isRefreshingLiveStatus ? 'Refreshing...' : 'Refresh'}</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: ENLARGED LIVE STATUS PIE CHART VIEWER */}
+      {activePieModalKey && isClientEchoOff && (() => {
+        const pieConfig: {
+          title: string;
+          subtitle: string;
+          unit: string;
+          emptyColor: string;
+          slices: PieSlice[];
+        } = (() => {
+          switch (activePieModalKey) {
+            case 'totalCandidates':
+              return {
+                title: 'Total Candidate',
+                subtitle: 'Candidate gender / category distribution',
+                unit: 'candidate(s)',
+                emptyColor: '#dbeafe',
+                slices: [
+                  { label: 'Child (C)', value: liveCandidateSummary.cCount, color: '#3b82f6' },
+                  { label: 'Boys (B)', value: liveCandidateSummary.bCount, color: '#4f46e5' },
+                  { label: 'Girls (G)', value: liveCandidateSummary.gCount, color: '#ec4899' },
+                ],
+              };
+            case 'hitPending':
+              return {
+                title: 'HIT Pending',
+                subtitle: 'Events awaiting hit completion',
+                unit: 'event(s)',
+                emptyColor: '#fef3c7',
+                slices: [
+                  { label: 'HIT Pending', value: liveEventStages.hitPending.length, color: '#f59e0b' },
+                  { label: 'HIT Completed', value: liveEventStages.hitCompleted.length, color: '#fde68a' },
+                ],
+              };
+            case 'hitCompleted':
+              return {
+                title: 'HIT Completed',
+                subtitle: 'Events with hits completed',
+                unit: 'event(s)',
+                emptyColor: '#d1fae5',
+                slices: [
+                  { label: 'HIT Completed', value: liveEventStages.hitCompleted.length, color: '#10b981' },
+                  { label: 'HIT Pending', value: liveEventStages.hitPending.length, color: '#a7f3d0' },
+                ],
+              };
+            case 'finalPrepared':
+              return {
+                title: 'Final Prepared',
+                subtitle: 'Events ready for ranking',
+                unit: 'event(s)',
+                emptyColor: '#e0f2fe',
+                slices: [
+                  { label: 'Final Prepared', value: liveEventStages.finalPrepared.length, color: '#0284c7' },
+                  {
+                    label: 'Other Events',
+                    value: Math.max(0, liveEventStages.totalEvents - liveEventStages.finalPrepared.length),
+                    color: '#bae6fd',
+                  },
+                ],
+              };
+            case 'resultDeclared':
+              return {
+                title: 'Result Declared',
+                subtitle: 'Events with final ranking declared',
+                unit: 'event(s)',
+                emptyColor: '#f3e8ff',
+                slices: [
+                  { label: 'Result Declared', value: liveEventStages.resultDeclared.length, color: '#9333ea' },
+                  {
+                    label: 'Remaining Events',
+                    value: Math.max(0, liveEventStages.totalEvents - liveEventStages.resultDeclared.length),
+                    color: '#e9d5ff',
+                  },
+                ],
+              };
+            case 'totalClubs': {
+              const hasPoints = liveClubStandings.topPoints > 0;
+              const metric = (c: typeof liveClubStandings.clubs[number]) =>
+                hasPoints ? c.points : c.candidateCount;
+              const topThree = liveClubStandings.clubs.slice(0, 3);
+              const palette = ['#16a34a', '#eab308', '#dc2626'];
+              const textPalette = ['#4ade80', '#facc15', '#f87171'];
+              const slices: PieSlice[] = topThree.map((c, i) => ({
+                label: c.name,
+                value: metric(c),
+                color: palette[i],
+                textColor: textPalette[i],
+                isLeading: hasPoints
+                  ? liveClubStandings.leaders.some((l) => l.key === c.key)
+                  : i === 0 && metric(c) > 0,
+              }));
+              return {
+                title: 'Top 3 leading clubs',
+                subtitle: hasPoints ? 'Top 3 clubs share by live points' : 'Top 3 clubs share by enrolled candidates',
+                unit: hasPoints ? 'pts' : 'candidate(s)',
+                emptyColor: '#fef3c7',
+                slices,
+              };
+            }
+          }
+        })();
+
+        const total = pieConfig.slices.reduce((sum, s) => sum + Math.max(0, s.value), 0);
+        const nonZeroSlices = pieConfig.slices.filter((s) => s.value > 0);
+        const cx = 110;
+        const cy = 110;
+        const r = 92;
+        const polarToCartesian = (angleDeg: number, radius = r) => {
+          const rad = ((angleDeg - 90) * Math.PI) / 180;
+          return {
+            x: cx + radius * Math.cos(rad),
+            y: cy + radius * Math.sin(rad),
+          };
+        };
+        const isLightHex = (hex: string) => {
+          const clean = hex.replace('#', '');
+          if (clean.length !== 6) return false;
+          const rVal = parseInt(clean.slice(0, 2), 16);
+          const gVal = parseInt(clean.slice(2, 4), 16);
+          const bVal = parseInt(clean.slice(4, 6), 16);
+          return (rVal * 299 + gVal * 587 + bVal * 114) / 1000 > 165;
+        };
+        let currentAngle = 0;
+
+        return (
+          <div
+            id="live-pie-chart-modal"
+            className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/75 backdrop-blur-xs"
+            onClick={() => setActivePieModalKey(null)}
+          >
+            <div
+              className="bg-[#002047] border border-[#164685] rounded-2xl max-w-md w-full max-h-[88vh] flex flex-col shadow-2xl overflow-hidden text-slate-100 animate-in fade-in zoom-in-95"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-[#123c73] bg-[#001736] shrink-0">
+                <div className="min-w-0">
+                  <h3 className="font-black text-sm sm:text-base text-amber-400 leading-tight">
+                    {pieConfig.title}
+                  </h3>
+                  <p className="text-[11px] text-slate-300 mt-0.5">
+                    {pieConfig.subtitle}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setActivePieModalKey(null)}
+                  className="min-w-[40px] min-h-[40px] flex items-center justify-center text-slate-300 hover:text-white rounded-lg hover:bg-[#002c61] transition-colors shrink-0 cursor-pointer"
+                  aria-label="Close pie chart window"
+                  title="Close"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="p-4 flex-1 min-h-0 overflow-y-auto flex flex-col items-center gap-4">
+                <div className="w-44 h-44 sm:w-52 sm:h-52 flex items-center justify-center shrink-0">
+                  <svg viewBox="0 0 220 220" className="w-full h-full drop-shadow-md overflow-visible">
+                    {total <= 0 ? (
+                      <>
+                        <circle
+                          cx={cx}
+                          cy={cy}
+                          r={r}
+                          fill={pieConfig.emptyColor}
+                          stroke="#ffffff"
+                          strokeWidth="2.5"
+                        />
+                        <text
+                          x={cx}
+                          y={cy}
+                          textAnchor="middle"
+                          dominantBaseline="central"
+                          fill="#334155"
+                          fontSize="14"
+                          fontWeight="800"
+                        >
+                          0
+                        </text>
+                      </>
+                    ) : nonZeroSlices.length === 1 ? (
+                      <>
+                        <circle
+                          cx={cx}
+                          cy={cy}
+                          r={r}
+                          fill={nonZeroSlices[0].color}
+                          stroke="#ffffff"
+                          strokeWidth="2.5"
+                        />
+                        <text
+                          x={cx}
+                          y={cy}
+                          textAnchor="middle"
+                          dominantBaseline="central"
+                          fill={isLightHex(nonZeroSlices[0].color) ? '#0f172a' : '#ffffff'}
+                          fontSize="15"
+                          fontWeight="900"
+                        >
+                          100%
+                        </text>
+                      </>
+                    ) : (
+                      nonZeroSlices.map((slice, idx) => {
+                        const sliceAngle = (slice.value / total) * 360;
+                        const startAngle = currentAngle;
+                        const endAngle = currentAngle + sliceAngle;
+                        const midAngle = startAngle + sliceAngle / 2;
+                        currentAngle = endAngle;
+
+                        const start = polarToCartesian(startAngle);
+                        const end = polarToCartesian(endAngle);
+                        const largeArcFlag = sliceAngle > 180 ? 1 : 0;
+                        const d = [
+                          `M ${cx} ${cy}`,
+                          `L ${start.x.toFixed(2)} ${start.y.toFixed(2)}`,
+                          `A ${r} ${r} 0 ${largeArcFlag} 1 ${end.x.toFixed(2)} ${end.y.toFixed(2)}`,
+                          'Z',
+                        ].join(' ');
+                        const pct = Math.round((slice.value / total) * 100);
+                        const labelPos = polarToCartesian(midAngle, r * 0.62);
+
+                        return (
+                          <g key={`modal-slice-${slice.label}-${idx}`}>
+                            <path
+                              d={d}
+                              fill={slice.color}
+                              stroke="#ffffff"
+                              strokeWidth="2.2"
+                              strokeLinejoin="round"
+                            />
+                            {sliceAngle >= 24 && (
+                              <text
+                                x={labelPos.x}
+                                y={labelPos.y}
+                                textAnchor="middle"
+                                dominantBaseline="central"
+                                fill={isLightHex(slice.color) ? '#0f172a' : '#ffffff'}
+                                fontSize="12"
+                                fontWeight="900"
+                                className="tabular-nums pointer-events-none"
+                              >
+                                {pct}%
+                              </text>
+                            )}
+                          </g>
+                        );
+                      })
+                    )}
+                  </svg>
+                </div>
+
+                {/* Respective Labels Legend */}
+                <div className="w-full space-y-2">
+                  {pieConfig.slices.map((slice, idx) => {
+                    const pct = total > 0 ? Math.round((slice.value / total) * 100) : 0;
+                    return (
+                      <div
+                        key={`legend-${slice.label}-${idx}`}
+                        className={`flex items-center justify-between gap-2.5 px-3 py-2 rounded-xl border text-xs ${
+                          slice.isLeading
+                            ? 'bg-emerald-950/45 border-amber-400/70'
+                            : 'bg-[#001736] border-[#123c73]'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                          <span
+                            className="w-3.5 h-3.5 rounded-sm shrink-0 border border-white/40"
+                            style={{ backgroundColor: slice.color }}
+                          />
+                          <span
+                            style={slice.textColor ? { color: slice.textColor } : undefined}
+                            className={`whitespace-normal break-words leading-snug ${
+                              slice.isLeading
+                                ? `animate-leader-blink font-black uppercase ${slice.textColor ? '' : 'text-amber-300'}`
+                                : `font-bold ${slice.textColor ? '' : 'text-slate-100'}`
+                            }`}
+                          >
+                            {slice.label}
+                          </span>
+                        </div>
+                        <div className="font-mono font-black text-amber-300 tabular-nums shrink-0 text-right">
+                          {slice.value} <span className="text-[10px] font-semibold text-slate-300">({pct}%)</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  <div className="flex items-center justify-between px-3 pt-2 border-t border-[#123c73] text-xs font-bold text-slate-300">
+                    <span>Total</span>
+                    <span className="font-mono font-black text-white tabular-nums">
+                      {total} {pieConfig.unit}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* MODAL 1: REGISTRATION & FEES POPUP (#002047 navy theme) */}
       {showSummaryPopup && (

@@ -261,3 +261,92 @@ img[alt*="Logo" i] {
 .animate-dance-down {
   animation: dance-down 1s ease-in-out infinite;
 }
+
+@keyframes live-status-card-in {
+  0% {
+    opacity: 0;
+    transform: translateY(10px) scale(0.97);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.live-status-card-enter {
+  animation: live-status-card-in 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes leader-blink {
+  0%, 100% {
+    opacity: 1;
+    filter: brightness(1);
+  }
+  50% {
+    opacity: 0.25;
+    filter: brightness(1.15);
+  }
+}
+
+.animate-leader-blink {
+  animation: leader-blink 1.05s ease-in-out infinite;
+}
+
+@keyframes live-number-pop {
+  0% {
+    opacity: 0;
+    transform: translateY(5px) scale(0.88);
+  }
+  65% {
+    opacity: 1;
+    transform: translateY(-1px) scale(1.06);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.animate-live-num-pop {
+  display: inline-block;
+  animation: live-number-pop 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes live-icon-float {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-2.5px);
+  }
+}
+
+.animate-live-icon-float {
+  animation: live-icon-float 1.8s ease-in-out infinite;
+}
+
+@keyframes live-icon-sway {
+  0%, 100% {
+    transform: rotate(-8deg) scale(1);
+  }
+  50% {
+    transform: rotate(8deg) scale(1.08);
+  }
+}
+
+.animate-live-icon-sway {
+  animation: live-icon-sway 1.6s ease-in-out infinite;
+}
+
+@keyframes live-icon-pulse-scale {
+  0%, 100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.15);
+  }
+}
+
+.animate-live-icon-pulse {
+  animation: live-icon-pulse-scale 1.5s ease-in-out infinite;
+}
